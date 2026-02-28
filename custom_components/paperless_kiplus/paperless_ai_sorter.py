@@ -343,7 +343,12 @@ class PaperlessClient:
                     continue
                 tried.add(signature)
                 try:
-                    self._request("PATCH", f"/api/documents/{document_id}/", payload=candidate)
+                    self._request(
+                        "PATCH",
+                        f"/api/documents/{document_id}/",
+                        payload=candidate,
+                        retries=1,
+                    )
                     LOGGER.warning(
                         "PATCH-Fallback erfolgreich für Dokument %s (%s). Originalpayload führte zu HTTP 500.",
                         document_id,
@@ -363,7 +368,12 @@ class PaperlessClient:
                     continue
                 single_payload = {key: patch_payload[key]}
                 try:
-                    self._request("PATCH", f"/api/documents/{document_id}/", payload=single_payload)
+                    self._request(
+                        "PATCH",
+                        f"/api/documents/{document_id}/",
+                        payload=single_payload,
+                        retries=1,
+                    )
                     partial_success = True
                 except PaperlessApiError as field_exc:
                     field_failures.append(f"{key}: {field_exc}")
@@ -1253,17 +1263,25 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         except (AiClassificationError, PaperlessApiError, ValueError) as exc:
             failed += 1
             if not config.dry_run and doc_id is not None:
-                try:
-                    # Fehler dokumentieren: Tag setzen und Notiz am Dokument ergänzen.
-                    current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
-                    new_tags = set(current_tags)
-                    if error_tag_id is not None:
-                        new_tags.add(int(error_tag_id))
-                    if ki_tag_id is not None:
-                        new_tags.add(int(ki_tag_id))
-                    if new_tags != current_tags:
+                # Fehler dokumentieren: Tag setzen und Notiz am Dokument ergänzen.
+                current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
+                new_tags = set(current_tags)
+                if error_tag_id is not None:
+                    new_tags.add(int(error_tag_id))
+                if ki_tag_id is not None:
+                    new_tags.add(int(ki_tag_id))
+                if new_tags != current_tags:
+                    try:
                         client.update_document(int(doc_id), {"tags": sorted(new_tags)})
+                    except PaperlessApiError as mark_tag_exc:
+                        LOGGER.error(
+                            "Fehler-Tag konnte für Dokument %s (%s) nicht gesetzt werden: %s",
+                            doc_id,
+                            title,
+                            mark_tag_exc,
+                        )
 
+                try:
                     client.add_document_note(
                         int(doc_id),
                         build_error_note_entry(
@@ -1271,12 +1289,12 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                             patch_payload=patch_payload_for_error,
                         ),
                     )
-                except PaperlessApiError as mark_exc:
+                except PaperlessApiError as mark_note_exc:
                     LOGGER.error(
-                        "Fehler-Markierung für Dokument %s (%s) fehlgeschlagen: %s",
+                        "Fehler-Notiz konnte für Dokument %s (%s) nicht gespeichert werden: %s",
                         doc_id,
                         title,
-                        mark_exc,
+                        mark_note_exc,
                     )
             error_details.append(
                 {
