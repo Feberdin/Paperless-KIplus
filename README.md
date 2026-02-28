@@ -314,6 +314,8 @@ In Home Assistant stehen zusätzlich Sensoren bereit:
 - `Paperless KIplus Letzter Lauf Übersprungen`
 - `Paperless KIplus Letztes Protokoll` (enthält `summary_line`, `cost_line`, `log_text`)
 
+Die Entitäten sind einem gemeinsamen Gerät **„Paperless KIplus Runner“** zugeordnet, damit die Werte direkt in der Integrations-/Geräteansicht sichtbar sind.
+
 Hinweis:
 
 - Die Tokenpreis-Felder der Integration überschreiben bei aktivierter „YAML in Home Assistant verwalten“-Option automatisch die beiden YAML-Werte:

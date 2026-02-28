@@ -7,11 +7,27 @@ from datetime import datetime
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, SIGNAL_STATUS_UPDATED
 from .runner import PaperlessRunner
+
+
+def _device_info(entry_id: str) -> DeviceInfo:
+    """Gemeinsame Gerätezuordnung für alle Entitäten dieser Integration.
+
+    Dadurch erscheinen die Sensoren gesammelt in der Integrations-/Geräteansicht
+    und zeigen ihren aktuellen Wert direkt im Home-Assistant-UI.
+    """
+
+    return DeviceInfo(
+        identifiers={(DOMAIN, entry_id)},
+        name="Paperless KIplus Runner",
+        manufacturer="Feberdin",
+        model="Paperless KIplus",
+    )
 
 
 async def async_setup_entry(
@@ -50,6 +66,7 @@ class PaperlessRunnerStatusSensor(SensorEntity):
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_status"
         self._attr_name = "Paperless KIplus Status"
+        self._attr_has_entity_name = True
 
     async def async_added_to_hass(self) -> None:
         """Register dispatcher updates."""
@@ -67,6 +84,12 @@ class PaperlessRunnerStatusSensor(SensorEntity):
         """Return current status string."""
 
         return self._runner.last_status
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Ordnet den Sensor dem zentralen Integrationsgerät zu."""
+
+        return _device_info(self._entry_id)
 
     @property
     def extra_state_attributes(self) -> dict[str, str | int | float | None]:
@@ -119,6 +142,7 @@ class PaperlessRunnerRunLogSensor(SensorEntity):
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_run_log"
         self._attr_name = "Paperless KIplus Letztes Protokoll"
+        self._attr_has_entity_name = True
 
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(
@@ -134,6 +158,12 @@ class PaperlessRunnerRunLogSensor(SensorEntity):
         """Use the current run status as compact state value."""
 
         return self._runner.last_status
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Ordnet den Sensor dem zentralen Integrationsgerät zu."""
+
+        return _device_info(self._entry_id)
 
     @property
     def extra_state_attributes(self) -> dict[str, str | None]:
@@ -157,6 +187,7 @@ class _BaseMetricSensor(SensorEntity):
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_{suffix}"
         self._attr_name = name
+        self._attr_has_entity_name = True
 
     async def async_added_to_hass(self) -> None:
         self.async_on_remove(
@@ -166,6 +197,12 @@ class _BaseMetricSensor(SensorEntity):
                 self.async_write_ha_state,
             )
         )
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Ordnet alle Metrik-Sensoren demselben Integrationsgerät zu."""
+
+        return _device_info(self._entry_id)
 
 
 class PaperlessRunnerSummarySensor(_BaseMetricSensor):

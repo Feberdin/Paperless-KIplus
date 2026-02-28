@@ -5,11 +5,23 @@ from __future__ import annotations
 from homeassistant.components.binary_sensor import BinarySensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, SIGNAL_STATUS_UPDATED
 from .runner import PaperlessRunner
+
+
+def _device_info(entry_id: str) -> DeviceInfo:
+    """Gemeinsame Gerätezuordnung für Binary-Sensoren."""
+
+    return DeviceInfo(
+        identifiers={(DOMAIN, entry_id)},
+        name="Paperless KIplus Runner",
+        manufacturer="Feberdin",
+        model="Paperless KIplus",
+    )
 
 
 async def async_setup_entry(
@@ -33,6 +45,7 @@ class PaperlessRunnerRunningBinarySensor(BinarySensorEntity):
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_running"
         self._attr_name = "Paperless KIplus Läuft"
+        self._attr_has_entity_name = True
 
     async def async_added_to_hass(self) -> None:
         """Register dispatcher updates."""
@@ -50,3 +63,9 @@ class PaperlessRunnerRunningBinarySensor(BinarySensorEntity):
         """Return true if the runner is currently executing."""
 
         return self._runner.running
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Ordnet den Binary-Sensor dem zentralen Integrationsgerät zu."""
+
+        return _device_info(self._entry_id)
