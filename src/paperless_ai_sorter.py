@@ -8,6 +8,7 @@ klassifizieren und schreibt die vorgeschlagenen Metadaten zurück.
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
 import logging
 import sys
@@ -49,6 +50,16 @@ class AppConfig:
     confidence_threshold: float
     request_timeout_seconds: int
     log_level: str
+    enable_token_precheck: bool
+    min_remaining_tokens: int
+    custom_prompt_instructions: str
+    basis_config: Dict[str, Any]
+    process_only_tag: str
+    include_existing_entities_in_prompt: bool
+    enable_ai_notes: bool
+    ai_notes_max_chars: int
+    enable_ai_note_summary: bool
+    ai_note_summary_max_chars: int
 
 
 def load_config(config_path: str, cli_dry_run: bool) -> AppConfig:
@@ -88,6 +99,18 @@ def load_config(config_path: str, cli_dry_run: bool) -> AppConfig:
         confidence_threshold=float(raw.get("confidence_threshold", 0.70)),
         request_timeout_seconds=int(raw.get("request_timeout_seconds", 30)),
         log_level=str(raw.get("log_level", "INFO")),
+        enable_token_precheck=bool(raw.get("enable_token_precheck", False)),
+        min_remaining_tokens=int(raw.get("min_remaining_tokens", 1500)),
+        custom_prompt_instructions=str(raw.get("custom_prompt_instructions", "")).strip(),
+        basis_config=dict(raw.get("basis_config", {})),
+        process_only_tag=str(raw.get("process_only_tag", "")).strip(),
+        include_existing_entities_in_prompt=bool(
+            raw.get("include_existing_entities_in_prompt", True)
+        ),
+        enable_ai_notes=bool(raw.get("enable_ai_notes", True)),
+        ai_notes_max_chars=int(raw.get("ai_notes_max_chars", 800)),
+        enable_ai_note_summary=bool(raw.get("enable_ai_note_summary", True)),
+        ai_note_summary_max_chars=int(raw.get("ai_note_summary_max_chars", 220)),
     )
 
 
@@ -103,6 +126,7 @@ class PaperlessClient:
                 "Authorization": f"Token {config.paperless_token}",
                 "Accept": "application/json",
                 "Content-Type": "application/json",
+                "User-Agent": "paperless-kiplus/0.1",
             }
         )
 
@@ -117,7 +141,8 @@ class PaperlessClient:
     ) -> Dict[str, Any]:
         """HTTP-Request mit einfachem Retry für transiente Fehler."""
 
-        url = f"{self.base_url}{path}"
+        # `path` kann entweder ein relativer API-Pfad oder bereits eine absolute URL sein.
+        url = path if path.startswith("http://") or path.startswith("https://") else f"{self.base_url}{path}"
         last_error: Optional[Exception] = None
 
         for attempt in range(1, retries + 1):
@@ -130,8 +155,27 @@ class PaperlessClient:
                     timeout=self.timeout,
                 )
                 if response.status_code >= 400:
+                    extra_hint = ""
+                    # Typischer Setup-Fehler bei Paperless hinter Reverse-Proxy:
+                    # Die angefragte Host-URL passt nicht zu PAPERLESS_URL/ALLOWED_HOSTS.
+                    if response.status_code == 400:
+                        extra_hint = (
+                            " | Hinweis: HTTP 400 bei Paperless deutet oft auf eine falsche "
+                            "paperless_url oder Host/Proxy-Konfiguration hin "
+                            "(PAPERLESS_URL, ALLOWED_HOSTS, Reverse-Proxy Host Header)."
+                        )
+                        if method == "POST" and "/api/storage_paths/" in path and "path" in response.text:
+                            extra_hint = (
+                                " | Hinweis: Beim Anlegen von Storage Paths erwartet Paperless "
+                                "das Feld 'path' (nicht 'name')."
+                            )
+                    if response.status_code == 406:
+                        extra_hint = (
+                            " | Hinweis: HTTP 406 kommt oft von vorgeschalteten Proxies/WAF "
+                            "(z. B. Cloudflare) für bestimmte Pfade oder Header."
+                        )
                     raise PaperlessApiError(
-                        f"{method} {path} fehlgeschlagen: HTTP {response.status_code} - {response.text}"
+                        f"{method} {path} fehlgeschlagen: HTTP {response.status_code} - {response.text}{extra_hint}"
                     )
 
                 if not response.content:
@@ -154,7 +198,11 @@ class PaperlessClient:
             f"Request dauerhaft fehlgeschlagen: {method} {path} | Letzter Fehler: {last_error}"
         )
 
-    def iter_documents(self, limit: int) -> Iterable[Dict[str, Any]]:
+    def iter_documents(
+        self,
+        limit: int,
+        extra_params: Optional[Dict[str, Any]] = None,
+    ) -> Iterable[Dict[str, Any]]:
         """Lädt Dokumente seitenweise.
 
         Standardmäßig nutzen wir `ordering=-created`, damit zuerst neue Dokumente
@@ -166,6 +214,8 @@ class PaperlessClient:
             "ordering": "-created",
             "page_size": min(limit, 100),
         }
+        if extra_params:
+            params.update(extra_params)
         loaded = 0
 
         while next_url and loaded < limit:
@@ -178,37 +228,45 @@ class PaperlessClient:
                 if loaded >= limit:
                     break
 
-            absolute_next = page.get("next")
-            if absolute_next:
-                next_url = absolute_next.replace(self.base_url, "")
-            else:
-                next_url = ""
+            next_url = str(page.get("next") or "")
+
+    def preflight_check(self) -> None:
+        """Prüft frühzeitig, ob die Paperless-API grundsätzlich erreichbar ist.
+
+        Einige Deployments liefern auf `/api/` (API-Root) über Proxy/WAF ein 406.
+        Deshalb testen wir direkt einen echten JSON-Endpoint.
+        """
+
+        self._request("GET", "/api/documents/", params={"page_size": 1})
 
     def list_named_entities(self, path: str) -> Dict[str, int]:
         """Lädt Name->ID Mapping für Tags/Typen/Korrespondenten/Ablagepfade."""
 
         mapping: Dict[str, int] = {}
-        next_url = path
+        next_url: str = path
+        params: Optional[Dict[str, Any]] = {"page_size": 100}
 
         while next_url:
-            page = self._request("GET", next_url, params={"page_size": 100})
+            page = self._request("GET", next_url, params=params)
+            # Ab der zweiten Seite steckt die Pagination bereits in `next`.
+            params = None
             for item in page.get("results", []):
-                name = str(item.get("name", "")).strip()
-                if name:
-                    mapping[name.lower()] = int(item["id"])
+                # Storage Paths nutzen oft `path` statt `name`.
+                label = str(item.get("name") or item.get("path") or "").strip()
+                if label:
+                    mapping[label.lower()] = int(item["id"])
 
-            absolute_next = page.get("next")
-            if absolute_next:
-                next_url = absolute_next.replace(self.base_url, "")
-            else:
-                next_url = ""
+            next_url = str(page.get("next") or "")
 
         return mapping
 
     def create_entity(self, path: str, name: str) -> int:
         """Erzeugt ein Metadaten-Objekt in Paperless und gibt dessen ID zurück."""
-
-        created = self._request("POST", path, payload={"name": name})
+        payload: Dict[str, Any] = {"name": name}
+        if path == "/api/storage_paths/":
+            # Paperless erwartet für Storage Paths das Feld `path`.
+            payload = {"path": name}
+        created = self._request("POST", path, payload=payload)
         created_id = created.get("id")
         if created_id is None:
             raise PaperlessApiError(
@@ -221,6 +279,11 @@ class PaperlessClient:
 
         self._request("PATCH", f"/api/documents/{document_id}/", payload=patch_payload)
 
+    def add_document_note(self, document_id: int, note: str) -> None:
+        """Fügt eine Notiz über den dedizierten Notes-Endpoint hinzu."""
+
+        self._request("POST", f"/api/documents/{document_id}/notes/", payload={"note": note})
+
 
 class AiClassifier:
     """Verwendet OpenAI-kompatible Chat-Completions für Klassifizierung."""
@@ -229,14 +292,87 @@ class AiClassifier:
         self.model = config.ai_model
         self.timeout = config.request_timeout_seconds
         self.base_url = config.ai_base_url
+        self.enable_token_precheck = config.enable_token_precheck
+        self.min_remaining_tokens = config.min_remaining_tokens
+        self.custom_prompt_instructions = config.custom_prompt_instructions
+        self.basis_config = config.basis_config
+        self.include_existing_entities_in_prompt = config.include_existing_entities_in_prompt
+        self.known_document_types: List[str] = []
+        self.known_correspondents: List[str] = []
+        self.known_storage_paths: List[str] = []
         self.session = requests.Session()
         self.session.headers.update(
             {
                 "Authorization": f"Bearer {config.ai_api_key}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
+                "User-Agent": "paperless-kiplus/0.1",
             }
         )
+
+    def set_known_entities(
+        self,
+        *,
+        document_types: List[str],
+        correspondents: List[str],
+        storage_paths: List[str],
+    ) -> None:
+        """Setzt bekannte Paperless-Werte für den Prompt-Kontext."""
+
+        self.known_document_types = sorted(document_types)
+        self.known_correspondents = sorted(correspondents)
+        self.known_storage_paths = sorted(storage_paths)
+
+    def preflight_token_budget(self) -> None:
+        """Prüft optional verfügbare Token laut RateLimit-Header des Anbieters.
+
+        Wichtig: Das sind API-RateLimits, nicht dein ChatGPT-Web-Abo-Kontingent.
+        Einige Anbieter liefern die Header nicht; dann loggen wir nur einen Hinweis.
+        """
+
+        if not self.enable_token_precheck:
+            LOGGER.info("Token-Precheck deaktiviert (enable_token_precheck=false).")
+            return
+
+        probe_body = {
+            "model": self.model,
+            "messages": [{"role": "user", "content": "healthcheck"}],
+            "max_tokens": 1,
+            "temperature": 0,
+        }
+
+        try:
+            response = self.session.post(
+                f"{self.base_url}/chat/completions",
+                data=json.dumps(probe_body),
+                timeout=self.timeout,
+            )
+            response.raise_for_status()
+
+            remaining_raw = response.headers.get("x-ratelimit-remaining-tokens")
+            if remaining_raw is None:
+                LOGGER.warning(
+                    "Token-Precheck: Provider liefert keinen Header "
+                    "'x-ratelimit-remaining-tokens'. Prüfen daher nicht möglich."
+                )
+                return
+
+            remaining = int(remaining_raw)
+            LOGGER.info(
+                "Token-Precheck: verbleibende API-Tokens laut Header = %s (Schwellwert=%s)",
+                remaining,
+                self.min_remaining_tokens,
+            )
+            if remaining < self.min_remaining_tokens:
+                raise AiClassificationError(
+                    "Zu wenig verbleibende API-Tokens vor Start. "
+                    f"Remaining={remaining}, benötigt mindestens={self.min_remaining_tokens}. "
+                    "Lauf wird abgebrochen."
+                )
+        except (requests.RequestException, ValueError) as exc:
+            raise AiClassificationError(
+                f"Token-Precheck fehlgeschlagen (API nicht erreichbar/ungültige Header): {exc}"
+            ) from exc
 
     def classify(self, document: Dict[str, Any]) -> Dict[str, Any]:
         """Sendet Dokumentkontext an KI und erwartet streng JSON als Antwort."""
@@ -244,9 +380,31 @@ class AiClassifier:
         prompt = (
             "Du bist ein präziser Dokumenten-Klassifizierer für Paperless-ngx. "
             "Antworte ausschließlich als JSON mit den Feldern: "
-            "document_type, correspondent, storage_path, tags (Liste), confidence (0-1), rationale. "
+            "document_type, correspondent, storage_path, tags (Liste), "
+            "document_date (YYYY-MM-DD oder null), summary, confidence (0-1), rationale. "
             "Keine zusätzlichen Schlüssel, keine Markdown-Ausgabe."
         )
+        if self.custom_prompt_instructions:
+            prompt += (
+                "\n\nZusätzliche projektspezifische Regeln (hoch priorisiert):\n"
+                f"{self.custom_prompt_instructions}"
+            )
+        if self.basis_config:
+            prompt += (
+                "\n\nStrukturierte Basis-Konfiguration (priorisiert, kompakt):\n"
+                + json.dumps(self.basis_config, ensure_ascii=False, separators=(",", ":"))
+            )
+        if self.include_existing_entities_in_prompt:
+            known = {
+                "known_document_types": self.known_document_types,
+                "known_correspondents": self.known_correspondents,
+                "known_storage_paths": self.known_storage_paths,
+            }
+            prompt += (
+                "\n\nBevorzuge vorhandene Werte aus diesem Bestand und erfinde nichts "
+                "unnötig neu:\n"
+                + json.dumps(known, ensure_ascii=False)
+            )
 
         # Wir begrenzen den Text bewusst, um Tokenkosten und Latenz zu kontrollieren.
         content_preview = str(document.get("content") or "")[:6000]
@@ -308,6 +466,58 @@ class AiClassifier:
         confidence = float(payload["confidence"])
         if confidence < 0 or confidence > 1:
             raise AiClassificationError("KI-Ausgabe: 'confidence' muss zwischen 0 und 1 liegen.")
+
+        document_date = payload.get("document_date")
+        if document_date is not None and not isinstance(document_date, str):
+            raise AiClassificationError(
+                "KI-Ausgabe: 'document_date' muss YYYY-MM-DD oder null sein."
+            )
+        summary = payload.get("summary")
+        if summary is not None and not isinstance(summary, str):
+            raise AiClassificationError("KI-Ausgabe: 'summary' muss ein String oder null sein.")
+
+
+def normalize_iso_date(value: Optional[str]) -> Optional[str]:
+    """Normalisiert Datumswerte auf YYYY-MM-DD oder gibt None zurück."""
+
+    if not value:
+        return None
+
+    candidate = str(value).strip()
+    if not candidate:
+        return None
+
+    # Erlaubt auch ISO-Datetime und schneidet Datumsteil ab.
+    if "T" in candidate:
+        candidate = candidate.split("T", 1)[0]
+    if " " in candidate:
+        candidate = candidate.split(" ", 1)[0]
+
+    try:
+        return dt.date.fromisoformat(candidate).isoformat()
+    except ValueError:
+        return None
+
+
+def sanitize_prediction(
+    prediction: Dict[str, Any],
+    storage_paths_map: Dict[str, int],
+) -> Dict[str, Any]:
+    """Bereinigt offensichtliche Fehlwerte aus der KI-Antwort.
+
+    Beispiel: `correspondent = Privat` ist fast immer ein Mapping-Fehler,
+    da `Privat` ein Speicherpfad ist. Solche Werte werden verworfen.
+    """
+
+    sanitized = dict(prediction)
+    correspondent = str(sanitized.get("correspondent") or "").strip()
+    if correspondent and correspondent.lower() in storage_paths_map:
+        LOGGER.warning(
+            "KI-Vorschlag verworfen: Korrespondent '%s' entspricht einem Speicherpfad.",
+            correspondent,
+        )
+        sanitized["correspondent"] = None
+    return sanitized
 
 
 def ensure_entity_id(
@@ -397,7 +607,211 @@ def build_patch_payload(
     if tag_ids:
         payload["tags"] = sorted(set(tag_ids))
 
+    normalized_date = normalize_iso_date(prediction.get("document_date"))
+    if normalized_date is not None:
+        # Paperless verwendet `created` als Dokumentdatum.
+        payload["created"] = normalized_date
+
     return payload
+
+
+def apply_forced_tag_rules(
+    *,
+    patch_payload: Dict[str, Any],
+    current_tag_ids: set[int],
+    ki_tag_id: Optional[int],
+    remove_neu_tag_id: Optional[int],
+) -> None:
+    """Erzwingt globale Tag-Regeln bei jeder Änderung.
+
+    Regeln:
+    - Tag `KI` hinzufügen (falls verfügbar)
+    - Tag `#NEU` entfernen (falls vorhanden)
+    """
+
+    final_tag_ids = set(current_tag_ids)
+    final_tag_ids.update(int(tag_id) for tag_id in patch_payload.get("tags", []))
+
+    if remove_neu_tag_id is not None:
+        final_tag_ids.discard(remove_neu_tag_id)
+    if ki_tag_id is not None:
+        final_tag_ids.add(ki_tag_id)
+
+    if final_tag_ids != set(current_tag_ids):
+        patch_payload["tags"] = sorted(final_tag_ids)
+
+
+def build_ai_note_entry(
+    *,
+    prediction: Dict[str, Any],
+    patch_payload: Dict[str, Any],
+    doc_type_id_to_label: Dict[int, str],
+    correspondent_id_to_label: Dict[int, str],
+    storage_path_id_to_label: Dict[int, str],
+    tag_id_to_label: Dict[int, str],
+    max_chars: int,
+    include_summary: bool,
+    summary_max_chars: int,
+) -> str:
+    """Erstellt einen kompakten KI-Notizeintrag mit Begründung und Änderungen."""
+
+    def _value_to_label(field: str, value: Any) -> str:
+        if value is None:
+            return "-"
+        if field == "document_type":
+            return doc_type_id_to_label.get(int(value), f"id:{value}")
+        if field == "correspondent":
+            return correspondent_id_to_label.get(int(value), f"id:{value}")
+        if field == "storage_path":
+            return storage_path_id_to_label.get(int(value), f"id:{value}")
+        if field == "tags":
+            labels = [tag_id_to_label.get(int(tag_id), f"id:{tag_id}") for tag_id in value]
+            return ", ".join(sorted(labels)) if labels else "-"
+        return str(value)
+
+    lines: List[str] = []
+    for field in ("document_type", "correspondent", "storage_path", "created", "tags"):
+        if field in patch_payload:
+            lines.append(f"- {field}: {_value_to_label(field, patch_payload[field])}")
+
+    rationale = str(prediction.get("rationale") or "Keine Begründung angegeben.").strip()
+    if len(rationale) > max_chars:
+        rationale = rationale[: max_chars - 3] + "..."
+
+    summary_line = ""
+    if include_summary:
+        summary = str(prediction.get("summary") or "").strip()
+        if not summary:
+            summary = "Keine Kurz-Zusammenfassung verfügbar."
+        if len(summary) > summary_max_chars:
+            summary = summary[: summary_max_chars - 3] + "..."
+        summary_line = f"Kurz-Zusammenfassung: {summary}\n"
+
+    timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+    note = (
+        f"[KI-Update {timestamp}]\n"
+        f"{summary_line}"
+        f"Begründung: {rationale}\n"
+        f"Änderungen:\n"
+        + ("\n".join(lines) if lines else "- keine")
+    )
+    return note
+
+
+def log_dry_run_change(
+    document: Dict[str, Any],
+    prediction: Dict[str, Any],
+    patch_payload: Dict[str, Any],
+    note_will_be_added: bool,
+    tag_id_to_label: Dict[int, str],
+    doc_type_id_to_label: Dict[int, str],
+    correspondent_id_to_label: Dict[int, str],
+    storage_path_id_to_label: Dict[int, str],
+) -> None:
+    """Gibt im Dry-Run eine Feld-für-Feld-Diff-Ansicht aus."""
+
+    doc_id = document.get("id")
+    title = document.get("title", "<ohne Titel>")
+    confidence = prediction.get("confidence")
+
+    def _label_or_none(entity_id: Optional[int], id_to_label: Dict[int, str]) -> str:
+        if entity_id is None:
+            return "keiner"
+        return id_to_label.get(int(entity_id), f"id:{entity_id}")
+
+    def _tags_to_label(tags_value: Any) -> str:
+        if not tags_value:
+            return "keine"
+        labels: List[str] = []
+        for tag_id in tags_value:
+            labels.append(tag_id_to_label.get(int(tag_id), f"id:{tag_id}"))
+        return ", ".join(sorted(labels))
+
+    rows: List[tuple[str, str, str]] = []
+    if "document_type" in patch_payload:
+        resolved_doc_type = _label_or_none(
+            patch_payload.get("document_type"),
+            doc_type_id_to_label,
+        )
+        rows.append(
+            (
+                "Dokumenttyp",
+                _label_or_none(document.get("document_type"), doc_type_id_to_label),
+                resolved_doc_type,
+            )
+        )
+    if "correspondent" in patch_payload:
+        resolved_correspondent = _label_or_none(
+            patch_payload.get("correspondent"),
+            correspondent_id_to_label,
+        )
+        rows.append(
+            (
+                "Korrespondent",
+                _label_or_none(document.get("correspondent"), correspondent_id_to_label),
+                resolved_correspondent,
+            )
+        )
+    if "storage_path" in patch_payload:
+        resolved_storage_path = _label_or_none(
+            patch_payload.get("storage_path"),
+            storage_path_id_to_label,
+        )
+        rows.append(
+            (
+                "Speicherpfad",
+                _label_or_none(document.get("storage_path"), storage_path_id_to_label),
+                resolved_storage_path,
+            )
+        )
+    if "tags" in patch_payload:
+        rows.append(
+            (
+                "Tags",
+                _tags_to_label(document.get("tags", [])),
+                _tags_to_label(patch_payload.get("tags", [])),
+            )
+        )
+    if "created" in patch_payload:
+        current_created = normalize_iso_date(str(document.get("created") or ""))
+        rows.append(
+            (
+                "Dokumentdatum",
+                current_created or "keiner",
+                str(patch_payload.get("created") or "keiner"),
+            )
+        )
+    if note_will_be_added:
+        rows.append(("Notiz", "bestehend", "KI-Notiz wird ergänzt"))
+
+    if not rows:
+        LOGGER.info("DRY-RUN Dokument %s | %s | Keine Feldänderung erkannt.", doc_id, title)
+        return
+
+    field_width = 14
+    old_width = 42
+    new_width = 42
+
+    def _shorten(text: str, width: int) -> str:
+        if len(text) <= width:
+            return text
+        return text[: width - 3] + "..."
+
+    header = f"{'Feld':<{field_width}} | {'Aktuell':<{old_width}} | {'Neu':<{new_width}}"
+    sep = "-" * len(header)
+
+    LOGGER.info("DRY-RUN Dokument %s | Titel: %s | Confidence: %s", doc_id, title, confidence)
+    LOGGER.info(sep)
+    LOGGER.info(header)
+    LOGGER.info(sep)
+    for field, old_value, new_value in rows:
+        LOGGER.info(
+            f"{_shorten(field, field_width):<{field_width}} | "
+            f"{_shorten(old_value, old_width):<{old_width}} | "
+            f"{_shorten(new_value, new_width):<{new_width}}"
+        )
+    LOGGER.info(sep)
+    LOGGER.info("DRY-RUN Patch an Paperless: %s", patch_payload)
 
 
 def should_process_document(document: Dict[str, Any]) -> bool:
@@ -412,35 +826,83 @@ def should_process_document(document: Dict[str, Any]) -> bool:
     return not (has_type and has_tags)
 
 
-def process_documents(config: AppConfig) -> None:
+def process_documents(config: AppConfig, process_all_documents: bool = False) -> None:
     """Hauptablauf: Laden, KI-Klassifizieren, validieren, patchen."""
 
     client = PaperlessClient(config)
     classifier = AiClassifier(config)
 
+    LOGGER.info("Prüfe KI-Token-Budget...")
+    classifier.preflight_token_budget()
+    LOGGER.info("Prüfe Paperless-API Erreichbarkeit...")
+    client.preflight_check()
     LOGGER.info("Lade Metadaten-Mappings aus Paperless...")
     tags_map = client.list_named_entities("/api/tags/")
     doc_types_map = client.list_named_entities("/api/document_types/")
     correspondents_map = client.list_named_entities("/api/correspondents/")
     storage_paths_map = client.list_named_entities("/api/storage_paths/")
+    classifier.set_known_entities(
+        document_types=list(doc_types_map.keys()),
+        correspondents=list(correspondents_map.keys()),
+        storage_paths=list(storage_paths_map.keys()),
+    )
+    tag_id_to_label = {entity_id: label for label, entity_id in tags_map.items()}
+    doc_type_id_to_label = {entity_id: label for label, entity_id in doc_types_map.items()}
+    correspondent_id_to_label = {entity_id: label for label, entity_id in correspondents_map.items()}
+    storage_path_id_to_label = {entity_id: label for label, entity_id in storage_paths_map.items()}
 
     scanned = 0
     updated = 0
     skipped = 0
     failed = 0
+    can_create_entities = config.create_missing_entities and not config.dry_run
+    ki_tag_id = ensure_entity_id(
+        client,
+        tags_map,
+        "KI",
+        "/api/tags/",
+        can_create_entities,
+    )
+    remove_neu_tag_id = tags_map.get("#neu")
+    only_tag_id: Optional[int] = None
+    only_tag_name = config.process_only_tag.strip()
+    doc_query_params: Dict[str, Any] = {}
+    if process_all_documents:
+        LOGGER.info(
+            "All-Documents Modus aktiv: Tag-Filter und Standard-Skip-Regeln werden ignoriert."
+        )
+    elif only_tag_name:
+        only_tag_id = tags_map.get(only_tag_name.lower())
+        if only_tag_id is None:
+            LOGGER.error(
+                "Filter-Tag '%s' wurde in Paperless nicht gefunden. "
+                "Prüfe Schreibweise oder lege den Tag an.",
+                only_tag_name,
+            )
+            return
+        LOGGER.info("Tag-Filter aktiv: Verarbeite nur Dokumente mit Tag '%s'.", only_tag_name)
+        # Direkter API-Filter: lädt nur passende Dokumente.
+        doc_query_params["tags__id"] = only_tag_id
 
-    for document in client.iter_documents(config.max_documents):
+    for document in client.iter_documents(config.max_documents, extra_params=doc_query_params):
         scanned += 1
         doc_id = document.get("id")
         title = document.get("title", "<ohne Titel>")
+        doc_tags = {int(tag_id) for tag_id in document.get("tags", [])}
 
-        if not should_process_document(document):
+        # Defensive Prüfung bleibt aktiv, falls API-Filter je nach Version anders reagiert.
+        if not process_all_documents and only_tag_id is not None and only_tag_id not in doc_tags:
+            skipped += 1
+            continue
+
+        if not process_all_documents and only_tag_id is None and not should_process_document(document):
             LOGGER.debug("Skip Dokument %s (%s): bereits klassifiziert", doc_id, title)
             skipped += 1
             continue
 
         try:
             prediction = classifier.classify(document)
+            prediction = sanitize_prediction(prediction, storage_paths_map)
             confidence = float(prediction["confidence"])
             if confidence < config.confidence_threshold:
                 LOGGER.info(
@@ -460,7 +922,8 @@ def process_documents(config: AppConfig) -> None:
                 doc_types_map=doc_types_map,
                 correspondents_map=correspondents_map,
                 storage_paths_map=storage_paths_map,
-                create_missing_entities=config.create_missing_entities,
+                # Im Dry-Run niemals neue Entities anlegen.
+                create_missing_entities=can_create_entities,
             )
 
             if not patch_payload:
@@ -468,10 +931,57 @@ def process_documents(config: AppConfig) -> None:
                 skipped += 1
                 continue
 
+            # Erzwinge globale Tag-Regeln auf Basis des aktuellen Dokuments.
+            apply_forced_tag_rules(
+                patch_payload=patch_payload,
+                current_tag_ids=doc_tags,
+                ki_tag_id=ki_tag_id,
+                remove_neu_tag_id=remove_neu_tag_id,
+            )
+
+            # Nach möglichen Neuanlagen Mappings aktualisieren, damit Logs/Notizen
+            # die finalen Namen statt nur IDs anzeigen.
+            tag_id_to_label = {entity_id: label for label, entity_id in tags_map.items()}
+            doc_type_id_to_label = {entity_id: label for label, entity_id in doc_types_map.items()}
+            correspondent_id_to_label = {entity_id: label for label, entity_id in correspondents_map.items()}
+            storage_path_id_to_label = {entity_id: label for label, entity_id in storage_paths_map.items()}
+
+            if config.enable_ai_notes:
+                note_entry = build_ai_note_entry(
+                    prediction=prediction,
+                    patch_payload=patch_payload,
+                    doc_type_id_to_label=doc_type_id_to_label,
+                    correspondent_id_to_label=correspondent_id_to_label,
+                    storage_path_id_to_label=storage_path_id_to_label,
+                    tag_id_to_label=tag_id_to_label,
+                    max_chars=config.ai_notes_max_chars,
+                    include_summary=config.enable_ai_note_summary,
+                    summary_max_chars=config.ai_note_summary_max_chars,
+                )
+
             if config.dry_run:
-                LOGGER.info("DRY-RUN Dokument %s (%s) -> %s", doc_id, title, patch_payload)
+                log_dry_run_change(
+                    document=document,
+                    prediction=prediction,
+                    patch_payload=patch_payload,
+                    note_will_be_added=config.enable_ai_notes,
+                    tag_id_to_label=tag_id_to_label,
+                    doc_type_id_to_label=doc_type_id_to_label,
+                    correspondent_id_to_label=correspondent_id_to_label,
+                    storage_path_id_to_label=storage_path_id_to_label,
+                )
             else:
                 client.update_document(int(doc_id), patch_payload)
+                if config.enable_ai_notes:
+                    try:
+                        client.add_document_note(int(doc_id), note_entry)
+                    except PaperlessApiError as note_exc:
+                        LOGGER.error(
+                            "Dokument %s (%s) aktualisiert, aber KI-Notiz konnte nicht gespeichert werden: %s",
+                            doc_id,
+                            title,
+                            note_exc,
+                        )
                 LOGGER.info("Aktualisiert Dokument %s (%s)", doc_id, title)
 
             updated += 1
@@ -500,6 +1010,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Keine Änderungen schreiben, nur anzeigen",
     )
+    parser.add_argument(
+        "--all-documents",
+        action="store_true",
+        help="Einmal alle Dokumente durchsuchen (ignoriert Tag-Filter und Standard-Skip-Regeln)",
+    )
     return parser.parse_args()
 
 
@@ -520,7 +1035,7 @@ def main() -> int:
     LOGGER.info("Starte Paperless KI Sorter | dry_run=%s", config.dry_run)
 
     try:
-        process_documents(config)
+        process_documents(config, process_all_documents=args.all_documents)
     except Exception as exc:  # Breiter Catch für sauberen Exit + logischen Fehlercode.
         LOGGER.exception("Unerwarteter Fehler im Hauptablauf: %s", exc)
         return 1

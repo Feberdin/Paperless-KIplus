@@ -32,3 +32,87 @@ request_timeout_seconds: 30
 
 # DEBUG, INFO, WARNING, ERROR
 log_level: "INFO"
+
+# Optionaler Vorab-Check auf verfügbare API-Tokens über RateLimit-Header.
+# Hinweis: Das ist NICHT das ChatGPT-Web-Abo-Kontingent.
+enable_token_precheck: false
+
+# Mindestanzahl verbleibender Tokens laut x-ratelimit-remaining-tokens Header.
+# Nur relevant, wenn enable_token_precheck=true.
+min_remaining_tokens: 1500
+
+# Optional: Zusätzliche Regeln für die KI-Klassifizierung (mehrzeilig möglich).
+# Diese Regeln werden als Ergänzung zum Standard-Prompt genutzt.
+custom_prompt_instructions: |
+  Bitte lege so wenig neue Tags an wie möglich.
+  Nutze bestehende Speicherpfade bevorzugt.
+
+basis_config:
+  people:
+    owner:
+      full_name: "Max Mustermann"
+      aliases: []
+      address:
+        street: "Musterstraße 1"
+        postal_code: "12345"
+        city: "Musterstadt"
+      contact:
+        mobile: "0123456789"
+      tax:
+        tax_number: ""
+    household:
+      children: []
+      relatives: []
+    contacts: []
+  organizations:
+    employer_current:
+      name: ""
+      preferred_storage_path: ""
+    employer_former:
+      name: ""
+      locations: []
+      preferred_storage_path: ""
+      only_if_clear_business_context: true
+    clubs: []
+  identifiers:
+    meters: []
+  classification_rules:
+    document_type:
+      invoice_addressed_to_owner: "Rechnung"
+      legal_documents_force_type:
+        type: "Rechtsanwalt"
+        trigger_terms: ["Rechtsanwalt", "Gericht", "Klage", "Beschluss", "Einspruch", "Aktenzeichen"]
+    correspondent:
+      normalize:
+        - if_contains_any: ["Hotel", "Pension", "Unterkunft", "Übernachtung"]
+          set_to: "Hotel"
+    storage_path:
+      mappings: []
+      default: "Privat"
+    tags:
+      add_year_tag_for_invoices: true
+      add_customer_number_tag_for_contracts: true
+      legal_case_tag_prefers_case_reference: true
+      keep_sparse: true
+    date:
+      prefer_document_date_over_upload_date: true
+  guardrails:
+    forbidden_path_assignments: []
+
+# Optional: Nur Dokumente mit diesem Tag verarbeiten (z. B. "#NEU").
+# Leer lassen = kein Tag-Filter.
+process_only_tag: ""
+
+# Wenn true, werden vorhandene Dokumenttypen/Korrespondenten/Speicherpfade
+# als Kontext an die KI übergeben, damit bestehende Werte bevorzugt werden.
+include_existing_entities_in_prompt: true
+
+# KI-Notizen in Paperless-Notizfeld aktivieren
+enable_ai_notes: true
+
+# Maximale Länge der KI-Begründung in der Notiz
+ai_notes_max_chars: 800
+
+# Optional: Kurz-Zusammenfassung in KI-Notizen
+enable_ai_note_summary: true
+ai_note_summary_max_chars: 220
