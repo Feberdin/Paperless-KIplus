@@ -73,7 +73,7 @@ class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_MANAGED_CONFIG_ENABLED,
                     default=DEFAULT_MANAGED_CONFIG_ENABLED,
                 ): BooleanSelector(),
-                vol.Required(
+                vol.Optional(
                     CONF_MANAGED_CONFIG_YAML,
                     default=DEFAULT_MANAGED_CONFIG_YAML,
                 ): TextSelector(
@@ -178,7 +178,7 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
                         data.get(CONF_MANAGED_CONFIG_ENABLED, DEFAULT_MANAGED_CONFIG_ENABLED),
                     ),
                 ): BooleanSelector(),
-                vol.Required(
+                vol.Optional(
                     CONF_MANAGED_CONFIG_YAML,
                     default=options.get(
                         CONF_MANAGED_CONFIG_YAML,

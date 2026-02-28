@@ -167,6 +167,11 @@ class PaperlessRunner:
                 self.last_message = f"runner exception: {exc}"
                 self.last_exit_code = None
                 self.last_stderr_tail = str(exc)
+                if isinstance(exc, FileNotFoundError):
+                    self.last_message = (
+                        "runner exception: Datei/Befehl nicht gefunden. "
+                        "Prüfe 'Befehl' und 'Arbeitsverzeichnis' in der Integration."
+                    )
                 _LOGGER.exception("Paperless KIplus run crashed: %s", exc)
             finally:
                 self._refresh_metrics_from_file()

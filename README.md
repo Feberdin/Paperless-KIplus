@@ -91,8 +91,8 @@ In Home Assistant:
 - `Einstellungen -> Geräte & Dienste -> Integration hinzufügen`
 - Suche nach `Paperless KIplus Runner`
 - Trage ein:
-  - `Command` (z. B. `.venv/bin/python src/paperless_ai_sorter.py`)
-  - `Working Directory` (Pfad zum Repo auf deinem HA-Host)
+  - `Command` (Standard funktioniert direkt in HA: `python3 /config/custom_components/paperless_kiplus/paperless_ai_sorter.py`)
+  - `Working Directory` (Standard: `/config`)
   - `YAML Config File` (z. B. `config.yaml` oder absoluter Pfad)
   - `YAML in Home Assistant verwalten` (aktivieren für native Konfiguration im UI)
   - `Verwalteter config.yaml-Inhalt` (kompletter YAML-Text)
@@ -130,6 +130,7 @@ Hinweis:
 - Mit Service-Option `force: true` kannst du den Cooldown ignorieren.
 - Mit `config_file`, `dry_run`, `all_documents`, `max_documents` kannst du einen Lauf aus HA gezielt überschreiben, ohne den Basisbefehl zu ändern.
 - Wenn `YAML in Home Assistant verwalten` aktiv ist, schreibt die Integration vor jedem Lauf den YAML-Text aus dem UI in die konfigurierte `config_file`.
+- In HACS wird nur `custom_components/...` installiert. Der `src/`-Ordner aus dem Git-Repo ist in Home Assistant daher nicht vorhanden.
 
 ## ⚙️ Konfiguration
 

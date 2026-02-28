@@ -15,8 +15,8 @@ CONF_MAX_DOCUMENTS = "max_documents"
 CONF_MANAGED_CONFIG_ENABLED = "managed_config_enabled"
 CONF_MANAGED_CONFIG_YAML = "managed_config_yaml"
 
-DEFAULT_COMMAND = "python src/paperless_ai_sorter.py"
-DEFAULT_WORKDIR = "/config/paperless-kiplus"
+DEFAULT_COMMAND = "python3 /config/custom_components/paperless_kiplus/paperless_ai_sorter.py"
+DEFAULT_WORKDIR = "/config"
 DEFAULT_COOLDOWN_SECONDS = 300
 DEFAULT_METRICS_FILE = "run_metrics.json"
 DEFAULT_CONFIG_FILE = "config.yaml"
