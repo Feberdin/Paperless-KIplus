@@ -25,6 +25,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             PaperlessRunnerStatusSensor(entry.entry_id, runner),
+            PaperlessRunnerRunLogSensor(entry.entry_id, runner),
             PaperlessRunnerLastTokensSensor(entry.entry_id, runner),
             PaperlessRunnerLastCostSensor(entry.entry_id, runner),
             PaperlessRunnerTotalTokensSensor(entry.entry_id, runner),
@@ -90,10 +91,52 @@ class PaperlessRunnerStatusSensor(SensorEntity):
             "metrics_file": self._runner.metrics_file,
             "stdout_tail": self._runner.last_stdout_tail,
             "stderr_tail": self._runner.last_stderr_tail,
+            "summary_line": self._runner.last_summary_line,
+            "cost_line": self._runner.last_cost_line,
             "last_run_total_tokens": self._runner.last_run_total_tokens,
             "last_run_cost_eur": round(self._runner.last_run_cost_eur, 6),
             "total_tokens": self._runner.total_tokens,
             "total_cost_eur": round(self._runner.total_cost_eur, 6),
+        }
+
+
+class PaperlessRunnerRunLogSensor(SensorEntity):
+    """Expose the latest run log and summary as dedicated entity attributes."""
+
+    _attr_icon = "mdi:text-box-search-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        self._entry_id = entry_id
+        self._runner = runner
+        self._attr_unique_id = f"{entry_id}_run_log"
+        self._attr_name = "Paperless KIplus Letztes Protokoll"
+
+    async def async_added_to_hass(self) -> None:
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                SIGNAL_STATUS_UPDATED,
+                self.async_write_ha_state,
+            )
+        )
+
+    @property
+    def native_value(self) -> str:
+        """Use the current run status as compact state value."""
+
+        return self._runner.last_status
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | None]:
+        """Detailed log payload for troubleshooting and post-run review."""
+
+        return {
+            "last_message": self._runner.last_message,
+            "summary_line": self._runner.last_summary_line or None,
+            "cost_line": self._runner.last_cost_line or None,
+            "log_text": self._runner.last_log_combined or None,
+            "stdout_tail": self._runner.last_stdout_tail or None,
+            "stderr_tail": self._runner.last_stderr_tail or None,
         }
 
 

@@ -73,6 +73,9 @@ class PaperlessRunner:
         self.last_message: str = "not started"
         self.last_stdout_tail: str = ""
         self.last_stderr_tail: str = ""
+        self.last_summary_line: str = ""
+        self.last_cost_line: str = ""
+        self.last_log_combined: str = ""
         self.last_run_total_tokens: int = 0
         self.last_run_cost_eur: float = 0.0
         self.total_tokens: int = 0
@@ -151,8 +154,17 @@ class PaperlessRunner:
                 )
                 stdout, stderr = await process.communicate()
 
-                self.last_stdout_tail = stdout.decode("utf-8", errors="replace")[-4000:]
-                self.last_stderr_tail = stderr.decode("utf-8", errors="replace")[-4000:]
+                self.last_stdout_tail = stdout.decode("utf-8", errors="replace")[-20000:]
+                self.last_stderr_tail = stderr.decode("utf-8", errors="replace")[-20000:]
+                self.last_summary_line = self._extract_last_line(
+                    self.last_stdout_tail, "Fertig. Gescannt="
+                )
+                self.last_cost_line = self._extract_last_line(
+                    self.last_stdout_tail, "Kosten/Token:"
+                )
+                self.last_log_combined = (
+                    f"[STDOUT]\n{self.last_stdout_tail.strip()}\n\n[STDERR]\n{self.last_stderr_tail.strip()}"
+                ).strip()
                 self.last_exit_code = process.returncode
 
                 if process.returncode == 0:
@@ -224,6 +236,15 @@ class PaperlessRunner:
             self.last_metrics_updated = datetime.now(UTC)
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             _LOGGER.warning("Could not parse metrics file '%s': %s", path, exc)
+
+    @staticmethod
+    def _extract_last_line(text: str, marker: str) -> str:
+        """Extract the most recent line containing a marker from a log text."""
+
+        for line in reversed(text.splitlines()):
+            if marker in line:
+                return line.strip()
+        return ""
 
     async def _write_managed_config(self, config_file: str) -> None:
         """Write integration-managed YAML config to disk before script execution.

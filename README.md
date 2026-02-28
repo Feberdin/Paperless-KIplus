@@ -307,6 +307,7 @@ In Home Assistant stehen zusätzlich Sensoren bereit:
 - `Paperless KIplus Letzter Lauf Kosten`
 - `Paperless KIplus Gesamt Tokens`
 - `Paperless KIplus Gesamtkosten`
+- `Paperless KIplus Letztes Protokoll` (enthält `summary_line`, `cost_line`, `log_text`)
 
 Hinweis:
 
