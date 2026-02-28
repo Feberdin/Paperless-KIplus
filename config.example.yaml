@@ -1,0 +1,34 @@
+# Basis-URL deiner Paperless-ngx Instanz (ohne abschließenden Slash)
+paperless_url: "http://localhost:8000"
+
+# API-Token aus Paperless (Benutzerprofil -> API Tokens)
+paperless_token: "PASTE_PAPERLESS_TOKEN"
+
+# API-Key für OpenAI-kompatiblen Anbieter (z. B. OpenAI, OpenRouter, Local Gateway)
+ai_api_key: "PASTE_AI_KEY"
+
+# Modellname beim jeweiligen Anbieter
+ai_model: "gpt-4.1-mini"
+
+# OpenAI-kompatible Basis-URL
+# OpenAI: https://api.openai.com/v1
+# Lokale Gateways sind ebenfalls möglich
+ai_base_url: "https://api.openai.com/v1"
+
+# Maximale Anzahl Dokumente pro Lauf
+max_documents: 25
+
+# true = nur anzeigen, nichts in Paperless zurückschreiben
+dry_run: true
+
+# Falls true: fehlende Tags/Typen/Korrespondenten/Ablagepfade automatisch anlegen
+create_missing_entities: true
+
+# Mindest-Confidence der KI (0-1), darunter wird übersprungen
+confidence_threshold: 0.70
+
+# API Timeout für Paperless und KI-Requests
+request_timeout_seconds: 30
+
+# DEBUG, INFO, WARNING, ERROR
+log_level: "INFO"
