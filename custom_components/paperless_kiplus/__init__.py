@@ -28,6 +28,8 @@ from .const import (
     CONF_MANAGED_CONFIG_ENABLED,
     CONF_MANAGED_CONFIG_YAML,
     CONF_METRICS_FILE,
+    CONF_INPUT_COST_PER_1K_TOKENS_EUR,
+    CONF_OUTPUT_COST_PER_1K_TOKENS_EUR,
     CONF_WORKDIR,
     DEFAULT_ALL_DOCUMENTS,
     DEFAULT_COMMAND,
@@ -38,6 +40,8 @@ from .const import (
     DEFAULT_MANAGED_CONFIG_ENABLED,
     DEFAULT_MANAGED_CONFIG_YAML,
     DEFAULT_METRICS_FILE,
+    DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR,
+    DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR,
     DEFAULT_WORKDIR,
     DOMAIN,
     SERVICE_RUN,
@@ -100,6 +104,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             data.get(CONF_MANAGED_CONFIG_YAML, DEFAULT_MANAGED_CONFIG_YAML),
         )
     )
+    input_cost_per_1k_tokens_eur = float(
+        options.get(
+            CONF_INPUT_COST_PER_1K_TOKENS_EUR,
+            data.get(CONF_INPUT_COST_PER_1K_TOKENS_EUR, DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR),
+        )
+    )
+    output_cost_per_1k_tokens_eur = float(
+        options.get(
+            CONF_OUTPUT_COST_PER_1K_TOKENS_EUR,
+            data.get(CONF_OUTPUT_COST_PER_1K_TOKENS_EUR, DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR),
+        )
+    )
 
     runner = PaperlessRunner(
         hass,
@@ -113,6 +129,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         max_documents=max_documents,
         managed_config_enabled=managed_config_enabled,
         managed_config_yaml=managed_config_yaml,
+        input_cost_per_1k_tokens_eur=input_cost_per_1k_tokens_eur,
+        output_cost_per_1k_tokens_eur=output_cost_per_1k_tokens_eur,
     )
     hass.data[DOMAIN][entry.entry_id] = runner
 

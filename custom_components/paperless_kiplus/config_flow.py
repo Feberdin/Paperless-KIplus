@@ -28,6 +28,8 @@ from .const import (
     CONF_MANAGED_CONFIG_ENABLED,
     CONF_MANAGED_CONFIG_YAML,
     CONF_METRICS_FILE,
+    CONF_INPUT_COST_PER_1K_TOKENS_EUR,
+    CONF_OUTPUT_COST_PER_1K_TOKENS_EUR,
     CONF_WORKDIR,
     DEFAULT_ALL_DOCUMENTS,
     DEFAULT_COMMAND,
@@ -38,6 +40,8 @@ from .const import (
     DEFAULT_MANAGED_CONFIG_ENABLED,
     DEFAULT_MANAGED_CONFIG_YAML,
     DEFAULT_METRICS_FILE,
+    DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR,
+    DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR,
     DEFAULT_WORKDIR,
     DOMAIN,
 )
@@ -65,6 +69,28 @@ class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_METRICS_FILE, default=DEFAULT_METRICS_FILE): TextSelector(),
                 vol.Required(CONF_DRY_RUN, default=DEFAULT_DRY_RUN): BooleanSelector(),
                 vol.Required(CONF_ALL_DOCUMENTS, default=DEFAULT_ALL_DOCUMENTS): BooleanSelector(),
+                vol.Required(
+                    CONF_INPUT_COST_PER_1K_TOKENS_EUR,
+                    default=DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR,
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0,
+                        max=10,
+                        step=0.000001,
+                        mode="box",
+                    )
+                ),
+                vol.Required(
+                    CONF_OUTPUT_COST_PER_1K_TOKENS_EUR,
+                    default=DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR,
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0,
+                        max=10,
+                        step=0.000001,
+                        mode="box",
+                    )
+                ),
                 vol.Required(CONF_MAX_DOCUMENTS, default=DEFAULT_MAX_DOCUMENTS): NumberSelector(
                     NumberSelectorConfig(
                         min=0,
@@ -164,6 +190,40 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
                         data.get(CONF_ALL_DOCUMENTS, DEFAULT_ALL_DOCUMENTS),
                     ),
                 ): BooleanSelector(),
+                vol.Required(
+                    CONF_INPUT_COST_PER_1K_TOKENS_EUR,
+                    default=options.get(
+                        CONF_INPUT_COST_PER_1K_TOKENS_EUR,
+                        data.get(
+                            CONF_INPUT_COST_PER_1K_TOKENS_EUR,
+                            DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR,
+                        ),
+                    ),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0,
+                        max=10,
+                        step=0.000001,
+                        mode="box",
+                    )
+                ),
+                vol.Required(
+                    CONF_OUTPUT_COST_PER_1K_TOKENS_EUR,
+                    default=options.get(
+                        CONF_OUTPUT_COST_PER_1K_TOKENS_EUR,
+                        data.get(
+                            CONF_OUTPUT_COST_PER_1K_TOKENS_EUR,
+                            DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR,
+                        ),
+                    ),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0,
+                        max=10,
+                        step=0.000001,
+                        mode="box",
+                    )
+                ),
                 vol.Required(
                     CONF_MAX_DOCUMENTS,
                     default=options.get(

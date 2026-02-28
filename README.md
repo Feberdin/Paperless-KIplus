@@ -98,6 +98,8 @@ In Home Assistant:
   - `Verwalteter config.yaml-Inhalt` (kompletter YAML-Text)
   - `Dry Run` (Standardverhalten in HA)
   - `All Documents` (Standardverhalten in HA)
+  - `Input-Kosten pro 1.000 Tokens (EUR)`
+  - `Output-Kosten pro 1.000 Tokens (EUR)`
   - `Max Documents` (`0` = YAML-Wert verwenden)
   - `Cooldown`
 
@@ -305,6 +307,12 @@ In Home Assistant stehen zusätzlich Sensoren bereit:
 - `Paperless KIplus Letzter Lauf Kosten`
 - `Paperless KIplus Gesamt Tokens`
 - `Paperless KIplus Gesamtkosten`
+
+Hinweis:
+
+- Die Tokenpreis-Felder der Integration überschreiben bei aktivierter „YAML in Home Assistant verwalten“-Option automatisch die beiden YAML-Werte:
+  - `input_cost_per_1k_tokens_eur`
+  - `output_cost_per_1k_tokens_eur`
 
 ## 🔒 Sicherheit
 

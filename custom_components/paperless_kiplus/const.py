@@ -14,6 +14,8 @@ CONF_ALL_DOCUMENTS = "all_documents"
 CONF_MAX_DOCUMENTS = "max_documents"
 CONF_MANAGED_CONFIG_ENABLED = "managed_config_enabled"
 CONF_MANAGED_CONFIG_YAML = "managed_config_yaml"
+CONF_INPUT_COST_PER_1K_TOKENS_EUR = "input_cost_per_1k_tokens_eur"
+CONF_OUTPUT_COST_PER_1K_TOKENS_EUR = "output_cost_per_1k_tokens_eur"
 
 DEFAULT_COMMAND = "python3 /config/custom_components/paperless_kiplus/paperless_ai_sorter.py"
 DEFAULT_WORKDIR = "/config"
@@ -25,6 +27,8 @@ DEFAULT_ALL_DOCUMENTS = False
 DEFAULT_MAX_DOCUMENTS = 0
 DEFAULT_MANAGED_CONFIG_ENABLED = False
 DEFAULT_MANAGED_CONFIG_YAML = ""
+DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR = 0.0
+DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR = 0.0
 
 SERVICE_RUN = "run"
 

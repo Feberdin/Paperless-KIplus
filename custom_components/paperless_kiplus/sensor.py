@@ -85,6 +85,8 @@ class PaperlessRunnerStatusSensor(SensorEntity):
             "default_max_documents": self._runner.default_max_documents,
             "managed_config_enabled": self._runner.managed_config_enabled,
             "managed_config_yaml_chars": len(self._runner.managed_config_yaml or ""),
+            "input_cost_per_1k_tokens_eur": self._runner.input_cost_per_1k_tokens_eur,
+            "output_cost_per_1k_tokens_eur": self._runner.output_cost_per_1k_tokens_eur,
             "metrics_file": self._runner.metrics_file,
             "stdout_tail": self._runner.last_stdout_tail,
             "stderr_tail": self._runner.last_stderr_tail,

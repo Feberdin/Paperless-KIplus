@@ -10,6 +10,7 @@ import logging
 from pathlib import Path
 import shlex
 from typing import Sequence
+import yaml
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
@@ -45,6 +46,8 @@ class PaperlessRunner:
         max_documents: int,
         managed_config_enabled: bool,
         managed_config_yaml: str,
+        input_cost_per_1k_tokens_eur: float,
+        output_cost_per_1k_tokens_eur: float,
     ) -> None:
         self.hass = hass
         self.command = command
@@ -57,6 +60,8 @@ class PaperlessRunner:
         self.default_max_documents = max_documents
         self.managed_config_enabled = managed_config_enabled
         self.managed_config_yaml = managed_config_yaml
+        self.input_cost_per_1k_tokens_eur = input_cost_per_1k_tokens_eur
+        self.output_cost_per_1k_tokens_eur = output_cost_per_1k_tokens_eur
 
         self._lock = asyncio.Lock()
         self.running = False
@@ -126,7 +131,7 @@ class PaperlessRunner:
                 )
 
                 if self.managed_config_enabled:
-                    self._write_managed_config(effective_config_file)
+                    await self._write_managed_config(effective_config_file)
 
                 args = self._build_command(
                     config_file=effective_config_file,
@@ -183,7 +188,7 @@ class PaperlessRunner:
                     )
                 _LOGGER.exception("Paperless KIplus run crashed: %s", exc)
             finally:
-                self._refresh_metrics_from_file()
+                await self._refresh_metrics_from_file()
                 self.running = False
                 self.last_finished = datetime.now(UTC)
                 self._notify()
@@ -195,7 +200,7 @@ class PaperlessRunner:
 
         async_dispatcher_send(self.hass, SIGNAL_STATUS_UPDATED)
 
-    def _refresh_metrics_from_file(self) -> None:
+    async def _refresh_metrics_from_file(self) -> None:
         """Load token/cost metrics from the configured JSON file."""
 
         path = Path(self.metrics_file)
@@ -206,7 +211,9 @@ class PaperlessRunner:
             return
 
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload = await self.hass.async_add_executor_job(
+                lambda: json.loads(path.read_text(encoding="utf-8"))
+            )
             last = payload.get("last_run") or {}
             totals = payload.get("totals") or {}
 
@@ -218,7 +225,7 @@ class PaperlessRunner:
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             _LOGGER.warning("Could not parse metrics file '%s': %s", path, exc)
 
-    def _write_managed_config(self, config_file: str) -> None:
+    async def _write_managed_config(self, config_file: str) -> None:
         """Write integration-managed YAML config to disk before script execution.
 
         Damit wird die Konfiguration nativ in Home Assistant gepflegt und
@@ -233,8 +240,20 @@ class PaperlessRunner:
         path = Path(config_file)
         if not path.is_absolute():
             path = Path(self.workdir) / path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.managed_config_yaml, encoding="utf-8")
+        raw_yaml = self.managed_config_yaml
+
+        def _write() -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            parsed = yaml.safe_load(raw_yaml) or {}
+            if isinstance(parsed, dict):
+                parsed["input_cost_per_1k_tokens_eur"] = float(self.input_cost_per_1k_tokens_eur)
+                parsed["output_cost_per_1k_tokens_eur"] = float(self.output_cost_per_1k_tokens_eur)
+                content = yaml.safe_dump(parsed, allow_unicode=True, sort_keys=False)
+            else:
+                content = raw_yaml
+            path.write_text(content, encoding="utf-8")
+
+        await self.hass.async_add_executor_job(_write)
 
     def _build_command(
         self,
