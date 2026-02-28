@@ -71,26 +71,12 @@ class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_ALL_DOCUMENTS, default=DEFAULT_ALL_DOCUMENTS): BooleanSelector(),
                 vol.Required(
                     CONF_INPUT_COST_PER_1K_TOKENS_EUR,
-                    default=DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR,
-                ): NumberSelector(
-                    NumberSelectorConfig(
-                        min=0,
-                        max=10,
-                        step=0.000001,
-                        mode="box",
-                    )
-                ),
+                    default=str(DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR),
+                ): TextSelector(),
                 vol.Required(
                     CONF_OUTPUT_COST_PER_1K_TOKENS_EUR,
-                    default=DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR,
-                ): NumberSelector(
-                    NumberSelectorConfig(
-                        min=0,
-                        max=10,
-                        step=0.000001,
-                        mode="box",
-                    )
-                ),
+                    default=str(DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR),
+                ): TextSelector(),
                 vol.Required(CONF_MAX_DOCUMENTS, default=DEFAULT_MAX_DOCUMENTS): NumberSelector(
                     NumberSelectorConfig(
                         min=0,
@@ -199,14 +185,7 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
                             DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR,
                         ),
                     ),
-                ): NumberSelector(
-                    NumberSelectorConfig(
-                        min=0,
-                        max=10,
-                        step=0.000001,
-                        mode="box",
-                    )
-                ),
+                ): TextSelector(),
                 vol.Required(
                     CONF_OUTPUT_COST_PER_1K_TOKENS_EUR,
                     default=options.get(
@@ -216,14 +195,7 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
                             DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR,
                         ),
                     ),
-                ): NumberSelector(
-                    NumberSelectorConfig(
-                        min=0,
-                        max=10,
-                        step=0.000001,
-                        mode="box",
-                    )
-                ),
+                ): TextSelector(),
                 vol.Required(
                     CONF_MAX_DOCUMENTS,
                     default=options.get(

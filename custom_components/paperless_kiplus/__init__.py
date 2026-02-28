@@ -52,6 +52,18 @@ _LOGGER = logging.getLogger(__name__)
 
 PLATFORMS = ["sensor", "binary_sensor"]
 
+
+def _as_float(value: Any, default: float) -> float:
+    """Convert option values robustly to float.
+
+    Options können je nach HA-Form als String oder Zahl gespeichert werden.
+    """
+
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
 RUN_SERVICE_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_FORCE, default=False): cv.boolean,
@@ -104,17 +116,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             data.get(CONF_MANAGED_CONFIG_YAML, DEFAULT_MANAGED_CONFIG_YAML),
         )
     )
-    input_cost_per_1k_tokens_eur = float(
+    input_cost_per_1k_tokens_eur = _as_float(
         options.get(
             CONF_INPUT_COST_PER_1K_TOKENS_EUR,
             data.get(CONF_INPUT_COST_PER_1K_TOKENS_EUR, DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR),
-        )
+        ),
+        DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR,
     )
-    output_cost_per_1k_tokens_eur = float(
+    output_cost_per_1k_tokens_eur = _as_float(
         options.get(
             CONF_OUTPUT_COST_PER_1K_TOKENS_EUR,
             data.get(CONF_OUTPUT_COST_PER_1K_TOKENS_EUR, DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR),
-        )
+        ),
+        DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR,
     )
 
     runner = PaperlessRunner(
