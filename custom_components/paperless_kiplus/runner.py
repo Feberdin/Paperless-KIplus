@@ -156,6 +156,15 @@ class PaperlessRunner:
                 else:
                     self.last_status = "error"
                     self.last_message = f"script failed with exit code {process.returncode}"
+                    # Bei Fehlern die Output-Tails aktiv loggen, damit
+                    # Konfigurationsprobleme (z. B. [CONFIG-ERROR]) direkt
+                    # im Home-Assistant-Log sichtbar sind.
+                    _LOGGER.error(
+                        "Paperless KIplus run failed | exit_code=%s | stdout_tail=%s | stderr_tail=%s",
+                        process.returncode,
+                        self.last_stdout_tail.strip() or "<empty>",
+                        self.last_stderr_tail.strip() or "<empty>",
+                    )
 
                 _LOGGER.info(
                     "Paperless KIplus run finished | status=%s exit_code=%s",
