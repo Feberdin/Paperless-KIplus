@@ -156,11 +156,12 @@ class PaperlessRunner:
 
                 self.last_stdout_tail = stdout.decode("utf-8", errors="replace")[-20000:]
                 self.last_stderr_tail = stderr.decode("utf-8", errors="replace")[-20000:]
+                combined_tail = f"{self.last_stdout_tail}\n{self.last_stderr_tail}"
                 self.last_summary_line = self._extract_last_line(
-                    self.last_stdout_tail, "Fertig. Gescannt="
+                    combined_tail, "Fertig. Gescannt="
                 )
                 self.last_cost_line = self._extract_last_line(
-                    self.last_stdout_tail, "Kosten/Token:"
+                    combined_tail, "Kosten/Token:"
                 )
                 self.last_log_combined = (
                     f"[STDOUT]\n{self.last_stdout_tail.strip()}\n\n[STDERR]\n{self.last_stderr_tail.strip()}"

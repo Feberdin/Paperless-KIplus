@@ -277,9 +277,14 @@ class PaperlessClient:
     def create_entity(self, path: str, name: str) -> int:
         """Erzeugt ein Metadaten-Objekt in Paperless und gibt dessen ID zurück."""
         if path == "/api/storage_paths/":
-            # Paperless-Versionen unterscheiden sich: manche erwarten `path`, andere `name`.
+            # Paperless-Versionen unterscheiden sich: manche erwarten `path`,
+            # manche `name`, manche beide Felder gleichzeitig.
             last_exc: Optional[Exception] = None
-            for payload in ({"path": name}, {"name": name}):
+            for payload in (
+                {"name": name, "path": name},
+                {"path": name},
+                {"name": name},
+            ):
                 try:
                     created = self._request("POST", path, payload=payload, retries=1)
                     created_id = created.get("id")
