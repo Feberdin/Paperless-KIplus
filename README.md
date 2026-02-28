@@ -22,6 +22,9 @@ KI-gestützte Klassifizierung für **Paperless-ngx** mit Fokus auf nachvollziehb
   - Änderungsübersicht
 - Umfangreiche Logs + Retry/Backoff
 - `--dry-run` mit Feld-Diff-Tabelle (`Aktuell -> Neu`)
+- Automatische Endzusammenfassung:
+  - Neu angelegte Entitäten (Tags, Korrespondenten, Dokumenttypen, Speicherpfade)
+  - Detaillierte Fehlerliste pro Dokument
 
 ## 🗂️ Projektstruktur
 

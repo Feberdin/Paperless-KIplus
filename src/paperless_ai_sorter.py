@@ -526,6 +526,7 @@ def ensure_entity_id(
     name: Optional[str],
     endpoint: str,
     create_missing: bool,
+    created_entities: Optional[Dict[str, List[str]]] = None,
 ) -> Optional[int]:
     """Löst Namen auf eine ID auf und legt Entity optional an.
 
@@ -549,6 +550,8 @@ def ensure_entity_id(
     created_id = client.create_entity(endpoint, name.strip())
     mapping[key] = created_id
     LOGGER.info("Neue Entity angelegt: %s -> ID %s (%s)", name, created_id, endpoint)
+    if created_entities is not None:
+        created_entities.setdefault(endpoint, []).append(name.strip())
     return created_id
 
 
@@ -560,6 +563,7 @@ def build_patch_payload(
     correspondents_map: Dict[str, int],
     storage_paths_map: Dict[str, int],
     create_missing_entities: bool,
+    created_entities: Optional[Dict[str, List[str]]] = None,
 ) -> Dict[str, Any]:
     """Konvertiert KI-Output in ein valides PATCH-Payload für Paperless."""
 
@@ -569,6 +573,7 @@ def build_patch_payload(
         prediction.get("document_type"),
         "/api/document_types/",
         create_missing_entities,
+        created_entities,
     )
     correspondent_id = ensure_entity_id(
         client,
@@ -576,6 +581,7 @@ def build_patch_payload(
         prediction.get("correspondent"),
         "/api/correspondents/",
         create_missing_entities,
+        created_entities,
     )
     storage_path_id = ensure_entity_id(
         client,
@@ -583,6 +589,7 @@ def build_patch_payload(
         prediction.get("storage_path"),
         "/api/storage_paths/",
         create_missing_entities,
+        created_entities,
     )
 
     tag_ids: List[int] = []
@@ -593,6 +600,7 @@ def build_patch_payload(
             str(tag_name),
             "/api/tags/",
             create_missing_entities,
+            created_entities,
         )
         if tag_id is not None:
             tag_ids.append(tag_id)
@@ -814,6 +822,44 @@ def log_dry_run_change(
     LOGGER.info("DRY-RUN Patch an Paperless: %s", patch_payload)
 
 
+def log_run_details(
+    *,
+    created_entities: Dict[str, List[str]],
+    error_details: List[Dict[str, Any]],
+) -> None:
+    """Gibt am Laufende eine kompakte Übersicht zu Neu-Anlagen und Fehlern aus."""
+
+    endpoint_labels = {
+        "/api/correspondents/": "Korrespondent neu erstellt",
+        "/api/document_types/": "Dokumenttyp neu erstellt",
+        "/api/storage_paths/": "Speicherpfad neu erstellt",
+        "/api/tags/": "Tag neu erstellt",
+    }
+
+    LOGGER.info("----- Zusammenfassung: Neu angelegte Entitäten -----")
+    for endpoint, label in endpoint_labels.items():
+        entries = sorted(set(created_entities.get(endpoint, [])))
+        if entries:
+            LOGGER.info("%s: %s", label, ", ".join(entries))
+        else:
+            LOGGER.info("%s: keine", label)
+
+    LOGGER.info("----- Zusammenfassung: Fehlerdetails -----")
+    if not error_details:
+        LOGGER.info("Fehlerdetails: keine")
+        return
+
+    for idx, detail in enumerate(error_details, start=1):
+        LOGGER.error(
+            "[Fehler %s] Dokument %s (%s) | Typ=%s | Meldung=%s",
+            idx,
+            detail.get("id"),
+            detail.get("title"),
+            detail.get("error_type"),
+            detail.get("message"),
+        )
+
+
 def should_process_document(document: Dict[str, Any]) -> bool:
     """Definiert, welche Dokumente verarbeitet werden sollen.
 
@@ -855,6 +901,8 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     updated = 0
     skipped = 0
     failed = 0
+    created_entities: Dict[str, List[str]] = {}
+    error_details: List[Dict[str, Any]] = []
     can_create_entities = config.create_missing_entities and not config.dry_run
     ki_tag_id = ensure_entity_id(
         client,
@@ -862,6 +910,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         "KI",
         "/api/tags/",
         can_create_entities,
+        created_entities,
     )
     remove_neu_tag_id = tags_map.get("#neu")
     only_tag_id: Optional[int] = None
@@ -924,6 +973,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                 storage_paths_map=storage_paths_map,
                 # Im Dry-Run niemals neue Entities anlegen.
                 create_missing_entities=can_create_entities,
+                created_entities=created_entities,
             )
 
             if not patch_payload:
@@ -987,8 +1037,17 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             updated += 1
         except (AiClassificationError, PaperlessApiError, ValueError) as exc:
             failed += 1
+            error_details.append(
+                {
+                    "id": doc_id,
+                    "title": title,
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                }
+            )
             LOGGER.error("Fehler bei Dokument %s (%s): %s", doc_id, title, exc)
 
+    log_run_details(created_entities=created_entities, error_details=error_details)
     LOGGER.info(
         "Fertig. Gescannt=%s, Aktualisiert=%s, Übersprungen=%s, Fehler=%s",
         scanned,
