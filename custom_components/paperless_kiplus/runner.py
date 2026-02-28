@@ -246,6 +246,51 @@ class PaperlessRunner:
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             _LOGGER.warning("Could not parse metrics file '%s': %s", path, exc)
 
+    async def async_load_initial_metrics(self) -> None:
+        """Lädt Metriken beim Setup, damit Sensorwerte nach Reload erhalten bleiben."""
+
+        await self._refresh_metrics_from_file()
+
+    async def async_reset_metrics(self) -> None:
+        """Setzt Token-/Kostenmetriken in Datei und Runtime zurück."""
+
+        path = Path(self.metrics_file)
+        if not path.is_absolute():
+            path = Path(self.workdir) / path
+
+        payload = {
+            "last_run": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "cost_eur": 0.0,
+                "finished_at": None,
+                "model": None,
+            },
+            "totals": {
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "cost_eur": 0.0,
+                "runs": 0,
+            },
+        }
+
+        def _write() -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        await self.hass.async_add_executor_job(_write)
+
+        self.last_run_total_tokens = 0
+        self.last_run_cost_eur = 0.0
+        self.total_tokens = 0
+        self.total_cost_eur = 0.0
+        self.last_metrics_updated = datetime.now(UTC)
+        self.last_status = "metrics_reset"
+        self.last_message = "token/cost metrics reset"
+        self._notify()
+
     @staticmethod
     def _extract_last_line(text: str, marker: str) -> str:
         """Extract the most recent line containing a marker from a log text."""

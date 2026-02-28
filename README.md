@@ -316,6 +316,12 @@ In Home Assistant stehen zusätzlich Sensoren bereit:
 
 Die Entitäten sind einem gemeinsamen Gerät **„Paperless KIplus Runner“** zugeordnet, damit die Werte direkt in der Integrations-/Geräteansicht sichtbar sind.
 
+Zusätzlich gibt es einen Button:
+
+- `Paperless KIplus Statistiken zurücksetzen`
+  - setzt Token-/Kostenwerte (letzter Lauf + Gesamt) auf `0`
+  - schreibt die Werte auch in die `metrics_file`, damit sie nach Neustart erhalten bleiben
+
 Hinweis:
 
 - Die Tokenpreis-Felder der Integration überschreiben bei aktivierter „YAML in Home Assistant verwalten“-Option automatisch die beiden YAML-Werte:

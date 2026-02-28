@@ -50,7 +50,7 @@ from .runner import PaperlessRunner
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS = ["sensor", "binary_sensor"]
+PLATFORMS = ["sensor", "binary_sensor", "button"]
 
 
 def _as_float(value: Any, default: float) -> float:
@@ -147,6 +147,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         output_cost_per_1k_tokens_eur=output_cost_per_1k_tokens_eur,
     )
     hass.data[DOMAIN][entry.entry_id] = runner
+    await runner.async_load_initial_metrics()
 
     if not hass.services.has_service(DOMAIN, SERVICE_RUN):
 
