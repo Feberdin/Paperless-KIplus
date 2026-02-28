@@ -307,6 +307,11 @@ In Home Assistant stehen zusätzlich Sensoren bereit:
 - `Paperless KIplus Letzter Lauf Kosten`
 - `Paperless KIplus Gesamt Tokens`
 - `Paperless KIplus Gesamtkosten`
+- `Paperless KIplus Letzte Zusammenfassung` (kompakt: `G/A/U/F`)
+- `Paperless KIplus Letzter Lauf Fehler`
+- `Paperless KIplus Letzter Lauf Aktualisiert`
+- `Paperless KIplus Letzter Lauf Gescannt`
+- `Paperless KIplus Letzter Lauf Übersprungen`
 - `Paperless KIplus Letztes Protokoll` (enthält `summary_line`, `cost_line`, `log_text`)
 
 Hinweis:
@@ -326,6 +331,7 @@ Hinweis:
 - `[CONFIG-ERROR]` => Konfigurationsproblem (Exit `2`)
 - API-/KI-Fehler => pro Dokument geloggt
 - Unerwarteter Fehler => Stacktrace + Exit `1`
+- Bei Dokument-Fehlern im Echtlauf markiert der Sorter das Dokument zusätzlich mit Tag `KI_FEHLER` und schreibt eine Fehler-Notiz ins Dokument.
 
 ## 🔄 HACS Update-Mechanismus
 

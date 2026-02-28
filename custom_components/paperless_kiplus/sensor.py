@@ -26,6 +26,11 @@ async def async_setup_entry(
         [
             PaperlessRunnerStatusSensor(entry.entry_id, runner),
             PaperlessRunnerRunLogSensor(entry.entry_id, runner),
+            PaperlessRunnerSummarySensor(entry.entry_id, runner),
+            PaperlessRunnerErrorsSensor(entry.entry_id, runner),
+            PaperlessRunnerUpdatedSensor(entry.entry_id, runner),
+            PaperlessRunnerScannedSensor(entry.entry_id, runner),
+            PaperlessRunnerSkippedSensor(entry.entry_id, runner),
             PaperlessRunnerLastTokensSensor(entry.entry_id, runner),
             PaperlessRunnerLastCostSensor(entry.entry_id, runner),
             PaperlessRunnerTotalTokensSensor(entry.entry_id, runner),
@@ -93,6 +98,10 @@ class PaperlessRunnerStatusSensor(SensorEntity):
             "stderr_tail": self._runner.last_stderr_tail,
             "summary_line": self._runner.last_summary_line,
             "cost_line": self._runner.last_cost_line,
+            "last_scanned": self._runner.last_scanned,
+            "last_updated": self._runner.last_updated,
+            "last_skipped": self._runner.last_skipped,
+            "last_failed": self._runner.last_failed,
             "last_run_total_tokens": self._runner.last_run_total_tokens,
             "last_run_cost_eur": round(self._runner.last_run_cost_eur, 6),
             "total_tokens": self._runner.total_tokens,
@@ -157,6 +166,113 @@ class _BaseMetricSensor(SensorEntity):
                 self.async_write_ha_state,
             )
         )
+
+
+class PaperlessRunnerSummarySensor(_BaseMetricSensor):
+    """Kompakte letzte Lauf-Zusammenfassung als eigener Sensor."""
+
+    _attr_icon = "mdi:clipboard-text-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        super().__init__(
+            entry_id,
+            runner,
+            suffix="last_summary",
+            name="Paperless KIplus Letzte Zusammenfassung",
+        )
+
+    @property
+    def native_value(self) -> str:
+        if self._runner.last_summary_line:
+            return (
+                f"G:{self._runner.last_scanned} "
+                f"A:{self._runner.last_updated} "
+                f"U:{self._runner.last_skipped} "
+                f"F:{self._runner.last_failed}"
+            )
+        return "keine Daten"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | int]:
+        return {
+            "summary_line": self._runner.last_summary_line or "",
+            "gescannt": self._runner.last_scanned,
+            "aktualisiert": self._runner.last_updated,
+            "uebersprungen": self._runner.last_skipped,
+            "fehler": self._runner.last_failed,
+        }
+
+
+class PaperlessRunnerErrorsSensor(_BaseMetricSensor):
+    """Fehleranzahl des letzten Laufs als direkter Zahlenwert."""
+
+    _attr_icon = "mdi:alert-circle-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        super().__init__(
+            entry_id,
+            runner,
+            suffix="last_run_errors",
+            name="Paperless KIplus Letzter Lauf Fehler",
+        )
+
+    @property
+    def native_value(self) -> int:
+        return self._runner.last_failed
+
+
+class PaperlessRunnerUpdatedSensor(_BaseMetricSensor):
+    """Anzahl aktualisierter Dokumente im letzten Lauf."""
+
+    _attr_icon = "mdi:file-check-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        super().__init__(
+            entry_id,
+            runner,
+            suffix="last_run_updated",
+            name="Paperless KIplus Letzter Lauf Aktualisiert",
+        )
+
+    @property
+    def native_value(self) -> int:
+        return self._runner.last_updated
+
+
+class PaperlessRunnerScannedSensor(_BaseMetricSensor):
+    """Anzahl gescannter Dokumente im letzten Lauf."""
+
+    _attr_icon = "mdi:file-search-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        super().__init__(
+            entry_id,
+            runner,
+            suffix="last_run_scanned",
+            name="Paperless KIplus Letzter Lauf Gescannt",
+        )
+
+    @property
+    def native_value(self) -> int:
+        return self._runner.last_scanned
+
+
+class PaperlessRunnerSkippedSensor(_BaseMetricSensor):
+    """Anzahl übersprungener Dokumente im letzten Lauf."""
+
+    _attr_icon = "mdi:file-cancel-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        super().__init__(
+            entry_id,
+            runner,
+            suffix="last_run_skipped",
+            name="Paperless KIplus Letzter Lauf Übersprungen",
+        )
+
+    @property
+    def native_value(self) -> int:
+        return self._runner.last_skipped
 
 
 class PaperlessRunnerLastTokensSensor(_BaseMetricSensor):

@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import json
 import logging
 from pathlib import Path
+import re
 import shlex
 from typing import Sequence
 import yaml
@@ -76,6 +77,10 @@ class PaperlessRunner:
         self.last_summary_line: str = ""
         self.last_cost_line: str = ""
         self.last_log_combined: str = ""
+        self.last_scanned: int = 0
+        self.last_updated: int = 0
+        self.last_skipped: int = 0
+        self.last_failed: int = 0
         self.last_run_total_tokens: int = 0
         self.last_run_cost_eur: float = 0.0
         self.total_tokens: int = 0
@@ -163,6 +168,9 @@ class PaperlessRunner:
                 self.last_cost_line = self._extract_last_line(
                     combined_tail, "Kosten/Token:"
                 )
+                self.last_scanned, self.last_updated, self.last_skipped, self.last_failed = (
+                    self._parse_summary_counts(self.last_summary_line)
+                )
                 self.last_log_combined = (
                     f"[STDOUT]\n{self.last_stdout_tail.strip()}\n\n[STDERR]\n{self.last_stderr_tail.strip()}"
                 ).strip()
@@ -246,6 +254,24 @@ class PaperlessRunner:
             if marker in line:
                 return line.strip()
         return ""
+
+    @staticmethod
+    def _parse_summary_counts(summary_line: str) -> tuple[int, int, int, int]:
+        """Parse Lauf-Zählwerte aus der Fertig-Zeile.
+
+        Erwartetes Format:
+        Fertig. Gescannt=5, Aktualisiert=2, Übersprungen=2, Fehler=1
+        """
+
+        if not summary_line:
+            return (0, 0, 0, 0)
+        match = re.search(
+            r"Gescannt=(\d+),\s*Aktualisiert=(\d+),\s*Übersprungen=(\d+),\s*Fehler=(\d+)",
+            summary_line,
+        )
+        if not match:
+            return (0, 0, 0, 0)
+        return tuple(int(group) for group in match.groups())  # type: ignore[return-value]
 
     async def _write_managed_config(self, config_file: str) -> None:
         """Write integration-managed YAML config to disk before script execution.

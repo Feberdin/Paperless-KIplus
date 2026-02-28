@@ -309,8 +309,76 @@ class PaperlessClient:
 
     def update_document(self, document_id: int, patch_payload: Dict[str, Any]) -> None:
         """Schreibt klassifizierte Felder zurück auf das Dokument."""
+        try:
+            self._request("PATCH", f"/api/documents/{document_id}/", payload=patch_payload)
+            return
+        except PaperlessApiError as exc:
+            # Einige Paperless-Installationen liefern sporadisch 500 bei bestimmten
+            # Feldkombinationen. Wir versuchen dann gezielte Fallback-Payloads.
+            if "HTTP 500" not in str(exc):
+                raise
 
-        self._request("PATCH", f"/api/documents/{document_id}/", payload=patch_payload)
+            fallback_candidates: List[tuple[str, Dict[str, Any]]] = []
+            if "created" in patch_payload:
+                p = dict(patch_payload)
+                p.pop("created", None)
+                fallback_candidates.append(("ohne created", p))
+            if "tags" in patch_payload:
+                p = dict(patch_payload)
+                p.pop("tags", None)
+                fallback_candidates.append(("ohne tags", p))
+            if "created" in patch_payload and "tags" in patch_payload:
+                p = dict(patch_payload)
+                p.pop("created", None)
+                p.pop("tags", None)
+                fallback_candidates.append(("ohne created+tags", p))
+
+            tried: set[str] = set()
+            last_error: Exception = exc
+            for label, candidate in fallback_candidates:
+                if not candidate:
+                    continue
+                signature = json.dumps(candidate, sort_keys=True, ensure_ascii=False)
+                if signature in tried:
+                    continue
+                tried.add(signature)
+                try:
+                    self._request("PATCH", f"/api/documents/{document_id}/", payload=candidate)
+                    LOGGER.warning(
+                        "PATCH-Fallback erfolgreich für Dokument %s (%s). Originalpayload führte zu HTTP 500.",
+                        document_id,
+                        label,
+                    )
+                    return
+                except PaperlessApiError as fallback_exc:
+                    last_error = fallback_exc
+
+            # Letzte Eskalationsstufe: Feld-für-Feld patchen, um wenigstens
+            # einen Teil der Änderungen zu übernehmen und den "Problem-Key" einzugrenzen.
+            field_order = ["document_type", "correspondent", "storage_path", "created", "tags"]
+            partial_success = False
+            field_failures: List[str] = []
+            for key in field_order:
+                if key not in patch_payload:
+                    continue
+                single_payload = {key: patch_payload[key]}
+                try:
+                    self._request("PATCH", f"/api/documents/{document_id}/", payload=single_payload)
+                    partial_success = True
+                except PaperlessApiError as field_exc:
+                    field_failures.append(f"{key}: {field_exc}")
+
+            if partial_success:
+                LOGGER.warning(
+                    "PATCH nur teilweise erfolgreich für Dokument %s. Fehlgeschlagene Felder: %s",
+                    document_id,
+                    "; ".join(field_failures) if field_failures else "keine",
+                )
+                return
+
+            raise PaperlessApiError(
+                f"{exc} | Fallback-PATCH ebenfalls fehlgeschlagen: {last_error}"
+            )
 
     def add_document_note(self, document_id: int, note: str) -> None:
         """Fügt eine Notiz über den dedizierten Notes-Endpoint hinzu."""
@@ -798,6 +866,32 @@ def build_ai_note_entry(
     return note
 
 
+def build_error_note_entry(
+    *,
+    error_message: str,
+    patch_payload: Optional[Dict[str, Any]],
+) -> str:
+    """Erstellt einen kompakten Fehler-Notizeintrag für fehlgeschlagene Dokumente."""
+
+    timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+    compact_error = " ".join(str(error_message).split())
+    if len(compact_error) > 800:
+        compact_error = compact_error[:797] + "..."
+
+    payload_text = "-"
+    if patch_payload:
+        payload_text = str(patch_payload)
+        if len(payload_text) > 900:
+            payload_text = payload_text[:897] + "..."
+
+    return (
+        f"[KI-Fehler {timestamp}]\n"
+        "Bei der automatischen Verarbeitung ist ein Fehler aufgetreten.\n"
+        f"Fehler: {compact_error}\n"
+        f"Geplantes PatchPayload: {payload_text}"
+    )
+
+
 def log_dry_run_change(
     document: Dict[str, Any],
     prediction: Dict[str, Any],
@@ -1015,6 +1109,14 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         can_create_entities,
         created_entities,
     )
+    error_tag_id = ensure_entity_id(
+        client,
+        tags_map,
+        "KI_FEHLER",
+        "/api/tags/",
+        can_create_entities,
+        created_entities,
+    )
     remove_neu_tag_id = tags_map.get("#neu")
     only_tag_id: Optional[int] = None
     only_tag_name = config.process_only_tag.strip()
@@ -1150,6 +1252,32 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             updated += 1
         except (AiClassificationError, PaperlessApiError, ValueError) as exc:
             failed += 1
+            if not config.dry_run and doc_id is not None:
+                try:
+                    # Fehler dokumentieren: Tag setzen und Notiz am Dokument ergänzen.
+                    current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
+                    new_tags = set(current_tags)
+                    if error_tag_id is not None:
+                        new_tags.add(int(error_tag_id))
+                    if ki_tag_id is not None:
+                        new_tags.add(int(ki_tag_id))
+                    if new_tags != current_tags:
+                        client.update_document(int(doc_id), {"tags": sorted(new_tags)})
+
+                    client.add_document_note(
+                        int(doc_id),
+                        build_error_note_entry(
+                            error_message=str(exc),
+                            patch_payload=patch_payload_for_error,
+                        ),
+                    )
+                except PaperlessApiError as mark_exc:
+                    LOGGER.error(
+                        "Fehler-Markierung für Dokument %s (%s) fehlgeschlagen: %s",
+                        doc_id,
+                        title,
+                        mark_exc,
+                    )
             error_details.append(
                 {
                     "id": doc_id,
