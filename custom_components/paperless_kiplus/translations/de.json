@@ -1,0 +1,27 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Paperless KIplus Runner",
+        "description": "Konfiguriere den Befehl für dein Paperless-KIplus Skript.",
+        "data": {
+          "command": "Befehl",
+          "workdir": "Arbeitsverzeichnis",
+          "cooldown_seconds": "Cooldown (Sekunden)"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Paperless KIplus Runner Optionen",
+        "data": {
+          "command": "Befehl",
+          "workdir": "Arbeitsverzeichnis",
+          "cooldown_seconds": "Cooldown (Sekunden)"
+        }
+      }
+    }
+  }
+}

@@ -159,15 +159,18 @@ class PaperlessClient:
                     # Typischer Setup-Fehler bei Paperless hinter Reverse-Proxy:
                     # Die angefragte Host-URL passt nicht zu PAPERLESS_URL/ALLOWED_HOSTS.
                     if response.status_code == 400:
-                        extra_hint = (
-                            " | Hinweis: HTTP 400 bei Paperless deutet oft auf eine falsche "
-                            "paperless_url oder Host/Proxy-Konfiguration hin "
-                            "(PAPERLESS_URL, ALLOWED_HOSTS, Reverse-Proxy Host Header)."
-                        )
-                        if method == "POST" and "/api/storage_paths/" in path and "path" in response.text:
+                        if method == "POST" and "/api/storage_paths/" in path and (
+                            "\"path\"" in response.text or "\"name\"" in response.text
+                        ):
                             extra_hint = (
                                 " | Hinweis: Beim Anlegen von Storage Paths erwartet Paperless "
-                                "das Feld 'path' (nicht 'name')."
+                                "je nach API-Version unterschiedliche Felder ('path' oder 'name')."
+                            )
+                        else:
+                            extra_hint = (
+                                " | Hinweis: HTTP 400 bei Paperless deutet oft auf eine falsche "
+                                "paperless_url oder Host/Proxy-Konfiguration hin "
+                                "(PAPERLESS_URL, ALLOWED_HOSTS, Reverse-Proxy Host Header)."
                             )
                     if response.status_code == 406:
                         extra_hint = (
@@ -262,11 +265,25 @@ class PaperlessClient:
 
     def create_entity(self, path: str, name: str) -> int:
         """Erzeugt ein Metadaten-Objekt in Paperless und gibt dessen ID zurück."""
-        payload: Dict[str, Any] = {"name": name}
         if path == "/api/storage_paths/":
-            # Paperless erwartet für Storage Paths das Feld `path`.
-            payload = {"path": name}
-        created = self._request("POST", path, payload=payload)
+            # Paperless-Versionen unterscheiden sich: manche erwarten `path`, andere `name`.
+            last_exc: Optional[Exception] = None
+            for payload in ({"path": name}, {"name": name}):
+                try:
+                    created = self._request("POST", path, payload=payload, retries=1)
+                    created_id = created.get("id")
+                    if created_id is None:
+                        raise PaperlessApiError(
+                            f"Storage Path erstellt ohne ID: {path} | {name} | payload={payload}"
+                        )
+                    return int(created_id)
+                except PaperlessApiError as exc:
+                    last_exc = exc
+            raise PaperlessApiError(
+                f"Storage Path konnte nicht erstellt werden ({name}). Letzter Fehler: {last_exc}"
+            )
+
+        created = self._request("POST", path, payload={"name": name})
         created_id = created.get("id")
         if created_id is None:
             raise PaperlessApiError(
@@ -829,6 +846,8 @@ def log_run_details(
 ) -> None:
     """Gibt am Laufende eine kompakte Übersicht zu Neu-Anlagen und Fehlern aus."""
 
+    LOGGER.info("################## DEBUG ####################")
+    LOGGER.info("Kopierbereich startet hier (inklusive Fehlerdetails).")
     endpoint_labels = {
         "/api/correspondents/": "Korrespondent neu erstellt",
         "/api/document_types/": "Dokumenttyp neu erstellt",
@@ -847,17 +866,22 @@ def log_run_details(
     LOGGER.info("----- Zusammenfassung: Fehlerdetails -----")
     if not error_details:
         LOGGER.info("Fehlerdetails: keine")
+        LOGGER.info("################ ENDE DEBUG #################")
         return
 
     for idx, detail in enumerate(error_details, start=1):
+        payload_hint = detail.get("patch_payload")
+        payload_text = f" | PatchPayload={payload_hint}" if payload_hint else ""
         LOGGER.error(
-            "[Fehler %s] Dokument %s (%s) | Typ=%s | Meldung=%s",
+            "[Fehler %s] Dokument %s (%s) | Typ=%s | Meldung=%s%s",
             idx,
             detail.get("id"),
             detail.get("title"),
             detail.get("error_type"),
             detail.get("message"),
+            payload_text,
         )
+    LOGGER.info("################ ENDE DEBUG #################")
 
 
 def should_process_document(document: Dict[str, Any]) -> bool:
@@ -938,6 +962,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         doc_id = document.get("id")
         title = document.get("title", "<ohne Titel>")
         doc_tags = {int(tag_id) for tag_id in document.get("tags", [])}
+        patch_payload_for_error: Optional[Dict[str, Any]] = None
 
         # Defensive Prüfung bleibt aktiv, falls API-Filter je nach Version anders reagiert.
         if not process_all_documents and only_tag_id is not None and only_tag_id not in doc_tags:
@@ -975,6 +1000,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                 create_missing_entities=can_create_entities,
                 created_entities=created_entities,
             )
+            patch_payload_for_error = dict(patch_payload)
 
             if not patch_payload:
                 LOGGER.info("Skip Dokument %s (%s): Keine verwertbaren Felder im KI-Output", doc_id, title)
@@ -1043,6 +1069,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                     "title": title,
                     "error_type": type(exc).__name__,
                     "message": str(exc),
+                    "patch_payload": patch_payload_for_error,
                 }
             )
             LOGGER.error("Fehler bei Dokument %s (%s): %s", doc_id, title, exc)

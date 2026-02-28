@@ -1,6 +1,20 @@
 # Paperless-KIplus 🤖📄
 
+[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
+[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-Custom%20Integration-41BDF5.svg)](https://www.home-assistant.io/)
+[![HACS](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/)
+
 KI-gestützte Klassifizierung für **Paperless-ngx** mit Fokus auf nachvollziehbare Änderungen, robuste Regeln und gute Debugbarkeit.
+
+## 📚 Inhalt
+
+- [✨ Features](#-features)
+- [🏠 Home Assistant (HACS Integration)](#-home-assistant-hacs-integration)
+- [⚙️ Konfiguration](#️-konfiguration)
+- [🧩 Konfigurationsoptionen](#-konfigurationsoptionen)
+- [▶️ Nutzung](#️-nutzung)
+- [📝 KI-Notizen](#-ki-notizen)
+- [🧯 Fehleranalyse](#-fehleranalyse)
 
 ## ✨ Features
 
@@ -31,6 +45,8 @@ KI-gestützte Klassifizierung für **Paperless-ngx** mit Fokus auf nachvollziehb
 - `src/paperless_ai_sorter.py` - Hauptskript
 - `config.example.yaml` - Beispielkonfiguration
 - `requirements.txt` - Abhängigkeiten
+- `custom_components/paperless_kiplus/` - Home Assistant HACS Integration
+- `hacs.json` - HACS Metadaten
 
 ## ✅ Voraussetzungen
 
@@ -46,6 +62,53 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
+
+## 🏠 Home Assistant (HACS Integration)
+
+### 1) HACS installieren
+
+1. In HACS auf `Integrations` gehen
+2. `Custom repositories` öffnen
+3. Dieses Repo hinzufügen:
+   - URL: `https://github.com/Feberdin/Paperless-KIplus`
+   - Kategorie: `Integration`
+4. `Paperless KIplus Runner` installieren
+5. Home Assistant neu starten
+
+### 2) Integration in HA einrichten
+
+In Home Assistant:
+
+- `Einstellungen -> Geräte & Dienste -> Integration hinzufügen`
+- Suche nach `Paperless KIplus Runner`
+- Trage ein:
+  - `Command` (z. B. `.venv/bin/python src/paperless_ai_sorter.py`)
+  - `Working Directory` (Pfad zum Repo auf deinem HA-Host)
+  - `Cooldown`
+
+### 3) Trigger über Paperless Inbox Sensor
+
+Beispiel-Automation (wenn Inbox > 0, dann Runner starten):
+
+```yaml
+alias: Paperless KI Runner bei Inbox
+mode: single
+trigger:
+  - platform: numeric_state
+    entity_id: sensor.paperless_dokumente_im_posteingang
+    above: 0
+    for: "00:02:00"
+action:
+  - service: paperless_kiplus.run
+    data:
+      force: false
+      wait: false
+```
+
+Hinweis:
+
+- Wenn du `process_only_tag: \"#NEU\"` nutzt, verarbeitet das Skript weiterhin nur diese Dokumente.
+- Mit Service-Option `force: true` kannst du den Cooldown ignorieren.
 
 ## ⚙️ Konfiguration
 

@@ -1,0 +1,25 @@
+run:
+  name: Paperless KIplus Run Starten
+  description: Startet das konfigurierte Paperless-KIplus-Skript.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Optional. Führt den Run nur für diese Integration-Instanz aus.
+      example: "abcd1234"
+      required: false
+      selector:
+        text:
+    force:
+      name: Force
+      description: Ignoriert laufenden Cooldown und startet trotzdem.
+      required: false
+      default: false
+      selector:
+        boolean:
+    wait:
+      name: Wait
+      description: Wartet synchron bis der Lauf fertig ist.
+      required: false
+      default: false
+      selector:
+        boolean:
