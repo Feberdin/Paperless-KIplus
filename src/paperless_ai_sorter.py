@@ -11,6 +11,7 @@ import argparse
 import datetime as dt
 import json
 import logging
+from pathlib import Path
 import sys
 import time
 from dataclasses import dataclass
@@ -60,9 +61,12 @@ class AppConfig:
     ai_notes_max_chars: int
     enable_ai_note_summary: bool
     ai_note_summary_max_chars: int
+    metrics_file: str
+    input_cost_per_1k_tokens_eur: float
+    output_cost_per_1k_tokens_eur: float
 
 
-def load_config(config_path: str, cli_dry_run: bool) -> AppConfig:
+def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | None = None) -> AppConfig:
     """Lädt YAML-Konfiguration und validiert Pflichtfelder.
 
     Wir werfen bewusst klare Fehlermeldungen, damit Setup-Probleme
@@ -87,13 +91,17 @@ def load_config(config_path: str, cli_dry_run: bool) -> AppConfig:
             "Folgende Pflichtfelder fehlen in der Konfiguration: " + ", ".join(missing)
         )
 
+    max_documents = int(raw.get("max_documents", 25))
+    if cli_max_documents is not None and cli_max_documents > 0:
+        max_documents = cli_max_documents
+
     return AppConfig(
         paperless_url=str(raw["paperless_url"]).rstrip("/"),
         paperless_token=str(raw["paperless_token"]),
         ai_api_key=str(raw["ai_api_key"]),
         ai_model=str(raw["ai_model"]),
         ai_base_url=str(raw.get("ai_base_url", "https://api.openai.com/v1")).rstrip("/"),
-        max_documents=int(raw.get("max_documents", 25)),
+        max_documents=max_documents,
         dry_run=bool(raw.get("dry_run", False) or cli_dry_run),
         create_missing_entities=bool(raw.get("create_missing_entities", True)),
         confidence_threshold=float(raw.get("confidence_threshold", 0.70)),
@@ -111,6 +119,9 @@ def load_config(config_path: str, cli_dry_run: bool) -> AppConfig:
         ai_notes_max_chars=int(raw.get("ai_notes_max_chars", 800)),
         enable_ai_note_summary=bool(raw.get("enable_ai_note_summary", True)),
         ai_note_summary_max_chars=int(raw.get("ai_note_summary_max_chars", 220)),
+        metrics_file=str(raw.get("metrics_file", "run_metrics.json")).strip(),
+        input_cost_per_1k_tokens_eur=float(raw.get("input_cost_per_1k_tokens_eur", 0.0)),
+        output_cost_per_1k_tokens_eur=float(raw.get("output_cost_per_1k_tokens_eur", 0.0)),
     )
 
 
@@ -459,6 +470,12 @@ class AiClassifier:
             message = raw["choices"][0]["message"]["content"]
             parsed = json.loads(message)
             self._validate_model_output(parsed)
+            usage = raw.get("usage") or {}
+            parsed["_meta_usage"] = {
+                "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
+                "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
+                "total_tokens": int(usage.get("total_tokens", 0) or 0),
+            }
             return parsed
         except (requests.RequestException, KeyError, ValueError, json.JSONDecodeError) as exc:
             raise AiClassificationError(f"KI-Antwort ungültig oder Request fehlgeschlagen: {exc}") from exc
@@ -535,6 +552,59 @@ def sanitize_prediction(
         )
         sanitized["correspondent"] = None
     return sanitized
+
+
+def extract_usage(prediction: Dict[str, Any]) -> tuple[int, int, int]:
+    """Extrahiert API-Token-Usage aus internen Metadaten."""
+
+    usage = prediction.get("_meta_usage") or {}
+    prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+    completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+    total_tokens = int(usage.get("total_tokens", 0) or 0)
+    if total_tokens == 0:
+        total_tokens = prompt_tokens + completion_tokens
+    return prompt_tokens, completion_tokens, total_tokens
+
+
+def load_metrics(metrics_path: Path) -> Dict[str, Any]:
+    """Lädt bestehende Lauf-Metriken oder liefert Defaults."""
+
+    default = {
+        "last_run": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cost_eur": 0.0,
+            "finished_at": None,
+            "model": None,
+        },
+        "totals": {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "cost_eur": 0.0,
+            "runs": 0,
+        },
+    }
+    if not metrics_path.exists():
+        return default
+    try:
+        loaded = json.loads(metrics_path.read_text(encoding="utf-8"))
+        if isinstance(loaded, dict):
+            return loaded
+    except (OSError, json.JSONDecodeError):
+        LOGGER.warning("Metrics-Datei konnte nicht gelesen werden, nutze Defaults: %s", metrics_path)
+    return default
+
+
+def save_metrics(metrics_path: Path, payload: Dict[str, Any]) -> None:
+    """Speichert Lauf-Metriken als JSON für externe Systeme (z. B. Home Assistant)."""
+
+    try:
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        metrics_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        LOGGER.error("Metrics-Datei konnte nicht geschrieben werden: %s | %s", metrics_path, exc)
 
 
 def ensure_entity_id(
@@ -927,6 +997,10 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     failed = 0
     created_entities: Dict[str, List[str]] = {}
     error_details: List[Dict[str, Any]] = []
+    run_prompt_tokens = 0
+    run_completion_tokens = 0
+    run_total_tokens = 0
+    run_cost_eur = 0.0
     can_create_entities = config.create_missing_entities and not config.dry_run
     ki_tag_id = ensure_entity_id(
         client,
@@ -977,6 +1051,14 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         try:
             prediction = classifier.classify(document)
             prediction = sanitize_prediction(prediction, storage_paths_map)
+            prompt_tokens, completion_tokens, total_tokens = extract_usage(prediction)
+            run_prompt_tokens += prompt_tokens
+            run_completion_tokens += completion_tokens
+            run_total_tokens += total_tokens
+            run_cost_eur += (
+                (prompt_tokens / 1000.0) * config.input_cost_per_1k_tokens_eur
+                + (completion_tokens / 1000.0) * config.output_cost_per_1k_tokens_eur
+            )
             confidence = float(prediction["confidence"])
             if confidence < config.confidence_threshold:
                 LOGGER.info(
@@ -1075,6 +1157,40 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             LOGGER.error("Fehler bei Dokument %s (%s): %s", doc_id, title, exc)
 
     log_run_details(created_entities=created_entities, error_details=error_details)
+    metrics_path = Path(config.metrics_file)
+    existing_metrics = load_metrics(metrics_path)
+    totals = existing_metrics.get("totals") or {}
+    new_totals_prompt = int(totals.get("prompt_tokens", 0) or 0) + run_prompt_tokens
+    new_totals_completion = int(totals.get("completion_tokens", 0) or 0) + run_completion_tokens
+    new_totals_tokens = int(totals.get("total_tokens", 0) or 0) + run_total_tokens
+    new_totals_cost = float(totals.get("cost_eur", 0.0) or 0.0) + run_cost_eur
+    new_totals_runs = int(totals.get("runs", 0) or 0) + 1
+
+    metrics_payload = {
+        "last_run": {
+            "prompt_tokens": run_prompt_tokens,
+            "completion_tokens": run_completion_tokens,
+            "total_tokens": run_total_tokens,
+            "cost_eur": round(run_cost_eur, 6),
+            "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "model": config.ai_model,
+        },
+        "totals": {
+            "prompt_tokens": new_totals_prompt,
+            "completion_tokens": new_totals_completion,
+            "total_tokens": new_totals_tokens,
+            "cost_eur": round(new_totals_cost, 6),
+            "runs": new_totals_runs,
+        },
+    }
+    save_metrics(metrics_path, metrics_payload)
+    LOGGER.info(
+        "Kosten/Token: Letzter Lauf=%s Tokens, %.6f EUR | Gesamt=%s Tokens, %.6f EUR",
+        run_total_tokens,
+        run_cost_eur,
+        new_totals_tokens,
+        new_totals_cost,
+    )
     LOGGER.info(
         "Fertig. Gescannt=%s, Aktualisiert=%s, Übersprungen=%s, Fehler=%s",
         scanned,
@@ -1101,6 +1217,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Einmal alle Dokumente durchsuchen (ignoriert Tag-Filter und Standard-Skip-Regeln)",
     )
+    parser.add_argument(
+        "--max-documents",
+        type=int,
+        default=None,
+        help="Optionaler Override für max_documents aus der YAML (nur > 0 wirksam)",
+    )
     return parser.parse_args()
 
 
@@ -1108,7 +1230,7 @@ def main() -> int:
     args = parse_args()
 
     try:
-        config = load_config(args.config, args.dry_run)
+        config = load_config(args.config, args.dry_run, args.max_documents)
     except ConfigError as exc:
         print(f"[CONFIG-ERROR] {exc}", file=sys.stderr)
         return 2

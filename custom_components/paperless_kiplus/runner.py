@@ -5,8 +5,11 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+import json
 import logging
+from pathlib import Path
 import shlex
+from typing import Sequence
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
@@ -28,11 +31,28 @@ class RunResult:
 class PaperlessRunner:
     """Execute the configured Paperless KIplus command safely."""
 
-    def __init__(self, hass: HomeAssistant, *, command: str, workdir: str, cooldown_seconds: int) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        *,
+        command: str,
+        workdir: str,
+        cooldown_seconds: int,
+        metrics_file: str,
+        config_file: str,
+        dry_run: bool,
+        all_documents: bool,
+        max_documents: int,
+    ) -> None:
         self.hass = hass
         self.command = command
         self.workdir = workdir
         self.cooldown_seconds = cooldown_seconds
+        self.metrics_file = metrics_file
+        self.config_file = config_file
+        self.default_dry_run = dry_run
+        self.default_all_documents = all_documents
+        self.default_max_documents = max_documents
 
         self._lock = asyncio.Lock()
         self.running = False
@@ -44,6 +64,12 @@ class PaperlessRunner:
         self.last_message: str = "not started"
         self.last_stdout_tail: str = ""
         self.last_stderr_tail: str = ""
+        self.last_run_total_tokens: int = 0
+        self.last_run_cost_eur: float = 0.0
+        self.total_tokens: int = 0
+        self.total_cost_eur: float = 0.0
+        self.last_metrics_updated: datetime | None = None
+        self.last_command_executed: str = ""
 
     @property
     def cooldown_until(self) -> datetime | None:
@@ -53,7 +79,15 @@ class PaperlessRunner:
             return None
         return self.last_finished + timedelta(seconds=self.cooldown_seconds)
 
-    async def async_run(self, *, force: bool = False) -> RunResult:
+    async def async_run(
+        self,
+        *,
+        force: bool = False,
+        config_file: str | None = None,
+        dry_run: bool | None = None,
+        all_documents: bool | None = None,
+        max_documents: int | None = None,
+    ) -> RunResult:
         """Run the command unless already running or in cooldown."""
 
         if self._lock.locked() and not force:
@@ -78,9 +112,24 @@ class PaperlessRunner:
             self._notify()
 
             try:
-                args = shlex.split(self.command)
+                effective_config_file = config_file if config_file is not None else self.config_file
+                effective_dry_run = self.default_dry_run if dry_run is None else dry_run
+                effective_all_documents = (
+                    self.default_all_documents if all_documents is None else all_documents
+                )
+                effective_max_documents = (
+                    self.default_max_documents if max_documents is None else int(max_documents)
+                )
+
+                args = self._build_command(
+                    config_file=effective_config_file,
+                    dry_run=effective_dry_run,
+                    all_documents=effective_all_documents,
+                    max_documents=effective_max_documents,
+                )
                 if not args:
                     raise ValueError("configured command is empty")
+                self.last_command_executed = shlex.join(args)
 
                 process = await asyncio.create_subprocess_exec(
                     *args,
@@ -113,6 +162,7 @@ class PaperlessRunner:
                 self.last_stderr_tail = str(exc)
                 _LOGGER.exception("Paperless KIplus run crashed: %s", exc)
             finally:
+                self._refresh_metrics_from_file()
                 self.running = False
                 self.last_finished = datetime.now(UTC)
                 self._notify()
@@ -123,3 +173,58 @@ class PaperlessRunner:
         """Notify entities/sensors about runner state updates."""
 
         async_dispatcher_send(self.hass, SIGNAL_STATUS_UPDATED)
+
+    def _refresh_metrics_from_file(self) -> None:
+        """Load token/cost metrics from the configured JSON file."""
+
+        path = Path(self.metrics_file)
+        if not path.is_absolute():
+            path = Path(self.workdir) / path
+
+        if not path.exists():
+            return
+
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            last = payload.get("last_run") or {}
+            totals = payload.get("totals") or {}
+
+            self.last_run_total_tokens = int(last.get("total_tokens", 0) or 0)
+            self.last_run_cost_eur = float(last.get("cost_eur", 0.0) or 0.0)
+            self.total_tokens = int(totals.get("total_tokens", 0) or 0)
+            self.total_cost_eur = float(totals.get("cost_eur", 0.0) or 0.0)
+            self.last_metrics_updated = datetime.now(UTC)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            _LOGGER.warning("Could not parse metrics file '%s': %s", path, exc)
+
+    def _build_command(
+        self,
+        *,
+        config_file: str,
+        dry_run: bool,
+        all_documents: bool,
+        max_documents: int,
+    ) -> list[str]:
+        """Build a robust CLI command based on HA options and per-run overrides.
+
+        Falls der Basis-Befehl Flags bereits enthält, werden sie nicht doppelt
+        angehängt. So bleibt auch eine manuell gepflegte Kommandozeile kompatibel.
+        """
+
+        args = shlex.split(self.command)
+        if not args:
+            return []
+
+        def _has_flag(names: Sequence[str]) -> bool:
+            return any(flag in args for flag in names)
+
+        if config_file and not _has_flag(["--config"]):
+            args.extend(["--config", config_file])
+        if dry_run and not _has_flag(["--dry-run"]):
+            args.append("--dry-run")
+        if all_documents and not _has_flag(["--all-documents"]):
+            args.append("--all-documents")
+        if max_documents > 0 and not _has_flag(["--max-documents"]):
+            args.extend(["--max-documents", str(max_documents)])
+
+        return args

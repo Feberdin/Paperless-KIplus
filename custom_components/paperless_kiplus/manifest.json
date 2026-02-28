@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "documentation": "https://github.com/Feberdin/Paperless-KIplus",
   "issue_tracker": "https://github.com/Feberdin/Paperless-KIplus/issues",
+  "icon": "mdi:file-document-cog-outline",
   "config_flow": true,
   "codeowners": [
     "@Feberdin"

@@ -23,3 +23,31 @@ run:
       default: false
       selector:
         boolean:
+    config_file:
+      name: Config File
+      description: Optional. Überschreibt den YAML-Pfad nur für diesen Lauf.
+      required: false
+      example: "/config/paperless-kiplus/config.yaml"
+      selector:
+        text:
+    dry_run:
+      name: Dry Run Override
+      description: Optional. Erzwingt Dry-Run nur für diesen Lauf.
+      required: false
+      selector:
+        boolean:
+    all_documents:
+      name: All Documents Override
+      description: Optional. Erzwingt --all-documents nur für diesen Lauf.
+      required: false
+      selector:
+        boolean:
+    max_documents:
+      name: Max Documents Override
+      description: Optional. Überschreibt max. Dokumentanzahl nur für diesen Lauf (0 = YAML-Wert).
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 5000
+          mode: box

@@ -7,6 +7,11 @@
         "data": {
           "command": "Befehl",
           "workdir": "Arbeitsverzeichnis",
+          "config_file": "YAML-Konfigurationsdatei",
+          "metrics_file": "Metrik-Datei",
+          "dry_run": "Dry-Run",
+          "all_documents": "Alle Dokumente",
+          "max_documents": "Max. Dokumente (0 = YAML-Wert)",
           "cooldown_seconds": "Cooldown (Sekunden)"
         }
       }
@@ -19,6 +24,11 @@
         "data": {
           "command": "Befehl",
           "workdir": "Arbeitsverzeichnis",
+          "config_file": "YAML-Konfigurationsdatei",
+          "metrics_file": "Metrik-Datei",
+          "dry_run": "Dry-Run",
+          "all_documents": "Alle Dokumente",
+          "max_documents": "Max. Dokumente (0 = YAML-Wert)",
           "cooldown_seconds": "Cooldown (Sekunden)"
         }
       }

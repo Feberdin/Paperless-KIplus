@@ -30,6 +30,9 @@ confidence_threshold: 0.70
 # API Timeout für Paperless und KI-Requests
 request_timeout_seconds: 30
 
+# Datei für Laufmetriken (Tokens/Kosten), wird pro Lauf aktualisiert
+metrics_file: "run_metrics.json"
+
 # DEBUG, INFO, WARNING, ERROR
 log_level: "INFO"
 
@@ -40,6 +43,11 @@ enable_token_precheck: false
 # Mindestanzahl verbleibender Tokens laut x-ratelimit-remaining-tokens Header.
 # Nur relevant, wenn enable_token_precheck=true.
 min_remaining_tokens: 1500
+
+# Optional: Kostenmodell (EUR pro 1.000 Tokens)
+# Trage hier die Werte deines Anbieters/Modells ein.
+input_cost_per_1k_tokens_eur: 0.0
+output_cost_per_1k_tokens_eur: 0.0
 
 # Optional: Zusätzliche Regeln für die KI-Klassifizierung (mehrzeilig möglich).
 # Diese Regeln werden als Ergänzung zum Standard-Prompt genutzt.

@@ -8,14 +8,29 @@ import voluptuous as vol
 
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
-from homeassistant.helpers.selector import NumberSelector, NumberSelectorConfig, TextSelector
+from homeassistant.helpers.selector import (
+    BooleanSelector,
+    NumberSelector,
+    NumberSelectorConfig,
+    TextSelector,
+)
 
 from .const import (
+    CONF_ALL_DOCUMENTS,
     CONF_COMMAND,
+    CONF_CONFIG_FILE,
     CONF_COOLDOWN_SECONDS,
+    CONF_DRY_RUN,
+    CONF_MAX_DOCUMENTS,
+    CONF_METRICS_FILE,
     CONF_WORKDIR,
+    DEFAULT_ALL_DOCUMENTS,
     DEFAULT_COMMAND,
+    DEFAULT_CONFIG_FILE,
     DEFAULT_COOLDOWN_SECONDS,
+    DEFAULT_DRY_RUN,
+    DEFAULT_MAX_DOCUMENTS,
+    DEFAULT_METRICS_FILE,
     DEFAULT_WORKDIR,
     DOMAIN,
 )
@@ -36,6 +51,18 @@ class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             {
                 vol.Required(CONF_COMMAND, default=DEFAULT_COMMAND): TextSelector(),
                 vol.Required(CONF_WORKDIR, default=DEFAULT_WORKDIR): TextSelector(),
+                vol.Required(CONF_CONFIG_FILE, default=DEFAULT_CONFIG_FILE): TextSelector(),
+                vol.Required(CONF_METRICS_FILE, default=DEFAULT_METRICS_FILE): TextSelector(),
+                vol.Required(CONF_DRY_RUN, default=DEFAULT_DRY_RUN): BooleanSelector(),
+                vol.Required(CONF_ALL_DOCUMENTS, default=DEFAULT_ALL_DOCUMENTS): BooleanSelector(),
+                vol.Required(CONF_MAX_DOCUMENTS, default=DEFAULT_MAX_DOCUMENTS): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0,
+                        max=5000,
+                        step=1,
+                        mode="box",
+                    )
+                ),
                 vol.Required(
                     CONF_COOLDOWN_SECONDS,
                     default=DEFAULT_COOLDOWN_SECONDS,
@@ -83,6 +110,48 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
                     CONF_WORKDIR,
                     default=options.get(CONF_WORKDIR, data.get(CONF_WORKDIR, DEFAULT_WORKDIR)),
                 ): TextSelector(),
+                vol.Required(
+                    CONF_METRICS_FILE,
+                    default=options.get(
+                        CONF_METRICS_FILE,
+                        data.get(CONF_METRICS_FILE, DEFAULT_METRICS_FILE),
+                    ),
+                ): TextSelector(),
+                vol.Required(
+                    CONF_CONFIG_FILE,
+                    default=options.get(
+                        CONF_CONFIG_FILE,
+                        data.get(CONF_CONFIG_FILE, DEFAULT_CONFIG_FILE),
+                    ),
+                ): TextSelector(),
+                vol.Required(
+                    CONF_DRY_RUN,
+                    default=options.get(
+                        CONF_DRY_RUN,
+                        data.get(CONF_DRY_RUN, DEFAULT_DRY_RUN),
+                    ),
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_ALL_DOCUMENTS,
+                    default=options.get(
+                        CONF_ALL_DOCUMENTS,
+                        data.get(CONF_ALL_DOCUMENTS, DEFAULT_ALL_DOCUMENTS),
+                    ),
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_MAX_DOCUMENTS,
+                    default=options.get(
+                        CONF_MAX_DOCUMENTS,
+                        data.get(CONF_MAX_DOCUMENTS, DEFAULT_MAX_DOCUMENTS),
+                    ),
+                ): NumberSelector(
+                    NumberSelectorConfig(
+                        min=0,
+                        max=5000,
+                        step=1,
+                        mode="box",
+                    )
+                ),
                 vol.Required(
                     CONF_COOLDOWN_SECONDS,
                     default=options.get(

@@ -47,6 +47,7 @@ KI-gestützte Klassifizierung für **Paperless-ngx** mit Fokus auf nachvollziehb
 - `requirements.txt` - Abhängigkeiten
 - `custom_components/paperless_kiplus/` - Home Assistant HACS Integration
 - `hacs.json` - HACS Metadaten
+- `brand/icon.png` + `brand/logo.png` - Branding-Grafiken für Integration/Repo
 
 ## ✅ Voraussetzungen
 
@@ -64,6 +65,14 @@ pip install -r requirements.txt
 ```
 
 ## 🏠 Home Assistant (HACS Integration)
+
+### 🖼️ Icon/Logo in Home Assistant
+
+- Für Custom-Integrationen nutzt Home Assistant im UI meist das **Branding aus dem offiziellen `home-assistant/brands` Repo**.
+- In diesem Repo liegen jetzt fertige Grafiken unter:
+  - `brand/icon.png`
+  - `brand/logo.png`
+- Zusätzlich ist ein MDI-Fallback-Icon im Manifest gesetzt (`mdi:file-document-cog-outline`), damit die Integration in HA klar erkennbar ist.
 
 ### 1) HACS installieren
 
@@ -84,6 +93,10 @@ In Home Assistant:
 - Trage ein:
   - `Command` (z. B. `.venv/bin/python src/paperless_ai_sorter.py`)
   - `Working Directory` (Pfad zum Repo auf deinem HA-Host)
+  - `YAML Config File` (z. B. `config.yaml` oder absoluter Pfad)
+  - `Dry Run` (Standardverhalten in HA)
+  - `All Documents` (Standardverhalten in HA)
+  - `Max Documents` (`0` = YAML-Wert verwenden)
   - `Cooldown`
 
 ### 3) Trigger über Paperless Inbox Sensor
@@ -103,12 +116,17 @@ action:
     data:
       force: false
       wait: false
+      dry_run: false
+      all_documents: false
+      max_documents: 25
+      config_file: "/config/paperless-kiplus/config.yaml"
 ```
 
 Hinweis:
 
 - Wenn du `process_only_tag: \"#NEU\"` nutzt, verarbeitet das Skript weiterhin nur diese Dokumente.
 - Mit Service-Option `force: true` kannst du den Cooldown ignorieren.
+- Mit `config_file`, `dry_run`, `all_documents`, `max_documents` kannst du einen Lauf aus HA gezielt überschreiben, ohne den Basisbefehl zu ändern.
 
 ## ⚙️ Konfiguration
 
@@ -144,6 +162,7 @@ cp config.example.yaml config.yaml
 | `create_missing_entities` | bool | `true` | Fehlende Tags/Typen/Korrespondenten/Speicherpfade anlegen |
 | `confidence_threshold` | float | `0.70` | Mindest-Confidence |
 | `request_timeout_seconds` | int | `30` | Request-Timeout |
+| `metrics_file` | string | `run_metrics.json` | JSON-Datei für Token/Kosten-Metriken |
 | `log_level` | string | `INFO` | `DEBUG/INFO/WARNING/ERROR` |
 | `enable_token_precheck` | bool | `false` | API-Token-Restbudget vorab prüfen |
 | `min_remaining_tokens` | int | `1500` | Schwellwert für Token-Precheck |
@@ -155,6 +174,8 @@ cp config.example.yaml config.yaml
 | `ai_notes_max_chars` | int | `800` | Max. Länge Begründung in Notiz |
 | `enable_ai_note_summary` | bool | `true` | Kurz-Zusammenfassung in Notiz |
 | `ai_note_summary_max_chars` | int | `220` | Max. Länge Kurz-Zusammenfassung |
+| `input_cost_per_1k_tokens_eur` | float | `0.0` | Eingabe-Tokenpreis pro 1.000 Tokens (EUR) |
+| `output_cost_per_1k_tokens_eur` | float | `0.0` | Ausgabe-Tokenpreis pro 1.000 Tokens (EUR) |
 
 ## 🧭 ChatGPT Prompt Für Eigene YAML-Konfig
 
@@ -245,6 +266,12 @@ Einmal alles durchsuchen (ignoriert Tag-Filter + Skip-Heuristik):
 python src/paperless_ai_sorter.py --all-documents
 ```
 
+Max. Dokumente per CLI überschreiben (z. B. aus Home Assistant):
+
+```bash
+python src/paperless_ai_sorter.py --max-documents 100
+```
+
 ## 🧪 Empfohlener Rollout
 
 1. `dry_run: true`, `max_documents: 5`
@@ -260,6 +287,20 @@ Wenn `enable_ai_notes: true`, wird pro Änderung eine Notiz erzeugt mit:
 - optionaler Kurz-Zusammenfassung
 - Begründung
 - geänderten Feldern
+
+## 💶 Token & Kosten
+
+Das Skript schreibt nach jedem Lauf Metriken in `metrics_file` und zeigt im Log:
+
+- Token/Kosten letzter Lauf
+- kumulierte Gesamt-Token/Gesamtkosten
+
+In Home Assistant stehen zusätzlich Sensoren bereit:
+
+- `Paperless KIplus Letzter Lauf Tokens`
+- `Paperless KIplus Letzter Lauf Kosten`
+- `Paperless KIplus Gesamt Tokens`
+- `Paperless KIplus Gesamtkosten`
 
 ## 🔒 Sicherheit
 
