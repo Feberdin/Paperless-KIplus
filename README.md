@@ -318,6 +318,20 @@ In Home Assistant stehen zusätzlich Sensoren bereit:
 - API-/KI-Fehler => pro Dokument geloggt
 - Unerwarteter Fehler => Stacktrace + Exit `1`
 
+## 🔄 HACS Update-Mechanismus
+
+Damit Home Assistant/HACS Updates zuverlässig erkennt, gilt jetzt:
+
+- Die Integrations-Version steht in `custom_components/paperless_kiplus/manifest.json`.
+- Bei jeder relevanten Integrationsänderung wird die Version erhöht (z. B. `0.1.3` -> `0.1.4`).
+- GitHub Actions erstellt auf `main` automatisch einen Release-Tag `v<manifest.version>` und einen GitHub Release.
+- Ein Guard-Workflow prüft, dass bei Änderungen unter `custom_components/paperless_kiplus/` auch die `manifest.json`-Version angepasst wurde.
+
+Workflows:
+
+- `.github/workflows/version-guard.yml`
+- `.github/workflows/hacs-release.yml`
+
 ## 📜 Lizenz
 
 Noch keine Lizenz gesetzt. Optional: MIT.

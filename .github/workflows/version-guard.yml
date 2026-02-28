@@ -1,0 +1,60 @@
+name: Version Guard
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  verify-version-bump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Prüfe Versionssprung bei Integrationsänderungen
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          COMPONENT_PATH="custom_components/paperless_kiplus"
+          MANIFEST_PATH="custom_components/paperless_kiplus/manifest.json"
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+            git fetch --no-tags --depth=1 origin "$BASE_SHA"
+            RANGE="$BASE_SHA..$HEAD_SHA"
+          else
+            if git rev-parse HEAD^ >/dev/null 2>&1; then
+              RANGE="HEAD^..HEAD"
+            else
+              echo "Erster Commit im Verlauf, Guard wird übersprungen."
+              exit 0
+            fi
+          fi
+
+          CHANGED_IN_COMPONENT=$(git diff --name-only "$RANGE" -- "$COMPONENT_PATH" | wc -l | tr -d ' ')
+          if [ "$CHANGED_IN_COMPONENT" = "0" ]; then
+            echo "Keine Änderungen in $COMPONENT_PATH – kein Versionssprung erforderlich."
+            exit 0
+          fi
+
+          if ! git diff --name-only "$RANGE" -- "$MANIFEST_PATH" | grep -q "$MANIFEST_PATH"; then
+            echo "Fehler: Änderungen in $COMPONENT_PATH erkannt, aber $MANIFEST_PATH wurde nicht geändert."
+            echo "Bitte 'version' in manifest.json erhöhen."
+            exit 1
+          fi
+
+          OLD_VERSION=$(git show "${RANGE%%..*}:$MANIFEST_PATH" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))' || true)
+          NEW_VERSION=$(python3 -c 'import json; print(json.load(open("custom_components/paperless_kiplus/manifest.json", encoding="utf-8")).get("version",""))')
+
+          if [ -n "$OLD_VERSION" ] && [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
+            echo "Fehler: manifest.json wurde zwar geändert, aber version blieb gleich ($NEW_VERSION)."
+            echo "Bitte Version erhöhen (z. B. Patch: x.y.(z+1))."
+            exit 1
+          fi
+
+          echo "Version-Guard OK: $OLD_VERSION -> $NEW_VERSION"
