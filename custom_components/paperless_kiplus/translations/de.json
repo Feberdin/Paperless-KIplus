@@ -1,5 +1,10 @@
 {
   "config": {
+    "error": {
+      "managed_yaml_required": "Verwaltete YAML ist aktiviert, aber der YAML-Inhalt ist leer.",
+      "managed_yaml_invalid": "Verwaltete YAML ist ungültig. Bitte Syntax prüfen.",
+      "managed_yaml_missing_required": "Verwaltete YAML hat fehlende Pflichtfelder: paperless_url, paperless_token, ai_api_key, ai_model."
+    },
     "step": {
       "user": {
         "title": "Paperless KIplus Runner",
@@ -20,6 +25,11 @@
     }
   },
   "options": {
+    "error": {
+      "managed_yaml_required": "Verwaltete YAML ist aktiviert, aber der YAML-Inhalt ist leer.",
+      "managed_yaml_invalid": "Verwaltete YAML ist ungültig. Bitte Syntax prüfen.",
+      "managed_yaml_missing_required": "Verwaltete YAML hat fehlende Pflichtfelder: paperless_url, paperless_token, ai_api_key, ai_model."
+    },
     "step": {
       "init": {
         "title": "Paperless KIplus Runner Optionen",

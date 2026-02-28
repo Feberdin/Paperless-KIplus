@@ -1,5 +1,10 @@
 {
   "config": {
+    "error": {
+      "managed_yaml_required": "Managed YAML is enabled, but YAML content is empty.",
+      "managed_yaml_invalid": "Managed YAML is invalid. Please check syntax.",
+      "managed_yaml_missing_required": "Managed YAML is missing required keys: paperless_url, paperless_token, ai_api_key, ai_model."
+    },
     "step": {
       "user": {
         "title": "Paperless KIplus Runner",
@@ -20,6 +25,11 @@
     }
   },
   "options": {
+    "error": {
+      "managed_yaml_required": "Managed YAML is enabled, but YAML content is empty.",
+      "managed_yaml_invalid": "Managed YAML is invalid. Please check syntax.",
+      "managed_yaml_missing_required": "Managed YAML is missing required keys: paperless_url, paperless_token, ai_api_key, ai_model."
+    },
     "step": {
       "init": {
         "title": "Paperless KIplus Runner Optionen",

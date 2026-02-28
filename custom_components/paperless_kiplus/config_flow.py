@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 import voluptuous as vol
+import yaml
 
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResult
@@ -50,8 +51,11 @@ class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Handle the initial step."""
 
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self.async_create_entry(title="Paperless KIplus Runner", data=user_input)
+            errors = _validate_managed_yaml_input(user_input)
+            if not errors:
+                return self.async_create_entry(title="Paperless KIplus Runner", data=user_input)
 
         schema = vol.Schema(
             {
@@ -95,7 +99,7 @@ class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
             }
         )
-        return self.async_show_form(step_id="user", data_schema=schema)
+        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
     @staticmethod
     def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> config_entries.OptionsFlow:
@@ -113,8 +117,11 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage options."""
 
+        errors: dict[str, str] = {}
         if user_input is not None:
-            return self.async_create_entry(title="", data=user_input)
+            errors = _validate_managed_yaml_input(user_input)
+            if not errors:
+                return self.async_create_entry(title="", data=user_input)
 
         options = self._config_entry.options
         data = self._config_entry.data
@@ -207,4 +214,34 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
             }
         )
 
-        return self.async_show_form(step_id="init", data_schema=schema)
+        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
+
+
+def _validate_managed_yaml_input(user_input: dict[str, Any]) -> dict[str, str]:
+    """Validate managed YAML input when the feature is enabled.
+
+    Dadurch schlagen fehlerhafte/fehlende YAML-Werte direkt im UI fehl,
+    statt erst beim Runner-Start mit Exit-Code 2.
+    """
+
+    if not bool(user_input.get(CONF_MANAGED_CONFIG_ENABLED, False)):
+        return {}
+
+    raw_yaml = str(user_input.get(CONF_MANAGED_CONFIG_YAML, "")).strip()
+    if not raw_yaml:
+        return {"base": "managed_yaml_required"}
+
+    try:
+        parsed = yaml.safe_load(raw_yaml)
+    except yaml.YAMLError:
+        return {"base": "managed_yaml_invalid"}
+
+    if not isinstance(parsed, dict):
+        return {"base": "managed_yaml_invalid"}
+
+    required = ("paperless_url", "paperless_token", "ai_api_key", "ai_model")
+    missing = [key for key in required if not parsed.get(key)]
+    if missing:
+        return {"base": "managed_yaml_missing_required"}
+
+    return {}
