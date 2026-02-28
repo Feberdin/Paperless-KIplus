@@ -12,6 +12,8 @@ CONF_CONFIG_FILE = "config_file"
 CONF_DRY_RUN = "dry_run"
 CONF_ALL_DOCUMENTS = "all_documents"
 CONF_MAX_DOCUMENTS = "max_documents"
+CONF_MANAGED_CONFIG_ENABLED = "managed_config_enabled"
+CONF_MANAGED_CONFIG_YAML = "managed_config_yaml"
 
 DEFAULT_COMMAND = "python src/paperless_ai_sorter.py"
 DEFAULT_WORKDIR = "/config/paperless-kiplus"
@@ -21,6 +23,8 @@ DEFAULT_CONFIG_FILE = "config.yaml"
 DEFAULT_DRY_RUN = False
 DEFAULT_ALL_DOCUMENTS = False
 DEFAULT_MAX_DOCUMENTS = 0
+DEFAULT_MANAGED_CONFIG_ENABLED = False
+DEFAULT_MANAGED_CONFIG_YAML = ""
 
 SERVICE_RUN = "run"
 

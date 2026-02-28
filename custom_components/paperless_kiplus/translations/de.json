@@ -12,6 +12,8 @@
           "dry_run": "Dry-Run",
           "all_documents": "Alle Dokumente",
           "max_documents": "Max. Dokumente (0 = YAML-Wert)",
+          "managed_config_enabled": "YAML in Home Assistant verwalten",
+          "managed_config_yaml": "Verwalteter config.yaml-Inhalt",
           "cooldown_seconds": "Cooldown (Sekunden)"
         }
       }
@@ -29,6 +31,8 @@
           "dry_run": "Dry-Run",
           "all_documents": "Alle Dokumente",
           "max_documents": "Max. Dokumente (0 = YAML-Wert)",
+          "managed_config_enabled": "YAML in Home Assistant verwalten",
+          "managed_config_yaml": "Verwalteter config.yaml-Inhalt",
           "cooldown_seconds": "Cooldown (Sekunden)"
         }
       }

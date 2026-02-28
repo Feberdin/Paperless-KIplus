@@ -12,6 +12,8 @@ from homeassistant.helpers.selector import (
     BooleanSelector,
     NumberSelector,
     NumberSelectorConfig,
+    TextSelectorConfig,
+    TextSelectorType,
     TextSelector,
 )
 
@@ -22,6 +24,8 @@ from .const import (
     CONF_COOLDOWN_SECONDS,
     CONF_DRY_RUN,
     CONF_MAX_DOCUMENTS,
+    CONF_MANAGED_CONFIG_ENABLED,
+    CONF_MANAGED_CONFIG_YAML,
     CONF_METRICS_FILE,
     CONF_WORKDIR,
     DEFAULT_ALL_DOCUMENTS,
@@ -30,6 +34,8 @@ from .const import (
     DEFAULT_COOLDOWN_SECONDS,
     DEFAULT_DRY_RUN,
     DEFAULT_MAX_DOCUMENTS,
+    DEFAULT_MANAGED_CONFIG_ENABLED,
+    DEFAULT_MANAGED_CONFIG_YAML,
     DEFAULT_METRICS_FILE,
     DEFAULT_WORKDIR,
     DOMAIN,
@@ -61,6 +67,19 @@ class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         max=5000,
                         step=1,
                         mode="box",
+                    )
+                ),
+                vol.Required(
+                    CONF_MANAGED_CONFIG_ENABLED,
+                    default=DEFAULT_MANAGED_CONFIG_ENABLED,
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_MANAGED_CONFIG_YAML,
+                    default=DEFAULT_MANAGED_CONFIG_YAML,
+                ): TextSelector(
+                    TextSelectorConfig(
+                        type=TextSelectorType.TEXT,
+                        multiline=True,
                     )
                 ),
                 vol.Required(
@@ -150,6 +169,25 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
                         max=5000,
                         step=1,
                         mode="box",
+                    )
+                ),
+                vol.Required(
+                    CONF_MANAGED_CONFIG_ENABLED,
+                    default=options.get(
+                        CONF_MANAGED_CONFIG_ENABLED,
+                        data.get(CONF_MANAGED_CONFIG_ENABLED, DEFAULT_MANAGED_CONFIG_ENABLED),
+                    ),
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_MANAGED_CONFIG_YAML,
+                    default=options.get(
+                        CONF_MANAGED_CONFIG_YAML,
+                        data.get(CONF_MANAGED_CONFIG_YAML, DEFAULT_MANAGED_CONFIG_YAML),
+                    ),
+                ): TextSelector(
+                    TextSelectorConfig(
+                        type=TextSelectorType.TEXT,
+                        multiline=True,
                     )
                 ),
                 vol.Required(

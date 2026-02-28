@@ -83,6 +83,8 @@ class PaperlessRunnerStatusSensor(SensorEntity):
             "default_dry_run": self._runner.default_dry_run,
             "default_all_documents": self._runner.default_all_documents,
             "default_max_documents": self._runner.default_max_documents,
+            "managed_config_enabled": self._runner.managed_config_enabled,
+            "managed_config_yaml_chars": len(self._runner.managed_config_yaml or ""),
             "metrics_file": self._runner.metrics_file,
             "stdout_tail": self._runner.last_stdout_tail,
             "stderr_tail": self._runner.last_stderr_tail,

@@ -25,6 +25,8 @@ from .const import (
     CONF_COOLDOWN_SECONDS,
     CONF_DRY_RUN,
     CONF_MAX_DOCUMENTS,
+    CONF_MANAGED_CONFIG_ENABLED,
+    CONF_MANAGED_CONFIG_YAML,
     CONF_METRICS_FILE,
     CONF_WORKDIR,
     DEFAULT_ALL_DOCUMENTS,
@@ -33,6 +35,8 @@ from .const import (
     DEFAULT_COOLDOWN_SECONDS,
     DEFAULT_DRY_RUN,
     DEFAULT_MAX_DOCUMENTS,
+    DEFAULT_MANAGED_CONFIG_ENABLED,
+    DEFAULT_MANAGED_CONFIG_YAML,
     DEFAULT_METRICS_FILE,
     DEFAULT_WORKDIR,
     DOMAIN,
@@ -84,6 +88,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         options.get(CONF_ALL_DOCUMENTS, data.get(CONF_ALL_DOCUMENTS, DEFAULT_ALL_DOCUMENTS))
     )
     max_documents = int(options.get(CONF_MAX_DOCUMENTS, data.get(CONF_MAX_DOCUMENTS, DEFAULT_MAX_DOCUMENTS)))
+    managed_config_enabled = bool(
+        options.get(
+            CONF_MANAGED_CONFIG_ENABLED,
+            data.get(CONF_MANAGED_CONFIG_ENABLED, DEFAULT_MANAGED_CONFIG_ENABLED),
+        )
+    )
+    managed_config_yaml = str(
+        options.get(
+            CONF_MANAGED_CONFIG_YAML,
+            data.get(CONF_MANAGED_CONFIG_YAML, DEFAULT_MANAGED_CONFIG_YAML),
+        )
+    )
 
     runner = PaperlessRunner(
         hass,
@@ -95,6 +111,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         dry_run=dry_run,
         all_documents=all_documents,
         max_documents=max_documents,
+        managed_config_enabled=managed_config_enabled,
+        managed_config_yaml=managed_config_yaml,
     )
     hass.data[DOMAIN][entry.entry_id] = runner
 

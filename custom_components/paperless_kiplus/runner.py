@@ -43,6 +43,8 @@ class PaperlessRunner:
         dry_run: bool,
         all_documents: bool,
         max_documents: int,
+        managed_config_enabled: bool,
+        managed_config_yaml: str,
     ) -> None:
         self.hass = hass
         self.command = command
@@ -53,6 +55,8 @@ class PaperlessRunner:
         self.default_dry_run = dry_run
         self.default_all_documents = all_documents
         self.default_max_documents = max_documents
+        self.managed_config_enabled = managed_config_enabled
+        self.managed_config_yaml = managed_config_yaml
 
         self._lock = asyncio.Lock()
         self.running = False
@@ -120,6 +124,9 @@ class PaperlessRunner:
                 effective_max_documents = (
                     self.default_max_documents if max_documents is None else int(max_documents)
                 )
+
+                if self.managed_config_enabled:
+                    self._write_managed_config(effective_config_file)
 
                 args = self._build_command(
                     config_file=effective_config_file,
@@ -196,6 +203,24 @@ class PaperlessRunner:
             self.last_metrics_updated = datetime.now(UTC)
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             _LOGGER.warning("Could not parse metrics file '%s': %s", path, exc)
+
+    def _write_managed_config(self, config_file: str) -> None:
+        """Write integration-managed YAML config to disk before script execution.
+
+        Damit wird die Konfiguration nativ in Home Assistant gepflegt und
+        für jeden Lauf konsistent in die vom Skript erwartete YAML-Datei geschrieben.
+        """
+
+        if not self.managed_config_yaml.strip():
+            raise ValueError(
+                "managed_config_enabled ist aktiv, aber managed_config_yaml ist leer."
+            )
+
+        path = Path(config_file)
+        if not path.is_absolute():
+            path = Path(self.workdir) / path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(self.managed_config_yaml, encoding="utf-8")
 
     def _build_command(
         self,

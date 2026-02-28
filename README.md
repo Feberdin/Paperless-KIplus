@@ -94,6 +94,8 @@ In Home Assistant:
   - `Command` (z. B. `.venv/bin/python src/paperless_ai_sorter.py`)
   - `Working Directory` (Pfad zum Repo auf deinem HA-Host)
   - `YAML Config File` (z. B. `config.yaml` oder absoluter Pfad)
+  - `YAML in Home Assistant verwalten` (aktivieren für native Konfiguration im UI)
+  - `Verwalteter config.yaml-Inhalt` (kompletter YAML-Text)
   - `Dry Run` (Standardverhalten in HA)
   - `All Documents` (Standardverhalten in HA)
   - `Max Documents` (`0` = YAML-Wert verwenden)
@@ -127,6 +129,7 @@ Hinweis:
 - Wenn du `process_only_tag: \"#NEU\"` nutzt, verarbeitet das Skript weiterhin nur diese Dokumente.
 - Mit Service-Option `force: true` kannst du den Cooldown ignorieren.
 - Mit `config_file`, `dry_run`, `all_documents`, `max_documents` kannst du einen Lauf aus HA gezielt überschreiben, ohne den Basisbefehl zu ändern.
+- Wenn `YAML in Home Assistant verwalten` aktiv ist, schreibt die Integration vor jedem Lauf den YAML-Text aus dem UI in die konfigurierte `config_file`.
 
 ## ⚙️ Konfiguration
 
