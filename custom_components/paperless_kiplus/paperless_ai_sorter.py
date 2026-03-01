@@ -1532,9 +1532,38 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         patch_payload_for_error: Optional[Dict[str, Any]] = None
 
         if config.enable_tag_bypass_on_tags_500 and doc_key is not None and doc_key in tag_bypass_docs:
-            # Bypass-Einträge bleiben bewusst stabil bestehen, bis sie explizit
-            # zurückgesetzt werden (HA-Button). So verhindern wir zuverlässig,
-            # dass bekannte 500er erneut KI-Tokens verbrauchen.
+            # Bypass-Dokumente sollen keine KI-Tokens verbrauchen.
+            # Zusätzlich versuchen wir bei jedem Lauf, die gewünschte
+            # Tag-Markierung herzustellen: #NEU entfernen, KI_SKIP setzen.
+            # Wenn das gelingt, kann der Bypass-Eintrag entfernt werden.
+            if not config.dry_run and doc_id is not None:
+                current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
+                desired_tags = set(current_tags)
+                if remove_neu_tag_id is not None:
+                    desired_tags.discard(int(remove_neu_tag_id))
+                if skip_tag_id is not None:
+                    desired_tags.add(int(skip_tag_id))
+                if desired_tags != current_tags:
+                    try:
+                        client.update_document(
+                            int(doc_id),
+                            {"tags": sorted(desired_tags)},
+                        )
+                        tag_bypass_docs.pop(doc_key, None)
+                        doc_tags = set(desired_tags)
+                        LOGGER.info(
+                            "Bypass-Dokument %s (%s) markiert: #NEU entfernt, KI_SKIP gesetzt. "
+                            "Bypass-Eintrag wurde entfernt.",
+                            doc_id,
+                            title,
+                        )
+                    except PaperlessApiError as bypass_mark_exc:
+                        LOGGER.warning(
+                            "Bypass-Dokument %s (%s) konnte nicht auf KI_SKIP/#NEU aktualisiert werden: %s",
+                            doc_id,
+                            title,
+                            bypass_mark_exc,
+                        )
             LOGGER.info(
                 "Skip Dokument %s (%s): Tag-Bypass aktiv (tags-only 500).",
                 doc_id,
