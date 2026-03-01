@@ -69,6 +69,8 @@ class AppConfig:
     failed_documents_file: str
     failed_tags_only_cooldown_hours: int
     failed_patch_cache_file: str
+    enable_tag_bypass_on_tags_500: bool
+    tag_bypass_file: str
 
 
 def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | None = None) -> AppConfig:
@@ -132,6 +134,8 @@ def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | No
         failed_documents_file=str(raw.get("failed_documents_file", "failed_documents.json")).strip(),
         failed_tags_only_cooldown_hours=int(raw.get("failed_tags_only_cooldown_hours", 168)),
         failed_patch_cache_file=str(raw.get("failed_patch_cache_file", "failed_patch_cache.json")).strip(),
+        enable_tag_bypass_on_tags_500=bool(raw.get("enable_tag_bypass_on_tags_500", True)),
+        tag_bypass_file=str(raw.get("tag_bypass_file", "tag_bypass_documents.json")).strip(),
     )
 
 
@@ -762,6 +766,42 @@ def save_failed_patch_cache(cache_path: Path, payload: Dict[str, Dict[str, Any]]
         LOGGER.error("Failed-Patch-Cache konnte nicht geschrieben werden: %s | %s", cache_path, exc)
 
 
+def load_tag_bypass_documents(bypass_path: Path) -> Dict[str, Dict[str, Any]]:
+    """Lädt Dokumente, die wegen tags-only 500 im Bypass laufen."""
+
+    if not bypass_path.exists():
+        return {}
+    try:
+        loaded = json.loads(bypass_path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            return {}
+        result: Dict[str, Dict[str, Any]] = {}
+        for key, value in loaded.items():
+            try:
+                doc_key = str(int(key))
+            except (TypeError, ValueError):
+                continue
+            if isinstance(value, dict):
+                result[doc_key] = value
+        return result
+    except (OSError, json.JSONDecodeError):
+        LOGGER.warning("Tag-Bypass-Datei konnte nicht gelesen werden: %s", bypass_path)
+        return {}
+
+
+def save_tag_bypass_documents(bypass_path: Path, payload: Dict[str, Dict[str, Any]]) -> None:
+    """Speichert Dokumente, die wegen tags-only 500 im Bypass laufen."""
+
+    try:
+        bypass_path.parent.mkdir(parents=True, exist_ok=True)
+        bypass_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        LOGGER.error("Tag-Bypass-Datei konnte nicht geschrieben werden: %s | %s", bypass_path, exc)
+
+
 def save_metrics(metrics_path: Path, payload: Dict[str, Any]) -> None:
     """Speichert Lauf-Metriken als JSON für externe Systeme (z. B. Home Assistant)."""
 
@@ -1219,13 +1259,18 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     storage_path_id_to_label = {entity_id: label for label, entity_id in storage_paths_map.items()}
     failed_docs_path = Path(config.failed_documents_file)
     failed_patch_cache_path = Path(config.failed_patch_cache_file)
+    tag_bypass_path = Path(config.tag_bypass_file)
     failed_docs_until: Dict[str, float] = {}
     failed_patch_cache: Dict[str, Dict[str, Any]] = {}
+    tag_bypass_docs: Dict[str, Dict[str, Any]] = {}
     failed_docs_cooldown_seconds = max(0, int(config.failed_document_cooldown_hours)) * 3600
     failed_tags_only_cooldown_seconds = max(0, int(config.failed_tags_only_cooldown_hours)) * 3600
     if config.quarantine_failed_documents:
         failed_docs_until = load_failed_documents(failed_docs_path)
         failed_patch_cache = load_failed_patch_cache(failed_patch_cache_path)
+    if config.enable_tag_bypass_on_tags_500:
+        tag_bypass_docs = load_tag_bypass_documents(tag_bypass_path)
+    if config.quarantine_failed_documents:
         now_ts = dt.datetime.now(dt.timezone.utc).timestamp()
         # Abgelaufene Einträge direkt entfernen, damit die Datei klein bleibt.
         failed_docs_until = {
@@ -1238,6 +1283,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     updated = 0
     skipped = 0
     failed = 0
+    bypassed = 0
     created_entities: Dict[str, List[str]] = {}
     error_details: List[Dict[str, Any]] = []
     run_prompt_tokens = 0
@@ -1289,6 +1335,19 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         title = document.get("title", "<ohne Titel>")
         doc_tags = {int(tag_id) for tag_id in document.get("tags", [])}
         patch_payload_for_error: Optional[Dict[str, Any]] = None
+
+        if config.enable_tag_bypass_on_tags_500 and doc_key is not None and doc_key in tag_bypass_docs:
+            if remove_neu_tag_id is not None and remove_neu_tag_id not in doc_tags:
+                # Dokument wurde inzwischen manuell repariert; Bypass-Eintrag entfernen.
+                tag_bypass_docs.pop(doc_key, None)
+            else:
+                LOGGER.info(
+                    "Skip Dokument %s (%s): Tag-Bypass aktiv (tags-only 500).",
+                    doc_id,
+                    title,
+                )
+                skipped += 1
+                continue
 
         if config.quarantine_failed_documents and doc_key is not None and doc_key in failed_patch_cache:
             retry_payload = failed_patch_cache.get(doc_key) or {}
@@ -1483,6 +1542,56 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
 
             updated += 1
         except (AiClassificationError, PaperlessApiError, ValueError) as exc:
+            error_text = str(exc)
+            tags_only_patch = bool(
+                patch_payload_for_error
+                and set(patch_payload_for_error.keys()) == {"tags"}
+            )
+            tags_only_500 = tags_only_patch and (
+                ("Feldanalyse: tags:" in error_text) or ("HTTP 500" in error_text)
+            )
+            if (
+                config.enable_tag_bypass_on_tags_500
+                and doc_key is not None
+                and tags_only_500
+            ):
+                tag_bypass_docs[doc_key] = {
+                    "document_id": int(doc_id) if doc_id is not None else None,
+                    "title": title,
+                    "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                    "reason": "tags-only PATCH führt zu HTTP 500",
+                    "patch_payload": dict(patch_payload_for_error or {}),
+                }
+                failed_docs_until.pop(doc_key, None)
+                failed_patch_cache.pop(doc_key, None)
+                bypassed += 1
+                updated += 1
+                LOGGER.warning(
+                    "Tag-Bypass aktiv für Dokument %s (%s): tags-only PATCH erzeugt HTTP 500. "
+                    "Dokument wird als verarbeitet markiert, Tag-Änderung bleibt offen.",
+                    doc_id,
+                    title,
+                )
+                if not config.dry_run and doc_id is not None:
+                    try:
+                        client.add_document_note(
+                            int(doc_id),
+                            (
+                                "[KI-Bypass] Tag-Update konnte nicht gespeichert werden "
+                                "(tags-only PATCH -> HTTP 500). "
+                                "Dokument wurde zur Vermeidung weiterer KI-Kosten in den "
+                                "Tag-Bypass übernommen."
+                            ),
+                        )
+                    except PaperlessApiError as bypass_note_exc:
+                        LOGGER.error(
+                            "Bypass-Notiz konnte für Dokument %s (%s) nicht gespeichert werden: %s",
+                            doc_id,
+                            title,
+                            bypass_note_exc,
+                        )
+                continue
+
             failed += 1
             if (
                 config.quarantine_failed_documents
@@ -1490,11 +1599,6 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                 and failed_docs_cooldown_seconds > 0
             ):
                 retry_delay_seconds = failed_docs_cooldown_seconds
-                error_text = str(exc)
-                tags_only_patch = bool(
-                    patch_payload_for_error
-                    and set(patch_payload_for_error.keys()) == {"tags"}
-                )
                 if (
                     tags_only_patch
                     and "Feldanalyse: tags:" in error_text
@@ -1579,6 +1683,8 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     if config.quarantine_failed_documents:
         save_failed_documents(failed_docs_path, failed_docs_until)
         save_failed_patch_cache(failed_patch_cache_path, failed_patch_cache)
+    if config.enable_tag_bypass_on_tags_500:
+        save_tag_bypass_documents(tag_bypass_path, tag_bypass_docs)
 
     log_run_details(created_entities=created_entities, error_details=error_details)
     metrics_path = Path(config.metrics_file)
@@ -1616,11 +1722,12 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         new_totals_cost,
     )
     LOGGER.info(
-        "Fertig. Gescannt=%s, Aktualisiert=%s, Übersprungen=%s, Fehler=%s",
+        "Fertig. Gescannt=%s, Aktualisiert=%s, Übersprungen=%s, Fehler=%s, Bypass=%s",
         scanned,
         updated,
         skipped,
         failed,
+        bypassed,
     )
 
 
