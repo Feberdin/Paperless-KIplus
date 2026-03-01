@@ -35,6 +35,7 @@ async def async_setup_entry(
         [
             PaperlessRunnerResetMetricsButton(entry.entry_id, runner),
             PaperlessRunnerResetFailedDocumentsButton(entry.entry_id, runner),
+            PaperlessRunnerShowLogButton(entry.entry_id, runner),
             PaperlessRunnerExportLogButton(entry.entry_id, runner),
         ],
         True,
@@ -87,6 +88,30 @@ class PaperlessRunnerExportLogButton(ButtonEntity):
         """Export last run log to /config/www for browser download."""
 
         await self._runner.async_export_last_log()
+
+
+class PaperlessRunnerShowLogButton(ButtonEntity):
+    """Button to show last log content in HA persistent notification."""
+
+    _attr_icon = "mdi:text-box-search-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        self._entry_id = entry_id
+        self._runner = runner
+        self._attr_unique_id = f"{entry_id}_show_log"
+        self._attr_name = "Paperless KIplus Letztes Protokoll anzeigen"
+        self._attr_has_entity_name = True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Ordnet den Button dem zentralen Integrationsgerät zu."""
+
+        return _device_info(self._entry_id)
+
+    async def async_press(self) -> None:
+        """Show the last log as persistent notification."""
+
+        await self._runner.async_show_last_log()
 
 
 class PaperlessRunnerResetFailedDocumentsButton(ButtonEntity):

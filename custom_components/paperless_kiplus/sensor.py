@@ -51,6 +51,8 @@ async def async_setup_entry(
             PaperlessRunnerLastCostSensor(entry.entry_id, runner),
             PaperlessRunnerTotalTokensSensor(entry.entry_id, runner),
             PaperlessRunnerTotalCostSensor(entry.entry_id, runner),
+            PaperlessRunnerQuarantineCountSensor(entry.entry_id, runner),
+            PaperlessRunnerBypassCountSensor(entry.entry_id, runner),
         ],
         True,
     )
@@ -131,6 +133,8 @@ class PaperlessRunnerStatusSensor(SensorEntity):
             "total_cost_eur": round(self._runner.total_cost_eur, 6),
             "last_log_export_path": self._runner.last_log_export_path,
             "last_log_export_url": self._runner.last_log_export_url,
+            "active_quarantine_count": self._runner.active_quarantine_count,
+            "active_bypass_count": self._runner.active_bypass_count,
         }
 
 
@@ -350,6 +354,42 @@ class PaperlessRunnerLastCostSensor(_BaseMetricSensor):
     @property
     def native_value(self) -> float:
         return round(self._runner.last_run_cost_eur, 6)
+
+
+class PaperlessRunnerQuarantineCountSensor(_BaseMetricSensor):
+    """Anzahl aktuell aktiver Quarantäne-Dokumente."""
+
+    _attr_icon = "mdi:timer-sand"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        super().__init__(
+            entry_id,
+            runner,
+            suffix="active_quarantine_count",
+            name="Paperless KIplus Aktive Quarantäne",
+        )
+
+    @property
+    def native_value(self) -> int:
+        return self._runner.active_quarantine_count
+
+
+class PaperlessRunnerBypassCountSensor(_BaseMetricSensor):
+    """Anzahl aktuell aktiver Tag-Bypass-Dokumente."""
+
+    _attr_icon = "mdi:skip-next-circle-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        super().__init__(
+            entry_id,
+            runner,
+            suffix="active_bypass_count",
+            name="Paperless KIplus Aktiver Bypass",
+        )
+
+    @property
+    def native_value(self) -> int:
+        return self._runner.active_bypass_count
 
 
 class PaperlessRunnerTotalTokensSensor(_BaseMetricSensor):

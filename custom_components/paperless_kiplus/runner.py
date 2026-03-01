@@ -89,6 +89,8 @@ class PaperlessRunner:
         self.last_command_executed: str = ""
         self.last_log_export_path: str = ""
         self.last_log_export_url: str = ""
+        self.active_quarantine_count: int = 0
+        self.active_bypass_count: int = 0
 
     @property
     def cooldown_until(self) -> datetime | None:
@@ -212,6 +214,7 @@ class PaperlessRunner:
                 _LOGGER.exception("Paperless KIplus run crashed: %s", exc)
             finally:
                 await self._refresh_metrics_from_file()
+                await self._refresh_failed_state_counts()
                 self.running = False
                 self.last_finished = datetime.now(UTC)
                 self._notify()
@@ -248,10 +251,76 @@ class PaperlessRunner:
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             _LOGGER.warning("Could not parse metrics file '%s': %s", path, exc)
 
+    async def _refresh_failed_state_counts(self) -> None:
+        """Lädt aktive Quarantäne-/Bypass-Anzahl aus den State-Dateien."""
+
+        config_payload: dict = {}
+        if self.managed_config_enabled and self.managed_config_yaml.strip():
+            try:
+                parsed = yaml.safe_load(self.managed_config_yaml) or {}
+                if isinstance(parsed, dict):
+                    config_payload = parsed
+            except yaml.YAMLError:
+                config_payload = {}
+        else:
+            config_path = Path(self.config_file)
+            if not config_path.is_absolute():
+                config_path = Path(self.workdir) / config_path
+            if config_path.exists():
+                try:
+                    parsed = await self.hass.async_add_executor_job(
+                        lambda: yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+                    )
+                    if isinstance(parsed, dict):
+                        config_payload = parsed
+                except (OSError, yaml.YAMLError):
+                    config_payload = {}
+
+        failed_docs_name = str(
+            config_payload.get("failed_documents_file", "failed_documents.json")
+        ).strip()
+        bypass_name = str(
+            config_payload.get("tag_bypass_file", "tag_bypass_documents.json")
+        ).strip()
+
+        failed_docs_path = Path(failed_docs_name or "failed_documents.json")
+        if not failed_docs_path.is_absolute():
+            failed_docs_path = Path(self.workdir) / failed_docs_path
+        bypass_path = Path(bypass_name or "tag_bypass_documents.json")
+        if not bypass_path.is_absolute():
+            bypass_path = Path(self.workdir) / bypass_path
+
+        def _read_json(path: Path) -> dict:
+            if not path.exists():
+                return {}
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                return payload if isinstance(payload, dict) else {}
+            except (OSError, json.JSONDecodeError):
+                return {}
+
+        failed_payload, bypass_payload = await asyncio.gather(
+            self.hass.async_add_executor_job(_read_json, failed_docs_path),
+            self.hass.async_add_executor_job(_read_json, bypass_path),
+        )
+
+        now_ts = datetime.now(UTC).timestamp()
+        quarantine_count = 0
+        for _, value in failed_payload.items():
+            try:
+                if float(value) > now_ts:
+                    quarantine_count += 1
+            except (TypeError, ValueError):
+                continue
+
+        self.active_quarantine_count = quarantine_count
+        self.active_bypass_count = len(bypass_payload)
+
     async def async_load_initial_metrics(self) -> None:
         """Lädt Metriken beim Setup, damit Sensorwerte nach Reload erhalten bleiben."""
 
         await self._refresh_metrics_from_file()
+        await self._refresh_failed_state_counts()
 
     async def async_reset_metrics(self) -> None:
         """Setzt Token-/Kostenmetriken in Datei und Runtime zurück."""
@@ -312,6 +381,27 @@ class PaperlessRunner:
         self._notify()
         return self.last_log_export_url
 
+    async def async_show_last_log(self) -> None:
+        """Zeigt den Inhalt des letzten Protokolls direkt als HA-Benachrichtigung an."""
+
+        log_text = self.last_log_combined or "[Kein Log vorhanden]"
+        if len(log_text) > 15000:
+            log_text = log_text[:14997] + "..."
+
+        await self.hass.services.async_call(
+            "persistent_notification",
+            "create",
+            {
+                "title": "Paperless KIplus Letztes Protokoll",
+                "message": log_text,
+                "notification_id": "paperless_kiplus_last_log",
+            },
+            blocking=True,
+        )
+        self.last_status = "log_shown"
+        self.last_message = "last log shown in persistent notification"
+        self._notify()
+
     async def async_reset_failed_documents(self) -> None:
         """Löscht Quarantäne-/Bypass-Dateien, damit Failed-Dokumente neu versucht werden."""
 
@@ -358,6 +448,7 @@ class PaperlessRunner:
 
         self.last_status = "failed_docs_reset"
         self.last_message = f"failed/quarantine documents reset ({deleted_count} files)"
+        await self._refresh_failed_state_counts()
         self._notify()
 
     @staticmethod
