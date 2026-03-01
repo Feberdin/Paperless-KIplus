@@ -67,6 +67,7 @@ class AppConfig:
     quarantine_failed_documents: bool
     failed_document_cooldown_hours: int
     failed_documents_file: str
+    failed_tags_only_cooldown_hours: int
 
 
 def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | None = None) -> AppConfig:
@@ -128,6 +129,7 @@ def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | No
         quarantine_failed_documents=bool(raw.get("quarantine_failed_documents", True)),
         failed_document_cooldown_hours=int(raw.get("failed_document_cooldown_hours", 24)),
         failed_documents_file=str(raw.get("failed_documents_file", "failed_documents.json")).strip(),
+        failed_tags_only_cooldown_hours=int(raw.get("failed_tags_only_cooldown_hours", 168)),
     )
 
 
@@ -1180,6 +1182,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     failed_docs_path = Path(config.failed_documents_file)
     failed_docs_until: Dict[str, float] = {}
     failed_docs_cooldown_seconds = max(0, int(config.failed_document_cooldown_hours)) * 3600
+    failed_tags_only_cooldown_seconds = max(0, int(config.failed_tags_only_cooldown_hours)) * 3600
     if config.quarantine_failed_documents:
         failed_docs_until = load_failed_documents(failed_docs_path)
         now_ts = dt.datetime.now(dt.timezone.utc).timestamp()
@@ -1396,9 +1399,26 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                 and doc_key is not None
                 and failed_docs_cooldown_seconds > 0
             ):
-                retry_after_ts = (
-                    dt.datetime.now(dt.timezone.utc).timestamp() + failed_docs_cooldown_seconds
+                retry_delay_seconds = failed_docs_cooldown_seconds
+                error_text = str(exc)
+                tags_only_patch = bool(
+                    patch_payload_for_error
+                    and set(patch_payload_for_error.keys()) == {"tags"}
                 )
+                if (
+                    tags_only_patch
+                    and "Feldanalyse: tags:" in error_text
+                    and failed_tags_only_cooldown_seconds > retry_delay_seconds
+                ):
+                    retry_delay_seconds = failed_tags_only_cooldown_seconds
+                    LOGGER.warning(
+                        "Dokument %s (%s): Tags-only-Fehler erkannt, setze verlängerte Quarantäne auf %s Stunden.",
+                        doc_id,
+                        title,
+                        int(config.failed_tags_only_cooldown_hours),
+                    )
+
+                retry_after_ts = dt.datetime.now(dt.timezone.utc).timestamp() + retry_delay_seconds
                 failed_docs_until[doc_key] = retry_after_ts
                 retry_after_text = dt.datetime.fromtimestamp(
                     retry_after_ts, tz=dt.timezone.utc
