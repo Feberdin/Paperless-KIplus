@@ -12,6 +12,8 @@ from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 
 from .const import (
+    CONF_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
+    CONF_ALREADY_CLASSIFIED_SKIP,
     ATTR_ALL_DOCUMENTS,
     ATTR_CONFIG_FILE,
     ATTR_ENTRY_ID,
@@ -26,6 +28,15 @@ from .const import (
     CONF_MANAGED_CONFIG_YAML,
     CONF_INPUT_COST_PER_1K_TOKENS_EUR,
     CONF_OUTPUT_COST_PER_1K_TOKENS_EUR,
+    CONF_PRECHECK_BLOCKED_FILENAME_PATTERNS,
+    CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
+    CONF_PRECHECK_DUPLICATE_HASH_GATE,
+    CONF_PRECHECK_IMAGE_ONLY_GATE,
+    CONF_PRECHECK_MIN_ALNUM_RATIO,
+    CONF_PRECHECK_MIN_CONTENT_CHARS,
+    CONF_PRECHECK_MIN_WORD_COUNT,
+    DEFAULT_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
+    DEFAULT_ALREADY_CLASSIFIED_SKIP,
     DEFAULT_ALL_DOCUMENTS,
     DEFAULT_COMMAND,
     DEFAULT_CONFIG_FILE,
@@ -37,6 +48,13 @@ from .const import (
     DEFAULT_METRICS_FILE,
     DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR,
     DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR,
+    DEFAULT_PRECHECK_BLOCKED_FILENAME_PATTERNS,
+    DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
+    DEFAULT_PRECHECK_DUPLICATE_HASH_GATE,
+    DEFAULT_PRECHECK_IMAGE_ONLY_GATE,
+    DEFAULT_PRECHECK_MIN_ALNUM_RATIO,
+    DEFAULT_PRECHECK_MIN_CONTENT_CHARS,
+    DEFAULT_PRECHECK_MIN_WORD_COUNT,
     DEFAULT_WORKDIR,
     DOMAIN,
     SERVICE_RUN,
@@ -120,6 +138,70 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ),
         DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR,
     )
+    already_classified_skip = bool(
+        options.get(
+            CONF_ALREADY_CLASSIFIED_SKIP,
+            data.get(CONF_ALREADY_CLASSIFIED_SKIP, DEFAULT_ALREADY_CLASSIFIED_SKIP),
+        )
+    )
+    already_classified_require_ki_tag = bool(
+        options.get(
+            CONF_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
+            data.get(
+                CONF_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
+                DEFAULT_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
+            ),
+        )
+    )
+    precheck_min_content_chars = int(
+        options.get(
+            CONF_PRECHECK_MIN_CONTENT_CHARS,
+            data.get(CONF_PRECHECK_MIN_CONTENT_CHARS, DEFAULT_PRECHECK_MIN_CONTENT_CHARS),
+        )
+    )
+    precheck_min_word_count = int(
+        options.get(
+            CONF_PRECHECK_MIN_WORD_COUNT,
+            data.get(CONF_PRECHECK_MIN_WORD_COUNT, DEFAULT_PRECHECK_MIN_WORD_COUNT),
+        )
+    )
+    precheck_min_alnum_ratio = _as_float(
+        options.get(
+            CONF_PRECHECK_MIN_ALNUM_RATIO,
+            data.get(CONF_PRECHECK_MIN_ALNUM_RATIO, DEFAULT_PRECHECK_MIN_ALNUM_RATIO),
+        ),
+        DEFAULT_PRECHECK_MIN_ALNUM_RATIO,
+    )
+    precheck_blocked_filename_patterns = str(
+        options.get(
+            CONF_PRECHECK_BLOCKED_FILENAME_PATTERNS,
+            data.get(
+                CONF_PRECHECK_BLOCKED_FILENAME_PATTERNS,
+                DEFAULT_PRECHECK_BLOCKED_FILENAME_PATTERNS,
+            ),
+        )
+    )
+    precheck_image_only_gate = bool(
+        options.get(
+            CONF_PRECHECK_IMAGE_ONLY_GATE,
+            data.get(CONF_PRECHECK_IMAGE_ONLY_GATE, DEFAULT_PRECHECK_IMAGE_ONLY_GATE),
+        )
+    )
+    precheck_duplicate_hash_gate = bool(
+        options.get(
+            CONF_PRECHECK_DUPLICATE_HASH_GATE,
+            data.get(CONF_PRECHECK_DUPLICATE_HASH_GATE, DEFAULT_PRECHECK_DUPLICATE_HASH_GATE),
+        )
+    )
+    precheck_duplicate_apply_metadata = bool(
+        options.get(
+            CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
+            data.get(
+                CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
+                DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
+            ),
+        )
+    )
 
     runner = PaperlessRunner(
         hass,
@@ -135,6 +217,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         managed_config_yaml=managed_config_yaml,
         input_cost_per_1k_tokens_eur=input_cost_per_1k_tokens_eur,
         output_cost_per_1k_tokens_eur=output_cost_per_1k_tokens_eur,
+        already_classified_skip=already_classified_skip,
+        already_classified_require_ki_tag=already_classified_require_ki_tag,
+        precheck_min_content_chars=precheck_min_content_chars,
+        precheck_min_word_count=precheck_min_word_count,
+        precheck_min_alnum_ratio=precheck_min_alnum_ratio,
+        precheck_blocked_filename_patterns=precheck_blocked_filename_patterns,
+        precheck_image_only_gate=precheck_image_only_gate,
+        precheck_duplicate_hash_gate=precheck_duplicate_hash_gate,
+        precheck_duplicate_apply_metadata=precheck_duplicate_apply_metadata,
     )
     hass.data[DOMAIN][entry.entry_id] = runner
     await runner.async_load_initial_metrics()

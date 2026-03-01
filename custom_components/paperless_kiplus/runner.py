@@ -49,6 +49,15 @@ class PaperlessRunner:
         managed_config_yaml: str,
         input_cost_per_1k_tokens_eur: float,
         output_cost_per_1k_tokens_eur: float,
+        already_classified_skip: bool,
+        already_classified_require_ki_tag: bool,
+        precheck_min_content_chars: int,
+        precheck_min_word_count: int,
+        precheck_min_alnum_ratio: float,
+        precheck_blocked_filename_patterns: str,
+        precheck_image_only_gate: bool,
+        precheck_duplicate_hash_gate: bool,
+        precheck_duplicate_apply_metadata: bool,
     ) -> None:
         self.hass = hass
         self.command = command
@@ -63,6 +72,15 @@ class PaperlessRunner:
         self.managed_config_yaml = managed_config_yaml
         self.input_cost_per_1k_tokens_eur = input_cost_per_1k_tokens_eur
         self.output_cost_per_1k_tokens_eur = output_cost_per_1k_tokens_eur
+        self.already_classified_skip = already_classified_skip
+        self.already_classified_require_ki_tag = already_classified_require_ki_tag
+        self.precheck_min_content_chars = precheck_min_content_chars
+        self.precheck_min_word_count = precheck_min_word_count
+        self.precheck_min_alnum_ratio = precheck_min_alnum_ratio
+        self.precheck_blocked_filename_patterns = precheck_blocked_filename_patterns
+        self.precheck_image_only_gate = precheck_image_only_gate
+        self.precheck_duplicate_hash_gate = precheck_duplicate_hash_gate
+        self.precheck_duplicate_apply_metadata = precheck_duplicate_apply_metadata
 
         self._lock = asyncio.Lock()
         self.running = False
@@ -501,6 +519,24 @@ class PaperlessRunner:
             if isinstance(parsed, dict):
                 parsed["input_cost_per_1k_tokens_eur"] = float(self.input_cost_per_1k_tokens_eur)
                 parsed["output_cost_per_1k_tokens_eur"] = float(self.output_cost_per_1k_tokens_eur)
+                parsed["already_classified_skip"] = bool(self.already_classified_skip)
+                parsed["already_classified_require_ki_tag"] = bool(
+                    self.already_classified_require_ki_tag
+                )
+                parsed["precheck_min_content_chars"] = int(self.precheck_min_content_chars)
+                parsed["precheck_min_word_count"] = int(self.precheck_min_word_count)
+                parsed["precheck_min_alnum_ratio"] = float(self.precheck_min_alnum_ratio)
+                patterns = [
+                    part.strip()
+                    for part in str(self.precheck_blocked_filename_patterns).split(",")
+                    if part.strip()
+                ]
+                parsed["precheck_blocked_filename_patterns"] = patterns
+                parsed["precheck_image_only_gate"] = bool(self.precheck_image_only_gate)
+                parsed["precheck_duplicate_hash_gate"] = bool(self.precheck_duplicate_hash_gate)
+                parsed["precheck_duplicate_apply_metadata"] = bool(
+                    self.precheck_duplicate_apply_metadata
+                )
                 content = yaml.safe_dump(parsed, allow_unicode=True, sort_keys=False)
             else:
                 content = raw_yaml

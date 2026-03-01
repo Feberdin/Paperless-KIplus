@@ -19,6 +19,8 @@ from homeassistant.helpers.selector import (
 )
 
 from .const import (
+    CONF_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
+    CONF_ALREADY_CLASSIFIED_SKIP,
     CONF_ALL_DOCUMENTS,
     CONF_COOLDOWN_SECONDS,
     CONF_DRY_RUN,
@@ -26,6 +28,15 @@ from .const import (
     CONF_MANAGED_CONFIG_YAML,
     CONF_MAX_DOCUMENTS,
     CONF_OUTPUT_COST_PER_1K_TOKENS_EUR,
+    CONF_PRECHECK_BLOCKED_FILENAME_PATTERNS,
+    CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
+    CONF_PRECHECK_DUPLICATE_HASH_GATE,
+    CONF_PRECHECK_IMAGE_ONLY_GATE,
+    CONF_PRECHECK_MIN_ALNUM_RATIO,
+    CONF_PRECHECK_MIN_CONTENT_CHARS,
+    CONF_PRECHECK_MIN_WORD_COUNT,
+    DEFAULT_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
+    DEFAULT_ALREADY_CLASSIFIED_SKIP,
     DEFAULT_ALL_DOCUMENTS,
     DEFAULT_COOLDOWN_SECONDS,
     DEFAULT_DRY_RUN,
@@ -33,6 +44,13 @@ from .const import (
     DEFAULT_MANAGED_CONFIG_YAML,
     DEFAULT_MAX_DOCUMENTS,
     DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR,
+    DEFAULT_PRECHECK_BLOCKED_FILENAME_PATTERNS,
+    DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
+    DEFAULT_PRECHECK_DUPLICATE_HASH_GATE,
+    DEFAULT_PRECHECK_IMAGE_ONLY_GATE,
+    DEFAULT_PRECHECK_MIN_ALNUM_RATIO,
+    DEFAULT_PRECHECK_MIN_CONTENT_CHARS,
+    DEFAULT_PRECHECK_MIN_WORD_COUNT,
     DOMAIN,
 )
 
@@ -99,6 +117,46 @@ class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         mode="box",
                     )
                 ),
+                vol.Required(
+                    CONF_ALREADY_CLASSIFIED_SKIP,
+                    default=DEFAULT_ALREADY_CLASSIFIED_SKIP,
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
+                    default=DEFAULT_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_PRECHECK_MIN_CONTENT_CHARS,
+                    default=DEFAULT_PRECHECK_MIN_CONTENT_CHARS,
+                ): NumberSelector(
+                    NumberSelectorConfig(min=0, max=20000, step=10, mode="box")
+                ),
+                vol.Required(
+                    CONF_PRECHECK_MIN_WORD_COUNT,
+                    default=DEFAULT_PRECHECK_MIN_WORD_COUNT,
+                ): NumberSelector(
+                    NumberSelectorConfig(min=0, max=2000, step=1, mode="box")
+                ),
+                vol.Required(
+                    CONF_PRECHECK_MIN_ALNUM_RATIO,
+                    default=str(DEFAULT_PRECHECK_MIN_ALNUM_RATIO),
+                ): TextSelector(),
+                vol.Required(
+                    CONF_PRECHECK_BLOCKED_FILENAME_PATTERNS,
+                    default=DEFAULT_PRECHECK_BLOCKED_FILENAME_PATTERNS,
+                ): TextSelector(),
+                vol.Required(
+                    CONF_PRECHECK_IMAGE_ONLY_GATE,
+                    default=DEFAULT_PRECHECK_IMAGE_ONLY_GATE,
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_PRECHECK_DUPLICATE_HASH_GATE,
+                    default=DEFAULT_PRECHECK_DUPLICATE_HASH_GATE,
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
+                    default=DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
+                ): BooleanSelector(),
                 vol.Required(
                     CONF_MANAGED_CONFIG_YAML,
                     default=DEFAULT_MANAGED_CONFIG_YAML,
@@ -200,6 +258,85 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
                         mode="box",
                     )
                 ),
+                vol.Required(
+                    CONF_ALREADY_CLASSIFIED_SKIP,
+                    default=options.get(
+                        CONF_ALREADY_CLASSIFIED_SKIP,
+                        data.get(CONF_ALREADY_CLASSIFIED_SKIP, DEFAULT_ALREADY_CLASSIFIED_SKIP),
+                    ),
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
+                    default=options.get(
+                        CONF_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
+                        data.get(
+                            CONF_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
+                            DEFAULT_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
+                        ),
+                    ),
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_PRECHECK_MIN_CONTENT_CHARS,
+                    default=options.get(
+                        CONF_PRECHECK_MIN_CONTENT_CHARS,
+                        data.get(CONF_PRECHECK_MIN_CONTENT_CHARS, DEFAULT_PRECHECK_MIN_CONTENT_CHARS),
+                    ),
+                ): NumberSelector(
+                    NumberSelectorConfig(min=0, max=20000, step=10, mode="box")
+                ),
+                vol.Required(
+                    CONF_PRECHECK_MIN_WORD_COUNT,
+                    default=options.get(
+                        CONF_PRECHECK_MIN_WORD_COUNT,
+                        data.get(CONF_PRECHECK_MIN_WORD_COUNT, DEFAULT_PRECHECK_MIN_WORD_COUNT),
+                    ),
+                ): NumberSelector(
+                    NumberSelectorConfig(min=0, max=2000, step=1, mode="box")
+                ),
+                vol.Required(
+                    CONF_PRECHECK_MIN_ALNUM_RATIO,
+                    default=options.get(
+                        CONF_PRECHECK_MIN_ALNUM_RATIO,
+                        data.get(CONF_PRECHECK_MIN_ALNUM_RATIO, DEFAULT_PRECHECK_MIN_ALNUM_RATIO),
+                    ),
+                ): TextSelector(),
+                vol.Required(
+                    CONF_PRECHECK_BLOCKED_FILENAME_PATTERNS,
+                    default=options.get(
+                        CONF_PRECHECK_BLOCKED_FILENAME_PATTERNS,
+                        data.get(
+                            CONF_PRECHECK_BLOCKED_FILENAME_PATTERNS,
+                            DEFAULT_PRECHECK_BLOCKED_FILENAME_PATTERNS,
+                        ),
+                    ),
+                ): TextSelector(),
+                vol.Required(
+                    CONF_PRECHECK_IMAGE_ONLY_GATE,
+                    default=options.get(
+                        CONF_PRECHECK_IMAGE_ONLY_GATE,
+                        data.get(CONF_PRECHECK_IMAGE_ONLY_GATE, DEFAULT_PRECHECK_IMAGE_ONLY_GATE),
+                    ),
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_PRECHECK_DUPLICATE_HASH_GATE,
+                    default=options.get(
+                        CONF_PRECHECK_DUPLICATE_HASH_GATE,
+                        data.get(
+                            CONF_PRECHECK_DUPLICATE_HASH_GATE,
+                            DEFAULT_PRECHECK_DUPLICATE_HASH_GATE,
+                        ),
+                    ),
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
+                    default=options.get(
+                        CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
+                        data.get(
+                            CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
+                            DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
+                        ),
+                    ),
+                ): BooleanSelector(),
                 vol.Required(
                     CONF_MANAGED_CONFIG_YAML,
                     default=options.get(

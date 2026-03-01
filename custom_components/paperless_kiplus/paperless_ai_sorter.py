@@ -71,6 +71,15 @@ class AppConfig:
     failed_patch_cache_file: str
     enable_tag_bypass_on_tags_500: bool
     tag_bypass_file: str
+    already_classified_skip: bool
+    already_classified_require_ki_tag: bool
+    precheck_min_content_chars: int
+    precheck_min_word_count: int
+    precheck_min_alnum_ratio: float
+    precheck_blocked_filename_patterns: List[str]
+    precheck_image_only_gate: bool
+    precheck_duplicate_hash_gate: bool
+    precheck_duplicate_apply_metadata: bool
 
 
 def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | None = None) -> AppConfig:
@@ -101,6 +110,17 @@ def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | No
     max_documents = int(raw.get("max_documents", 25))
     if cli_max_documents is not None and cli_max_documents > 0:
         max_documents = cli_max_documents
+
+    blocked_patterns_raw = raw.get(
+        "precheck_blocked_filename_patterns",
+        ["smime", ".p7m", ".p7s", "winmail.dat", "att00001"],
+    )
+    if isinstance(blocked_patterns_raw, str):
+        blocked_patterns = [part.strip() for part in blocked_patterns_raw.split(",") if part.strip()]
+    elif isinstance(blocked_patterns_raw, list):
+        blocked_patterns = [str(part).strip() for part in blocked_patterns_raw if str(part).strip()]
+    else:
+        blocked_patterns = ["smime", ".p7m", ".p7s", "winmail.dat", "att00001"]
 
     return AppConfig(
         paperless_url=str(raw["paperless_url"]).rstrip("/"),
@@ -136,6 +156,15 @@ def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | No
         failed_patch_cache_file=str(raw.get("failed_patch_cache_file", "failed_patch_cache.json")).strip(),
         enable_tag_bypass_on_tags_500=bool(raw.get("enable_tag_bypass_on_tags_500", True)),
         tag_bypass_file=str(raw.get("tag_bypass_file", "tag_bypass_documents.json")).strip(),
+        already_classified_skip=bool(raw.get("already_classified_skip", True)),
+        already_classified_require_ki_tag=bool(raw.get("already_classified_require_ki_tag", False)),
+        precheck_min_content_chars=int(raw.get("precheck_min_content_chars", 120)),
+        precheck_min_word_count=int(raw.get("precheck_min_word_count", 20)),
+        precheck_min_alnum_ratio=float(raw.get("precheck_min_alnum_ratio", 0.40)),
+        precheck_blocked_filename_patterns=blocked_patterns,
+        precheck_image_only_gate=bool(raw.get("precheck_image_only_gate", True)),
+        precheck_duplicate_hash_gate=bool(raw.get("precheck_duplicate_hash_gate", True)),
+        precheck_duplicate_apply_metadata=bool(raw.get("precheck_duplicate_apply_metadata", True)),
     )
 
 
@@ -287,6 +316,40 @@ class PaperlessClient:
             next_url = str(page.get("next") or "")
 
         return mapping
+
+    def find_classified_duplicate(
+        self,
+        *,
+        current_document_id: int,
+        checksum: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Sucht ein bereits klassifiziertes Dokument mit gleicher checksum."""
+
+        if not checksum:
+            return None
+
+        query_variants = (
+            {"checksum": checksum, "page_size": 50, "ordering": "-created"},
+            {"checksum__exact": checksum, "page_size": 50, "ordering": "-created"},
+        )
+        for params in query_variants:
+            try:
+                page = self._request("GET", "/api/documents/", params=params, retries=1)
+            except PaperlessApiError:
+                continue
+            for item in page.get("results", []):
+                try:
+                    item_id = int(item.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                if item_id == int(current_document_id):
+                    continue
+                if item.get("document_type") is None:
+                    continue
+                if not item.get("tags"):
+                    continue
+                return item
+        return None
 
     def create_entity(self, path: str, name: str) -> int:
         """Erzeugt ein Metadaten-Objekt in Paperless und gibt dessen ID zurück."""
@@ -1090,6 +1153,54 @@ def build_skip_note_entry(
     )
 
 
+def build_precheck_skip_note_entry(
+    *,
+    reason: str,
+    details: str,
+) -> str:
+    """Notiztext für Precheck-Skips vor der eigentlichen KI-Klassifizierung."""
+
+    timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+    compact_details = " ".join(str(details).split())
+    if len(compact_details) > 900:
+        compact_details = compact_details[:897] + "..."
+    return (
+        f"[KI-Precheck-Skip {timestamp}]\n"
+        f"Dokument wurde vor der KI-Klassifizierung übersprungen.\n"
+        f"Grund: {reason}\n"
+        f"Details: {compact_details}"
+    )
+
+
+def collect_document_text(document: Dict[str, Any]) -> str:
+    """Liest den OCR-/Inhaltstext robust aus dem Dokumentobjekt."""
+
+    return str(document.get("content") or document.get("content_preview") or "").strip()
+
+
+def calc_alnum_ratio(text: str) -> float:
+    """Berechnet den Anteil alphanumerischer Zeichen an allen Nicht-Whitespace-Zeichen."""
+
+    if not text:
+        return 0.0
+    compact = [char for char in text if not char.isspace()]
+    if not compact:
+        return 0.0
+    alnum = sum(1 for char in compact if char.isalnum())
+    return alnum / float(len(compact))
+
+
+def collect_document_names(document: Dict[str, Any]) -> List[str]:
+    """Sammelt alle relevanten Dateinamen-/Titelquellen für Pattern-Checks."""
+
+    result: List[str] = []
+    for key in ("original_file_name", "original_filename", "filename", "title", "archive_filename"):
+        value = document.get(key)
+        if value:
+            result.append(str(value))
+    return result
+
+
 def log_dry_run_change(
     document: Dict[str, Any],
     prediction: Dict[str, Any],
@@ -1345,6 +1456,14 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         can_create_entities,
         created_entities,
     )
+    skip_precheck_tag_id = ensure_entity_id(
+        client,
+        tags_map,
+        "KI_SKIP_PRECHECK",
+        "/api/tags/",
+        can_create_entities,
+        created_entities,
+    )
     remove_neu_tag_id = tags_map.get("#neu")
     only_tag_id: Optional[int] = None
     only_tag_name = config.process_only_tag.strip()
@@ -1471,6 +1590,348 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             LOGGER.debug("Skip Dokument %s (%s): bereits klassifiziert", doc_id, title)
             skipped += 1
             continue
+
+        # ---------- Precheck-Gates vor KI ----------
+        if config.already_classified_skip:
+            has_type = document.get("document_type") is not None
+            has_tags = bool(document.get("tags"))
+            has_ki_tag = bool(ki_tag_id is not None and int(ki_tag_id) in doc_tags)
+            if has_type and has_tags and (
+                not config.already_classified_require_ki_tag or has_ki_tag
+            ):
+                if not config.dry_run and doc_id is not None:
+                    current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
+                    new_tags = set(current_tags)
+                    if remove_neu_tag_id is not None:
+                        new_tags.discard(int(remove_neu_tag_id))
+                    if skip_precheck_tag_id is not None:
+                        new_tags.add(int(skip_precheck_tag_id))
+                    if ki_tag_id is not None:
+                        new_tags.add(int(ki_tag_id))
+                    if new_tags != current_tags:
+                        try:
+                            client._request(
+                                "PATCH",
+                                f"/api/documents/{int(doc_id)}/",
+                                payload={"tags": sorted(new_tags)},
+                                retries=1,
+                            )
+                        except PaperlessApiError as precheck_tag_exc:
+                            LOGGER.error(
+                                "KI_SKIP_PRECHECK-Tag konnte für Dokument %s (%s) nicht gesetzt werden: %s",
+                                doc_id,
+                                title,
+                                precheck_tag_exc,
+                            )
+                    try:
+                        client.add_document_note(
+                            int(doc_id),
+                            build_precheck_skip_note_entry(
+                                reason="already_classified_skip",
+                                details="Dokumenttyp und Tags bereits vorhanden.",
+                            ),
+                        )
+                    except PaperlessApiError as precheck_note_exc:
+                        LOGGER.error(
+                            "Precheck-Notiz konnte für Dokument %s (%s) nicht gespeichert werden: %s",
+                            doc_id,
+                            title,
+                            precheck_note_exc,
+                        )
+                LOGGER.info(
+                    "Skip Dokument %s (%s): Precheck already_classified_skip",
+                    doc_id,
+                    title,
+                )
+                skipped += 1
+                continue
+
+        names_lower = [name.lower() for name in collect_document_names(document)]
+        matched_pattern = None
+        for pattern in config.precheck_blocked_filename_patterns:
+            pattern_lower = str(pattern).strip().lower()
+            if not pattern_lower:
+                continue
+            if any(pattern_lower in name for name in names_lower):
+                matched_pattern = pattern
+                break
+        if matched_pattern:
+            if not config.dry_run and doc_id is not None:
+                current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
+                new_tags = set(current_tags)
+                if remove_neu_tag_id is not None:
+                    new_tags.discard(int(remove_neu_tag_id))
+                if skip_precheck_tag_id is not None:
+                    new_tags.add(int(skip_precheck_tag_id))
+                if ki_tag_id is not None:
+                    new_tags.add(int(ki_tag_id))
+                if new_tags != current_tags:
+                    try:
+                        client._request(
+                            "PATCH",
+                            f"/api/documents/{int(doc_id)}/",
+                            payload={"tags": sorted(new_tags)},
+                            retries=1,
+                        )
+                    except PaperlessApiError as precheck_tag_exc:
+                        LOGGER.error(
+                            "KI_SKIP_PRECHECK-Tag konnte für Dokument %s (%s) nicht gesetzt werden: %s",
+                            doc_id,
+                            title,
+                            precheck_tag_exc,
+                        )
+                try:
+                    client.add_document_note(
+                        int(doc_id),
+                        build_precheck_skip_note_entry(
+                            reason="mime_filename_gate",
+                            details=f"Dateiname-Muster getroffen: {matched_pattern}",
+                        ),
+                    )
+                except PaperlessApiError as precheck_note_exc:
+                    LOGGER.error(
+                        "Precheck-Notiz konnte für Dokument %s (%s) nicht gespeichert werden: %s",
+                        doc_id,
+                        title,
+                        precheck_note_exc,
+                    )
+            LOGGER.info(
+                "Skip Dokument %s (%s): Precheck mime_filename_gate (%s)",
+                doc_id,
+                title,
+                matched_pattern,
+            )
+            skipped += 1
+            continue
+
+        doc_text = collect_document_text(document)
+        word_count = len(re.findall(r"\b\w+\b", doc_text))
+        alnum_ratio = calc_alnum_ratio(doc_text)
+        precheck_reasons: List[str] = []
+        if len(doc_text) < max(0, int(config.precheck_min_content_chars)):
+            precheck_reasons.append(
+                f"content_len={len(doc_text)} < min_content_chars={int(config.precheck_min_content_chars)}"
+            )
+        if word_count < max(0, int(config.precheck_min_word_count)):
+            precheck_reasons.append(
+                f"word_count={word_count} < min_word_count={int(config.precheck_min_word_count)}"
+            )
+        if alnum_ratio < max(0.0, float(config.precheck_min_alnum_ratio)):
+            precheck_reasons.append(
+                f"alnum_ratio={alnum_ratio:.2f} < min_alnum_ratio={float(config.precheck_min_alnum_ratio):.2f}"
+            )
+        if precheck_reasons:
+            if not config.dry_run and doc_id is not None:
+                current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
+                new_tags = set(current_tags)
+                if remove_neu_tag_id is not None:
+                    new_tags.discard(int(remove_neu_tag_id))
+                if skip_precheck_tag_id is not None:
+                    new_tags.add(int(skip_precheck_tag_id))
+                if ki_tag_id is not None:
+                    new_tags.add(int(ki_tag_id))
+                if new_tags != current_tags:
+                    try:
+                        client._request(
+                            "PATCH",
+                            f"/api/documents/{int(doc_id)}/",
+                            payload={"tags": sorted(new_tags)},
+                            retries=1,
+                        )
+                    except PaperlessApiError as precheck_tag_exc:
+                        LOGGER.error(
+                            "KI_SKIP_PRECHECK-Tag konnte für Dokument %s (%s) nicht gesetzt werden: %s",
+                            doc_id,
+                            title,
+                            precheck_tag_exc,
+                        )
+                try:
+                    client.add_document_note(
+                        int(doc_id),
+                        build_precheck_skip_note_entry(
+                            reason="content_quality_gate",
+                            details="; ".join(precheck_reasons),
+                        ),
+                    )
+                except PaperlessApiError as precheck_note_exc:
+                    LOGGER.error(
+                        "Precheck-Notiz konnte für Dokument %s (%s) nicht gespeichert werden: %s",
+                        doc_id,
+                        title,
+                        precheck_note_exc,
+                    )
+            LOGGER.info(
+                "Skip Dokument %s (%s): Precheck content_quality_gate (%s)",
+                doc_id,
+                title,
+                "; ".join(precheck_reasons),
+            )
+            skipped += 1
+            continue
+
+        if config.precheck_image_only_gate:
+            mime_type = str(document.get("mime_type") or document.get("media_type") or "").lower()
+            has_image_or_pdf_type = ("pdf" in mime_type) or mime_type.startswith("image/")
+            image_like_name = any(
+                any(name.endswith(ext) for ext in (".pdf", ".png", ".jpg", ".jpeg", ".tif", ".tiff"))
+                for name in names_lower
+            )
+            if (has_image_or_pdf_type or image_like_name) and len(doc_text.strip()) < 30:
+                if not config.dry_run and doc_id is not None:
+                    current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
+                    new_tags = set(current_tags)
+                    if remove_neu_tag_id is not None:
+                        new_tags.discard(int(remove_neu_tag_id))
+                    if skip_precheck_tag_id is not None:
+                        new_tags.add(int(skip_precheck_tag_id))
+                    if ki_tag_id is not None:
+                        new_tags.add(int(ki_tag_id))
+                    if new_tags != current_tags:
+                        try:
+                            client._request(
+                                "PATCH",
+                                f"/api/documents/{int(doc_id)}/",
+                                payload={"tags": sorted(new_tags)},
+                                retries=1,
+                            )
+                        except PaperlessApiError as precheck_tag_exc:
+                            LOGGER.error(
+                                "KI_SKIP_PRECHECK-Tag konnte für Dokument %s (%s) nicht gesetzt werden: %s",
+                                doc_id,
+                                title,
+                                precheck_tag_exc,
+                            )
+                    try:
+                        client.add_document_note(
+                            int(doc_id),
+                            build_precheck_skip_note_entry(
+                                reason="image_only_gate",
+                                details="Kein verwertbarer Text im OCR-Inhalt erkannt.",
+                            ),
+                        )
+                    except PaperlessApiError as precheck_note_exc:
+                        LOGGER.error(
+                            "Precheck-Notiz konnte für Dokument %s (%s) nicht gespeichert werden: %s",
+                            doc_id,
+                            title,
+                            precheck_note_exc,
+                        )
+                LOGGER.info(
+                    "Skip Dokument %s (%s): Precheck image_only_gate (kein verwertbarer Text)",
+                    doc_id,
+                    title,
+                )
+                skipped += 1
+                continue
+
+        if config.precheck_duplicate_hash_gate and doc_id is not None:
+            checksum = str(document.get("checksum") or "").strip()
+            if checksum:
+                duplicate_doc = client.find_classified_duplicate(
+                    current_document_id=int(doc_id),
+                    checksum=checksum,
+                )
+                if duplicate_doc is not None:
+                    duplicate_id = int(duplicate_doc.get("id"))
+                    if config.precheck_duplicate_apply_metadata and not config.dry_run:
+                        duplicate_patch: Dict[str, Any] = {}
+                        for field in ("document_type", "correspondent", "storage_path", "created"):
+                            value = duplicate_doc.get(field)
+                            if value is not None:
+                                duplicate_patch[field] = value
+                        duplicate_tags = duplicate_doc.get("tags") or []
+                        if duplicate_tags:
+                            duplicate_patch["tags"] = [int(tag_id) for tag_id in duplicate_tags]
+                        apply_forced_tag_rules(
+                            patch_payload=duplicate_patch,
+                            current_tag_ids=doc_tags,
+                            ki_tag_id=ki_tag_id,
+                            remove_neu_tag_id=remove_neu_tag_id,
+                        )
+                        if skip_precheck_tag_id is not None:
+                            merged_tags = set(int(tag_id) for tag_id in duplicate_patch.get("tags", []))
+                            merged_tags.add(int(skip_precheck_tag_id))
+                            duplicate_patch["tags"] = sorted(merged_tags)
+                        duplicate_patch = filter_unchanged_patch_fields(
+                            document=document,
+                            patch_payload=duplicate_patch,
+                        )
+                        if duplicate_patch:
+                            client.update_document(int(doc_id), duplicate_patch)
+                        try:
+                            client.add_document_note(
+                                int(doc_id),
+                                build_precheck_skip_note_entry(
+                                    reason="duplicate_hash_gate",
+                                    details=(
+                                        f"Dublette erkannt via checksum. Metadaten von Dokument "
+                                        f"{duplicate_id} übernommen."
+                                    ),
+                                ),
+                            )
+                        except PaperlessApiError as precheck_note_exc:
+                            LOGGER.error(
+                                "Precheck-Notiz konnte für Dokument %s (%s) nicht gespeichert werden: %s",
+                                doc_id,
+                                title,
+                                precheck_note_exc,
+                            )
+                        LOGGER.info(
+                            "Aktualisiert Dokument %s (%s) via Precheck duplicate_hash_gate (Quelle=%s)",
+                            doc_id,
+                            title,
+                            duplicate_id,
+                        )
+                        updated += 1
+                        continue
+
+                    if not config.dry_run and doc_id is not None:
+                        current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
+                        new_tags = set(current_tags)
+                        if remove_neu_tag_id is not None:
+                            new_tags.discard(int(remove_neu_tag_id))
+                        if skip_precheck_tag_id is not None:
+                            new_tags.add(int(skip_precheck_tag_id))
+                        if ki_tag_id is not None:
+                            new_tags.add(int(ki_tag_id))
+                        if new_tags != current_tags:
+                            try:
+                                client._request(
+                                    "PATCH",
+                                    f"/api/documents/{int(doc_id)}/",
+                                    payload={"tags": sorted(new_tags)},
+                                    retries=1,
+                                )
+                            except PaperlessApiError as precheck_tag_exc:
+                                LOGGER.error(
+                                    "KI_SKIP_PRECHECK-Tag konnte für Dokument %s (%s) nicht gesetzt werden: %s",
+                                    doc_id,
+                                    title,
+                                    precheck_tag_exc,
+                                )
+                        try:
+                            client.add_document_note(
+                                int(doc_id),
+                                build_precheck_skip_note_entry(
+                                    reason="duplicate_hash_gate",
+                                    details=f"Dublette erkannt via checksum (Referenzdokument {duplicate_id}).",
+                                ),
+                            )
+                        except PaperlessApiError as precheck_note_exc:
+                            LOGGER.error(
+                                "Precheck-Notiz konnte für Dokument %s (%s) nicht gespeichert werden: %s",
+                                doc_id,
+                                title,
+                                precheck_note_exc,
+                            )
+                    LOGGER.info(
+                        "Skip Dokument %s (%s): Precheck duplicate_hash_gate (Quelle=%s)",
+                        doc_id,
+                        title,
+                        duplicate_id,
+                    )
+                    skipped += 1
+                    continue
 
         try:
             if config.quarantine_failed_documents and doc_key is not None:
