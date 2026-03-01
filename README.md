@@ -1,360 +1,133 @@
-# Paperless-KIplus 🤖📄
+# Paperless KIplus Home Assistant Integration
 
-[![Python](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://www.python.org/)
-[![Home Assistant](https://img.shields.io/badge/Home%20Assistant-Custom%20Integration-41BDF5.svg)](https://www.home-assistant.io/)
-[![HACS](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://hacs.xyz/)
+Home-Assistant-Integration für die KI-gestützte Sortierung von Paperless-ngx Dokumenten.
 
-KI-gestützte Klassifizierung für **Paperless-ngx** mit Fokus auf nachvollziehbare Änderungen, robuste Regeln und gute Debugbarkeit.
+## Fokus dieser README
 
-## 📚 Inhalt
+Diese Datei beschreibt **nur** die Nutzung in Home Assistant (HACS).
 
-- [✨ Features](#-features)
-- [🏠 Home Assistant (HACS Integration)](#-home-assistant-hacs-integration)
-- [⚙️ Konfiguration](#️-konfiguration)
-- [🧩 Konfigurationsoptionen](#-konfigurationsoptionen)
-- [▶️ Nutzung](#️-nutzung)
-- [📝 KI-Notizen](#-ki-notizen)
-- [🧯 Fehleranalyse](#-fehleranalyse)
+- CLI / manuelles Python-Starten: siehe [README_CLI.md](README_CLI.md)
 
-## ✨ Features
+## Installation (HACS)
 
-- KI-Klassifizierung für:
-  - `document_type`
-  - `correspondent`
-  - `storage_path`
-  - `tags`
-  - `document_date` (`created`)
-- Optional strukturierte **Basis-Konfiguration** (`basis_config`) für Stammdaten & harte Regeln
-- Optionaler Tag-Filter (`process_only_tag`, z. B. `#NEU`)
-- Override per CLI: `--all-documents`
-- Harte Tag-Regeln im Code:
-  - `KI` hinzufügen
-  - `#NEU` entfernen
-- Optionale KI-Notizen in Paperless (`/api/documents/{id}/notes/`):
-  - Kurz-Zusammenfassung (optional)
-  - Begründung
-  - Änderungsübersicht
-- Umfangreiche Logs + Retry/Backoff
-- `--dry-run` mit Feld-Diff-Tabelle (`Aktuell -> Neu`)
-- Automatische Endzusammenfassung:
-  - Neu angelegte Entitäten (Tags, Korrespondenten, Dokumenttypen, Speicherpfade)
-  - Detaillierte Fehlerliste pro Dokument
-
-## 🗂️ Projektstruktur
-
-- `src/paperless_ai_sorter.py` - Hauptskript
-- `config.example.yaml` - Beispielkonfiguration
-- `requirements.txt` - Abhängigkeiten
-- `custom_components/paperless_kiplus/` - Home Assistant HACS Integration
-- `hacs.json` - HACS Metadaten
-- `brand/icon.png` + `brand/logo.png` - Branding-Grafiken für Integration/Repo
-
-## ✅ Voraussetzungen
-
-- Python 3.10+
-- Laufende Paperless-ngx Instanz
-- Paperless API Token
-- KI-API-Key (OpenAI-kompatibel)
-
-## 🚀 Installation
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-## 🏠 Home Assistant (HACS Integration)
-
-### 🖼️ Icon/Logo in Home Assistant
-
-- Für Custom-Integrationen nutzt Home Assistant im UI meist das **Branding aus dem offiziellen `home-assistant/brands` Repo**.
-- In diesem Repo liegen jetzt fertige Grafiken unter:
-  - `brand/icon.png`
-  - `brand/logo.png`
-- Zusätzlich ist ein MDI-Fallback-Icon im Manifest gesetzt (`mdi:file-document-cog-outline`), damit die Integration in HA klar erkennbar ist.
-
-### 1) HACS installieren
-
-1. In HACS auf `Integrations` gehen
-2. `Custom repositories` öffnen
-3. Dieses Repo hinzufügen:
+1. HACS -> `Integrationen` -> `Custom repositories`
+2. Repository hinzufügen:
    - URL: `https://github.com/Feberdin/Paperless-KIplus`
    - Kategorie: `Integration`
-4. `Paperless KIplus Runner` installieren
-5. Home Assistant neu starten
+3. `Paperless KIplus Runner` installieren
+4. Home Assistant neu starten
+5. Integration hinzufügen: `Einstellungen -> Geräte & Dienste -> Integration hinzufügen`
 
-### 2) Integration in HA einrichten
+## Optionen in der Integration
 
-In Home Assistant:
+In den Optionen sind nur die fachlich relevanten Felder sichtbar.
+Technische Pfade/Befehle sind fest implementiert, um Fehlkonfigurationen zu vermeiden.
 
-- `Einstellungen -> Geräte & Dienste -> Integration hinzufügen`
-- Suche nach `Paperless KIplus Runner`
-- Trage ein:
-  - `Command` (Standard funktioniert direkt in HA: `python3 /config/custom_components/paperless_kiplus/paperless_ai_sorter.py`)
-  - `Working Directory` (Standard: `/config`)
-  - `YAML Config File` (z. B. `config.yaml` oder absoluter Pfad)
-  - `YAML in Home Assistant verwalten` (aktivieren für native Konfiguration im UI)
-  - `Verwalteter config.yaml-Inhalt` (kompletter YAML-Text)
-  - `Dry Run` (Standardverhalten in HA)
-  - `All Documents` (Standardverhalten in HA)
-  - `Input-Kosten pro 1.000 Tokens (EUR)`
-  - `Output-Kosten pro 1.000 Tokens (EUR)`
-  - `Max Documents` (`0` = YAML-Wert verwenden)
-  - `Cooldown`
+### Dry-Run
 
-### 3) Trigger über Paperless Inbox Sensor
+Wenn **Dry-Run aktiv** ist:
 
-Beispiel-Automation (wenn Inbox > 0, dann Runner starten):
+- Es werden **keine Änderungen** in Paperless gespeichert.
+- Die KI analysiert Dokumente und erzeugt nur Vorschläge.
+- Du siehst in den Logs, was geändert würde (z. B. Typ, Korrespondent, Speicherpfad, Tags, Datum, Notiz).
 
-```yaml
-alias: Paperless KI Runner bei Inbox
-mode: single
-trigger:
-  - platform: numeric_state
-    entity_id: sensor.paperless_dokumente_im_posteingang
-    above: 0
-    for: "00:02:00"
-action:
-  - service: paperless_kiplus.run
-    data:
-      force: false
-      wait: false
-      dry_run: false
-      all_documents: false
-      max_documents: 25
-      config_file: "/config/paperless-kiplus/config.yaml"
-```
+Verwendung:
 
-Hinweis:
+- Zum sicheren Testen neuer YAML-Regeln.
+- Nach Regeländerungen immer erst 1-2 Dry-Run-Läufe durchführen.
 
-- Wenn du `process_only_tag: \"#NEU\"` nutzt, verarbeitet das Skript weiterhin nur diese Dokumente.
-- Mit Service-Option `force: true` kannst du den Cooldown ignorieren.
-- Mit `config_file`, `dry_run`, `all_documents`, `max_documents` kannst du einen Lauf aus HA gezielt überschreiben, ohne den Basisbefehl zu ändern.
-- Wenn `YAML in Home Assistant verwalten` aktiv ist, schreibt die Integration vor jedem Lauf den YAML-Text aus dem UI in die konfigurierte `config_file`.
-- In HACS wird nur `custom_components/...` installiert. Der `src/`-Ordner aus dem Git-Repo ist in Home Assistant daher nicht vorhanden.
+### Alle Dokumente
 
-## ⚙️ Konfiguration
+Wenn **Alle Dokumente aktiv** ist:
 
-1. Kopieren:
+- Der Lauf verarbeitet den gesamten Bestand (begrenzt durch `Max. Dokumente`).
+- Der übliche YAML-Filter (z. B. `process_only_tag: "#NEU"`) wird für diesen Lauf ignoriert.
 
-```bash
-cp config.example.yaml config.yaml
-```
+Wenn **Alle Dokumente aus** ist:
 
-2. Pflichtfelder setzen:
+- Es gelten die Filter/Regeln aus deiner YAML (empfohlen für den Alltag).
 
-- `paperless_url`
-- `paperless_token`
-- `ai_api_key`
-- `ai_model`
+### Input-/Output-Kosten
 
-3. Erster Test:
+Standardwerte:
 
-- `dry_run: true`
-- `max_documents: 5`
+- `Input-Kosten pro 1.000 Tokens (EUR)`: `0.0004`
+- `Output-Kosten pro 1.000 Tokens (EUR)`: `0.0016`
 
-## 🧩 Konfigurationsoptionen
+Quelle der Preisbasis:
 
-| Option | Typ | Default | Bedeutung |
-|---|---|---:|---|
-| `paperless_url` | string | - | Basis-URL von Paperless |
-| `paperless_token` | string | - | Paperless API Token |
-| `ai_api_key` | string | - | KI API Key |
-| `ai_model` | string | - | KI Modellname |
-| `ai_base_url` | string | `https://api.openai.com/v1` | OpenAI-kompatible API-Basis |
-| `max_documents` | int | `25` | Maximale Anzahl Dokumente pro Lauf |
-| `dry_run` | bool | `true/false` | Nur anzeigen statt schreiben |
-| `create_missing_entities` | bool | `true` | Fehlende Tags/Typen/Korrespondenten/Speicherpfade anlegen |
-| `confidence_threshold` | float | `0.70` | Mindest-Confidence |
-| `request_timeout_seconds` | int | `30` | Request-Timeout |
-| `metrics_file` | string | `run_metrics.json` | JSON-Datei für Token/Kosten-Metriken |
-| `log_level` | string | `INFO` | `DEBUG/INFO/WARNING/ERROR` |
-| `enable_token_precheck` | bool | `false` | API-Token-Restbudget vorab prüfen |
-| `min_remaining_tokens` | int | `1500` | Schwellwert für Token-Precheck |
-| `custom_prompt_instructions` | multiline string | `""` | Freitext-Regeln für KI |
-| `basis_config` | object | `{}` | Strukturierte Stammdaten/Regeln |
-| `process_only_tag` | string | `""` | Nur Dokumente mit diesem Tag verarbeiten |
-| `include_existing_entities_in_prompt` | bool | `true` | Vorhandene Werte als Kontext an KI geben |
-| `enable_ai_notes` | bool | `true` | KI-Notizen in Paperless speichern |
-| `ai_notes_max_chars` | int | `800` | Max. Länge Begründung in Notiz |
-| `enable_ai_note_summary` | bool | `true` | Kurz-Zusammenfassung in Notiz |
-| `ai_note_summary_max_chars` | int | `220` | Max. Länge Kurz-Zusammenfassung |
-| `input_cost_per_1k_tokens_eur` | float | `0.0` | Eingabe-Tokenpreis pro 1.000 Tokens (EUR) |
-| `output_cost_per_1k_tokens_eur` | float | `0.0` | Ausgabe-Tokenpreis pro 1.000 Tokens (EUR) |
-
-## 🧭 ChatGPT Prompt Für Eigene YAML-Konfig
-
-Kopiere den folgenden Prompt in ChatGPT, um deine persönliche `config.yaml` strukturiert erstellen zu lassen:
-
-```text
-Du bist mein YAML-Konfigurations-Assistent für ein Paperless-KI-Projekt.
-
-Ziel:
-- Führe mich Schritt für Schritt durch alle relevanten Angaben.
-- Stelle pro Schritt nur wenige, klare Fragen.
-- Warte auf meine Antworten, bevor du zum nächsten Schritt gehst.
-- Wenn etwas unklar ist, frage gezielt nach.
-- Arbeite strukturiert und nummeriert.
-
-Am Ende sollst du mir eine vollständige `config.yaml` ausgeben mit:
-1) Basisfeldern (paperless_url, ai_model, etc.)
-2) custom_prompt_instructions (kompakt, verständlich)
-3) basis_config im folgenden Schema:
-   - people (owner, household, contacts)
-   - organizations
-   - identifiers
-   - classification_rules
-   - guardrails
-4) Notiz- und Summary-Optionen
-
-Wichtige Anforderungen:
-- Nutze korrekte YAML-Syntax.
-- Nutze sinnvolle Defaults, wenn ich keine Werte habe.
-- Trenne klar zwischen harten Regeln und optionalen Präferenzen.
-- Erzeuge am Ende nur den YAML-Inhalt in einem Codeblock.
-
-Frageblöcke, die du nacheinander abarbeiten sollst:
-- Block A: Technische Basis (URLs, Modell, Dry-Run, Limits)
-- Block B: Personen/Haushalt/Kontakte
-- Block C: Firmen, Vereine, Aliase, Speicherpfade
-- Block D: Identifikatoren (Zähler, Kunden-/Steuer-/Vertragsnummern)
-- Block E: Dokumenttyp-Regeln (Rechnung, Rechtsfälle, Sonderfälle)
-- Block F: Korrespondent-Regeln (Normalisierung, z. B. Hotel)
-- Block G: Tag-Regeln (Jahres-Tag, KI/#NEU, Sparsamkeit)
-- Block H: Guardrails (verbotene Zuordnungen, Fallbacks)
-- Block I: KI-Notizen (ein/aus, Summary ein/aus, Längenlimits)
-
-Starte jetzt mit Block A und stelle mir die ersten Fragen.
-```
-
-## 🧠 `basis_config` Standard (empfohlen)
-
-Verwende dieses Schema für langlebige, gut wartbare Regeln:
-
-- `people`
-  - `owner`
-  - `household`
-  - `contacts`
-- `organizations`
-  - `employer_current`
-  - `employer_former`
-  - `clubs`
-- `identifiers`
-  - `meters`
-  - (optional: `customer_numbers`, `tax_numbers`, `contract_numbers`)
-- `classification_rules`
-  - `document_type`
-  - `correspondent`
-  - `storage_path`
-  - `tags`
-  - `date`
-- `guardrails`
-  - `forbidden_path_assignments`
-
-## ▶️ Nutzung
-
-Standardlauf:
-
-```bash
-python src/paperless_ai_sorter.py
-```
-
-Dry-Run:
-
-```bash
-python src/paperless_ai_sorter.py --dry-run
-```
-
-Einmal alles durchsuchen (ignoriert Tag-Filter + Skip-Heuristik):
-
-```bash
-python src/paperless_ai_sorter.py --all-documents
-```
-
-Max. Dokumente per CLI überschreiben (z. B. aus Home Assistant):
-
-```bash
-python src/paperless_ai_sorter.py --max-documents 100
-```
-
-## 🧪 Empfohlener Rollout
-
-1. `dry_run: true`, `max_documents: 5`
-2. Ergebnisse in Paperless prüfen
-3. `dry_run: false`
-4. `max_documents` schrittweise erhöhen
-
-## 📝 KI-Notizen
-
-Wenn `enable_ai_notes: true`, wird pro Änderung eine Notiz erzeugt mit:
-
-- Zeitstempel
-- optionaler Kurz-Zusammenfassung
-- Begründung
-- geänderten Feldern
-
-## 💶 Token & Kosten
-
-Das Skript schreibt nach jedem Lauf Metriken in `metrics_file` und zeigt im Log:
-
-- Token/Kosten letzter Lauf
-- kumulierte Gesamt-Token/Gesamtkosten
-
-In Home Assistant stehen zusätzlich Sensoren bereit:
-
-- `Paperless KIplus Letzter Lauf Tokens`
-- `Paperless KIplus Letzter Lauf Kosten`
-- `Paperless KIplus Gesamt Tokens`
-- `Paperless KIplus Gesamtkosten`
-- `Paperless KIplus Letzte Zusammenfassung` (kompakt: `G/A/U/F`)
-- `Paperless KIplus Letzter Lauf Fehler`
-- `Paperless KIplus Letzter Lauf Aktualisiert`
-- `Paperless KIplus Letzter Lauf Gescannt`
-- `Paperless KIplus Letzter Lauf Übersprungen`
-- `Paperless KIplus Letztes Protokoll` (enthält `summary_line`, `cost_line`, `log_text`)
-
-Die Entitäten sind einem gemeinsamen Gerät **„Paperless KIplus Runner“** zugeordnet, damit die Werte direkt in der Integrations-/Geräteansicht sichtbar sind.
-
-Zusätzlich gibt es einen Button:
-
-- `Paperless KIplus Statistiken zurücksetzen`
-  - setzt Token-/Kostenwerte (letzter Lauf + Gesamt) auf `0`
-  - schreibt die Werte auch in die `metrics_file`, damit sie nach Neustart erhalten bleiben
+- OpenAI Preisseite (GPT-4.1 mini): [https://platform.openai.com/docs/pricing](https://platform.openai.com/docs/pricing)
+- Umrechnung aus den dort genannten Preisen pro 1M Tokens auf 1.000 Tokens.
 
 Hinweis:
 
-- Die Tokenpreis-Felder der Integration überschreiben bei aktivierter „YAML in Home Assistant verwalten“-Option automatisch die beiden YAML-Werte:
-  - `input_cost_per_1k_tokens_eur`
-  - `output_cost_per_1k_tokens_eur`
+- Falls du ein anderes Modell/anderen Anbieter nutzt, bitte die beiden Werte anpassen.
 
-## 🔒 Sicherheit
+### YAML-Konfiguration (immer in HA)
 
-- `config.yaml` ist in `.gitignore`
-- Keine Secrets committen
-- Bei Unsicherheit vor erstem Echtlauf Backup/Snapshot von Paperless anlegen
+Die YAML wird **immer in Home Assistant** gepflegt.
 
-## 🧯 Fehleranalyse
+- Den kompletten YAML-Text im Feld `YAML-Konfiguration (kompletter Inhalt)` einfügen.
+- Keine externe YAML-Datei verwenden.
 
-- `[CONFIG-ERROR]` => Konfigurationsproblem (Exit `2`)
-- API-/KI-Fehler => pro Dokument geloggt
-- Unerwarteter Fehler => Stacktrace + Exit `1`
-- Bei Dokument-Fehlern im Echtlauf markiert der Sorter das Dokument zusätzlich mit Tag `KI_FEHLER` und schreibt eine Fehler-Notiz ins Dokument.
+Hilfelink zur YAML-Erstellung mit ChatGPT:
 
-## 🔄 HACS Update-Mechanismus
+- [ChatGPT Prompt für eigene YAML-Konfig](https://github.com/Feberdin/Paperless-KIplus?tab=readme-ov-file#-chatgpt-prompt-f%C3%BCr-eigene-yaml-konfig)
 
-Damit Home Assistant/HACS Updates zuverlässig erkennt, gilt jetzt:
+## Entitäten im Gerät
 
-- Die Integrations-Version steht in `custom_components/paperless_kiplus/manifest.json`.
-- Bei jeder relevanten Integrationsänderung wird die Version erhöht (z. B. `0.1.3` -> `0.1.4`).
-- GitHub Actions erstellt auf `main` automatisch einen Release-Tag `v<manifest.version>` und einen GitHub Release.
-- Ein Guard-Workflow prüft, dass bei Änderungen unter `custom_components/paperless_kiplus/` auch die `manifest.json`-Version angepasst wurde.
+Alle Entitäten sind einem gemeinsamen Gerät zugeordnet:
 
-Workflows:
+- **Paperless KIplus Runner**
 
-- `.github/workflows/version-guard.yml`
-- `.github/workflows/hacs-release.yml`
+Dadurch siehst du die Werte direkt in der Geräte-/Integrationsansicht.
 
-## 📜 Lizenz
+Wichtige Entitäten:
 
-Noch keine Lizenz gesetzt. Optional: MIT.
+- Letzter Lauf Tokens
+- Letzter Lauf Kosten
+- Gesamt Tokens
+- Gesamtkosten
+- Letzte Zusammenfassung (G/A/U/F)
+- Letztes Protokoll
+
+## Buttons
+
+### Paperless KIplus Statistiken zurücksetzen
+
+- Setzt Token-/Kostenstatistiken auf 0 (letzter Lauf + Gesamt)
+- Schreibt die Werte auch in die Metrik-Datei zurück
+
+### Paperless KIplus Letztes Protokoll exportieren
+
+- Exportiert das letzte Protokoll nach:
+  - `/config/www/paperless_kiplus_last_log.txt`
+- Download in HA/Browser über:
+  - `/local/paperless_kiplus_last_log.txt`
+
+Damit können Nutzer das Log einfach teilen.
+
+## Service
+
+Service: `paperless_kiplus.run`
+
+Optionale Lauf-Overrides:
+
+- `force`
+- `wait`
+- `dry_run`
+- `all_documents`
+- `max_documents`
+
+## Icon-Hinweis
+
+Wenn in Home Assistant "icon not available" angezeigt wird, liegt das an der HA-Branding-Darstellung für Custom-Integrationen.
+Die Funktion der Integration ist davon nicht betroffen.
+
+## Support
+
+Bei Fehlern bitte mitsenden:
+
+1. Exportiertes Log (`/local/paperless_kiplus_last_log.txt`)
+2. `Fertig. Gescannt=..., Aktualisiert=..., Übersprungen=..., Fehler=...`
+3. `Kosten/Token`-Zeile

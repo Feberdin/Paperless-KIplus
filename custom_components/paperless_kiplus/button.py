@@ -31,7 +31,13 @@ async def async_setup_entry(
     """Set up button entities from config entry."""
 
     runner: PaperlessRunner = hass.data[DOMAIN][entry.entry_id]
-    async_add_entities([PaperlessRunnerResetMetricsButton(entry.entry_id, runner)], True)
+    async_add_entities(
+        [
+            PaperlessRunnerResetMetricsButton(entry.entry_id, runner),
+            PaperlessRunnerExportLogButton(entry.entry_id, runner),
+        ],
+        True,
+    )
 
 
 class PaperlessRunnerResetMetricsButton(ButtonEntity):
@@ -57,3 +63,26 @@ class PaperlessRunnerResetMetricsButton(ButtonEntity):
 
         await self._runner.async_reset_metrics()
 
+
+class PaperlessRunnerExportLogButton(ButtonEntity):
+    """Button to export last log for easy support sharing."""
+
+    _attr_icon = "mdi:file-download-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        self._entry_id = entry_id
+        self._runner = runner
+        self._attr_unique_id = f"{entry_id}_export_log"
+        self._attr_name = "Paperless KIplus Letztes Protokoll exportieren"
+        self._attr_has_entity_name = True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Ordnet den Button dem zentralen Integrationsgerät zu."""
+
+        return _device_info(self._entry_id)
+
+    async def async_press(self) -> None:
+        """Export last run log to /config/www for browser download."""
+
+        await self._runner.async_export_last_log()

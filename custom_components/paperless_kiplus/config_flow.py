@@ -13,38 +13,56 @@ from homeassistant.helpers.selector import (
     BooleanSelector,
     NumberSelector,
     NumberSelectorConfig,
+    TextSelector,
     TextSelectorConfig,
     TextSelectorType,
-    TextSelector,
 )
 
 from .const import (
     CONF_ALL_DOCUMENTS,
-    CONF_COMMAND,
-    CONF_CONFIG_FILE,
     CONF_COOLDOWN_SECONDS,
     CONF_DRY_RUN,
-    CONF_MAX_DOCUMENTS,
-    CONF_MANAGED_CONFIG_ENABLED,
-    CONF_MANAGED_CONFIG_YAML,
-    CONF_METRICS_FILE,
     CONF_INPUT_COST_PER_1K_TOKENS_EUR,
+    CONF_MANAGED_CONFIG_YAML,
+    CONF_MAX_DOCUMENTS,
     CONF_OUTPUT_COST_PER_1K_TOKENS_EUR,
-    CONF_WORKDIR,
     DEFAULT_ALL_DOCUMENTS,
-    DEFAULT_COMMAND,
-    DEFAULT_CONFIG_FILE,
     DEFAULT_COOLDOWN_SECONDS,
     DEFAULT_DRY_RUN,
-    DEFAULT_MAX_DOCUMENTS,
-    DEFAULT_MANAGED_CONFIG_ENABLED,
-    DEFAULT_MANAGED_CONFIG_YAML,
-    DEFAULT_METRICS_FILE,
     DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR,
+    DEFAULT_MANAGED_CONFIG_YAML,
+    DEFAULT_MAX_DOCUMENTS,
     DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR,
-    DEFAULT_WORKDIR,
     DOMAIN,
 )
+
+
+def _description_placeholders() -> dict[str, str]:
+    """Hilfetexte für die Form-Ansicht."""
+
+    return {
+        "dry_run_help": (
+            "Dry-Run: Es werden keine Änderungen in Paperless gespeichert. "
+            "Die KI analysiert Dokumente und zeigt nur Vorschläge an "
+            "(Dokumenttyp, Korrespondent, Speicherpfad, Tags, Datum, Notiz). "
+            "Ideal zum sicheren Testen."
+        ),
+        "all_documents_help": (
+            "Alle Dokumente: Verarbeitet einmalig den gesamten Bestand (bis Max. Dokumente). "
+            "Wenn AUS, wird nur der in deiner YAML definierte Filter verarbeitet "
+            "(z. B. process_only_tag wie #NEU)."
+        ),
+        "pricing_source": (
+            "Standardwerte: OpenAI GPT-4.1 mini (Input 0.40 USD/1M, Output 1.60 USD/1M, "
+            "entspricht 0.0004/0.0016 pro 1.000 Tokens). "
+            "Quelle: https://platform.openai.com/docs/pricing"
+        ),
+        "yaml_help": (
+            "Bitte den kompletten YAML-Text immer hier einfügen. "
+            "Kein externes YAML nutzen. "
+            "Hilfe/Prompt: https://github.com/Feberdin/Paperless-KIplus?tab=readme-ov-file#-chatgpt-prompt-f%C3%BCr-eigene-yaml-konfig"
+        ),
+    }
 
 
 class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -63,10 +81,6 @@ class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_COMMAND, default=DEFAULT_COMMAND): TextSelector(),
-                vol.Required(CONF_WORKDIR, default=DEFAULT_WORKDIR): TextSelector(),
-                vol.Required(CONF_CONFIG_FILE, default=DEFAULT_CONFIG_FILE): TextSelector(),
-                vol.Required(CONF_METRICS_FILE, default=DEFAULT_METRICS_FILE): TextSelector(),
                 vol.Required(CONF_DRY_RUN, default=DEFAULT_DRY_RUN): BooleanSelector(),
                 vol.Required(CONF_ALL_DOCUMENTS, default=DEFAULT_ALL_DOCUMENTS): BooleanSelector(),
                 vol.Required(
@@ -86,10 +100,6 @@ class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
                 ),
                 vol.Required(
-                    CONF_MANAGED_CONFIG_ENABLED,
-                    default=DEFAULT_MANAGED_CONFIG_ENABLED,
-                ): BooleanSelector(),
-                vol.Optional(
                     CONF_MANAGED_CONFIG_YAML,
                     default=DEFAULT_MANAGED_CONFIG_YAML,
                 ): TextSelector(
@@ -111,7 +121,12 @@ class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ),
             }
         )
-        return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
+        return self.async_show_form(
+            step_id="user",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders=_description_placeholders(),
+        )
 
     @staticmethod
     def async_get_options_flow(config_entry: config_entries.ConfigEntry) -> config_entries.OptionsFlow:
@@ -141,33 +156,8 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
         schema = vol.Schema(
             {
                 vol.Required(
-                    CONF_COMMAND,
-                    default=options.get(CONF_COMMAND, data.get(CONF_COMMAND, DEFAULT_COMMAND)),
-                ): TextSelector(),
-                vol.Required(
-                    CONF_WORKDIR,
-                    default=options.get(CONF_WORKDIR, data.get(CONF_WORKDIR, DEFAULT_WORKDIR)),
-                ): TextSelector(),
-                vol.Required(
-                    CONF_METRICS_FILE,
-                    default=options.get(
-                        CONF_METRICS_FILE,
-                        data.get(CONF_METRICS_FILE, DEFAULT_METRICS_FILE),
-                    ),
-                ): TextSelector(),
-                vol.Required(
-                    CONF_CONFIG_FILE,
-                    default=options.get(
-                        CONF_CONFIG_FILE,
-                        data.get(CONF_CONFIG_FILE, DEFAULT_CONFIG_FILE),
-                    ),
-                ): TextSelector(),
-                vol.Required(
                     CONF_DRY_RUN,
-                    default=options.get(
-                        CONF_DRY_RUN,
-                        data.get(CONF_DRY_RUN, DEFAULT_DRY_RUN),
-                    ),
+                    default=options.get(CONF_DRY_RUN, data.get(CONF_DRY_RUN, DEFAULT_DRY_RUN)),
                 ): BooleanSelector(),
                 vol.Required(
                     CONF_ALL_DOCUMENTS,
@@ -211,13 +201,6 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
                     )
                 ),
                 vol.Required(
-                    CONF_MANAGED_CONFIG_ENABLED,
-                    default=options.get(
-                        CONF_MANAGED_CONFIG_ENABLED,
-                        data.get(CONF_MANAGED_CONFIG_ENABLED, DEFAULT_MANAGED_CONFIG_ENABLED),
-                    ),
-                ): BooleanSelector(),
-                vol.Optional(
                     CONF_MANAGED_CONFIG_YAML,
                     default=options.get(
                         CONF_MANAGED_CONFIG_YAML,
@@ -246,18 +229,20 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
             }
         )
 
-        return self.async_show_form(step_id="init", data_schema=schema, errors=errors)
+        return self.async_show_form(
+            step_id="init",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders=_description_placeholders(),
+        )
 
 
 def _validate_managed_yaml_input(user_input: dict[str, Any]) -> dict[str, str]:
-    """Validate managed YAML input when the feature is enabled.
+    """Validate managed YAML input.
 
-    Dadurch schlagen fehlerhafte/fehlende YAML-Werte direkt im UI fehl,
-    statt erst beim Runner-Start mit Exit-Code 2.
+    Die Integration verwaltet YAML immer intern in Home Assistant,
+    daher ist ein valider YAML-Text zwingend erforderlich.
     """
-
-    if not bool(user_input.get(CONF_MANAGED_CONFIG_ENABLED, False)):
-        return {}
 
     raw_yaml = str(user_input.get(CONF_MANAGED_CONFIG_YAML, "")).strip()
     if not raw_yaml:

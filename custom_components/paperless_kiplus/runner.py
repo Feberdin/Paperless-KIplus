@@ -87,6 +87,8 @@ class PaperlessRunner:
         self.total_cost_eur: float = 0.0
         self.last_metrics_updated: datetime | None = None
         self.last_command_executed: str = ""
+        self.last_log_export_path: str = ""
+        self.last_log_export_url: str = ""
 
     @property
     def cooldown_until(self) -> datetime | None:
@@ -290,6 +292,25 @@ class PaperlessRunner:
         self.last_status = "metrics_reset"
         self.last_message = "token/cost metrics reset"
         self._notify()
+
+    async def async_export_last_log(self) -> str:
+        """Exportiert den letzten kombinierten Log in /config/www für einfachen Download."""
+
+        export_path = Path("/config/www/paperless_kiplus_last_log.txt")
+        log_text = self.last_log_combined or "[Kein Log vorhanden]"
+
+        def _write() -> None:
+            export_path.parent.mkdir(parents=True, exist_ok=True)
+            export_path.write_text(log_text, encoding="utf-8")
+
+        await self.hass.async_add_executor_job(_write)
+
+        self.last_log_export_path = str(export_path)
+        self.last_log_export_url = "/local/paperless_kiplus_last_log.txt"
+        self.last_status = "log_exported"
+        self.last_message = f"log exported to {self.last_log_export_url}"
+        self._notify()
+        return self.last_log_export_url
 
     @staticmethod
     def _extract_last_line(text: str, marker: str) -> str:

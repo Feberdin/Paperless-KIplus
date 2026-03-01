@@ -20,17 +20,12 @@ from .const import (
     ATTR_WAIT,
     ATTR_DRY_RUN,
     CONF_ALL_DOCUMENTS,
-    CONF_COMMAND,
-    CONF_CONFIG_FILE,
     CONF_COOLDOWN_SECONDS,
     CONF_DRY_RUN,
     CONF_MAX_DOCUMENTS,
-    CONF_MANAGED_CONFIG_ENABLED,
     CONF_MANAGED_CONFIG_YAML,
-    CONF_METRICS_FILE,
     CONF_INPUT_COST_PER_1K_TOKENS_EUR,
     CONF_OUTPUT_COST_PER_1K_TOKENS_EUR,
-    CONF_WORKDIR,
     DEFAULT_ALL_DOCUMENTS,
     DEFAULT_COMMAND,
     DEFAULT_CONFIG_FILE,
@@ -92,24 +87,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     options = entry.options
     data = entry.data
 
-    command = options.get(CONF_COMMAND, data.get(CONF_COMMAND, DEFAULT_COMMAND))
-    workdir = options.get(CONF_WORKDIR, data.get(CONF_WORKDIR, DEFAULT_WORKDIR))
+    command = DEFAULT_COMMAND
+    workdir = DEFAULT_WORKDIR
     cooldown_seconds = int(
         options.get(CONF_COOLDOWN_SECONDS, data.get(CONF_COOLDOWN_SECONDS, DEFAULT_COOLDOWN_SECONDS))
     )
-    metrics_file = options.get(CONF_METRICS_FILE, data.get(CONF_METRICS_FILE, DEFAULT_METRICS_FILE))
-    config_file = str(options.get(CONF_CONFIG_FILE, data.get(CONF_CONFIG_FILE, DEFAULT_CONFIG_FILE)))
+    metrics_file = DEFAULT_METRICS_FILE
+    config_file = DEFAULT_CONFIG_FILE
     dry_run = bool(options.get(CONF_DRY_RUN, data.get(CONF_DRY_RUN, DEFAULT_DRY_RUN)))
     all_documents = bool(
         options.get(CONF_ALL_DOCUMENTS, data.get(CONF_ALL_DOCUMENTS, DEFAULT_ALL_DOCUMENTS))
     )
     max_documents = int(options.get(CONF_MAX_DOCUMENTS, data.get(CONF_MAX_DOCUMENTS, DEFAULT_MAX_DOCUMENTS)))
-    managed_config_enabled = bool(
-        options.get(
-            CONF_MANAGED_CONFIG_ENABLED,
-            data.get(CONF_MANAGED_CONFIG_ENABLED, DEFAULT_MANAGED_CONFIG_ENABLED),
-        )
-    )
+    managed_config_enabled = DEFAULT_MANAGED_CONFIG_ENABLED
     managed_config_yaml = str(
         options.get(
             CONF_MANAGED_CONFIG_YAML,

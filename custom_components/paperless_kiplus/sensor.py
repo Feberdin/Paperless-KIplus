@@ -129,6 +129,8 @@ class PaperlessRunnerStatusSensor(SensorEntity):
             "last_run_cost_eur": round(self._runner.last_run_cost_eur, 6),
             "total_tokens": self._runner.total_tokens,
             "total_cost_eur": round(self._runner.total_cost_eur, 6),
+            "last_log_export_path": self._runner.last_log_export_path,
+            "last_log_export_url": self._runner.last_log_export_url,
         }
 
 
