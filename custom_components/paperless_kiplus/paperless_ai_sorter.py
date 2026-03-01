@@ -1060,6 +1060,36 @@ def build_error_note_entry(
     )
 
 
+def build_skip_note_entry(
+    *,
+    prediction: Dict[str, Any],
+    confidence_threshold: float,
+) -> str:
+    """Erstellt eine Notiz für wegen niedriger Confidence übersprungene Dokumente."""
+
+    timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ")
+    confidence = float(prediction.get("confidence", 0.0) or 0.0)
+    doc_type = str(prediction.get("document_type") or "-")
+    correspondent = str(prediction.get("correspondent") or "-")
+    storage_path = str(prediction.get("storage_path") or "-")
+    tags = prediction.get("tags") or []
+    tags_text = ", ".join(str(tag) for tag in tags) if isinstance(tags, list) and tags else "-"
+    rationale = " ".join(str(prediction.get("rationale") or "Keine Begründung geliefert.").split())
+    if len(rationale) > 600:
+        rationale = rationale[:597] + "..."
+
+    return (
+        f"[KI-Skip {timestamp}]\n"
+        f"Automatisch übersprungen: Confidence {confidence:.2f} unter Schwellwert {confidence_threshold:.2f}.\n"
+        "KI-Vorschlag (nicht angewendet):\n"
+        f"- document_type: {doc_type}\n"
+        f"- correspondent: {correspondent}\n"
+        f"- storage_path: {storage_path}\n"
+        f"- tags: {tags_text}\n"
+        f"Begründung der KI: {rationale}"
+    )
+
+
 def log_dry_run_change(
     document: Dict[str, Any],
     prediction: Dict[str, Any],
@@ -1307,6 +1337,14 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         can_create_entities,
         created_entities,
     )
+    skip_tag_id = ensure_entity_id(
+        client,
+        tags_map,
+        "KI_SKIP",
+        "/api/tags/",
+        can_create_entities,
+        created_entities,
+    )
     remove_neu_tag_id = tags_map.get("#neu")
     only_tag_id: Optional[int] = None
     only_tag_name = config.process_only_tag.strip()
@@ -1452,6 +1490,46 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             )
             confidence = float(prediction["confidence"])
             if confidence < config.confidence_threshold:
+                if not config.dry_run and doc_id is not None:
+                    # Low-Confidence-Dokumente markieren: #NEU entfernen, KI_SKIP setzen.
+                    current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
+                    new_tags = set(current_tags)
+                    if remove_neu_tag_id is not None:
+                        new_tags.discard(int(remove_neu_tag_id))
+                    if skip_tag_id is not None:
+                        new_tags.add(int(skip_tag_id))
+                    if ki_tag_id is not None:
+                        new_tags.add(int(ki_tag_id))
+                    if new_tags != current_tags:
+                        try:
+                            client._request(
+                                "PATCH",
+                                f"/api/documents/{int(doc_id)}/",
+                                payload={"tags": sorted(new_tags)},
+                                retries=1,
+                            )
+                        except PaperlessApiError as skip_tag_exc:
+                            LOGGER.error(
+                                "KI_SKIP-Tag konnte für Dokument %s (%s) nicht gesetzt werden: %s",
+                                doc_id,
+                                title,
+                                skip_tag_exc,
+                            )
+                    try:
+                        client.add_document_note(
+                            int(doc_id),
+                            build_skip_note_entry(
+                                prediction=prediction,
+                                confidence_threshold=config.confidence_threshold,
+                            ),
+                        )
+                    except PaperlessApiError as skip_note_exc:
+                        LOGGER.error(
+                            "KI-Skip-Notiz konnte für Dokument %s (%s) nicht gespeichert werden: %s",
+                            doc_id,
+                            title,
+                            skip_note_exc,
+                        )
                 LOGGER.info(
                     "Skip Dokument %s (%s): Confidence %.2f unter Schwellwert %.2f",
                     doc_id,
