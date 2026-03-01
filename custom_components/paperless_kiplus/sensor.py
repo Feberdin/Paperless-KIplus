@@ -49,8 +49,10 @@ async def async_setup_entry(
             PaperlessRunnerSkippedSensor(entry.entry_id, runner),
             PaperlessRunnerLastTokensSensor(entry.entry_id, runner),
             PaperlessRunnerLastCostSensor(entry.entry_id, runner),
+            PaperlessRunnerLastBypassSkippedSensor(entry.entry_id, runner),
             PaperlessRunnerTotalTokensSensor(entry.entry_id, runner),
             PaperlessRunnerTotalCostSensor(entry.entry_id, runner),
+            PaperlessRunnerTotalBypassSkippedSensor(entry.entry_id, runner),
             PaperlessRunnerQuarantineCountSensor(entry.entry_id, runner),
             PaperlessRunnerBypassCountSensor(entry.entry_id, runner),
         ],
@@ -129,8 +131,10 @@ class PaperlessRunnerStatusSensor(SensorEntity):
             "last_failed": self._runner.last_failed,
             "last_run_total_tokens": self._runner.last_run_total_tokens,
             "last_run_cost_eur": round(self._runner.last_run_cost_eur, 6),
+            "last_run_bypass_skipped": self._runner.last_run_bypass_skipped,
             "total_tokens": self._runner.total_tokens,
             "total_cost_eur": round(self._runner.total_cost_eur, 6),
+            "total_bypass_skipped": self._runner.total_bypass_skipped,
             "last_log_export_path": self._runner.last_log_export_path,
             "last_log_export_url": self._runner.last_log_export_url,
             "active_quarantine_count": self._runner.active_quarantine_count,
@@ -243,6 +247,8 @@ class PaperlessRunnerSummarySensor(_BaseMetricSensor):
             "aktualisiert": self._runner.last_updated,
             "uebersprungen": self._runner.last_skipped,
             "fehler": self._runner.last_failed,
+            "bypass_skips_letzter_lauf": self._runner.last_run_bypass_skipped,
+            "bypass_skips_gesamt": self._runner.total_bypass_skipped,
         }
 
 
@@ -392,6 +398,24 @@ class PaperlessRunnerBypassCountSensor(_BaseMetricSensor):
         return self._runner.active_bypass_count
 
 
+class PaperlessRunnerLastBypassSkippedSensor(_BaseMetricSensor):
+    """Anzahl vor KI übersprungener Bypass-Dokumente im letzten Lauf."""
+
+    _attr_icon = "mdi:skip-next-circle-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        super().__init__(
+            entry_id,
+            runner,
+            suffix="last_run_bypass_skipped",
+            name="Paperless KIplus Letzter Lauf Bypass-Skips",
+        )
+
+    @property
+    def native_value(self) -> int:
+        return self._runner.last_run_bypass_skipped
+
+
 class PaperlessRunnerTotalTokensSensor(_BaseMetricSensor):
     """Total token usage across all runs."""
 
@@ -428,3 +452,21 @@ class PaperlessRunnerTotalCostSensor(_BaseMetricSensor):
     @property
     def native_value(self) -> float:
         return round(self._runner.total_cost_eur, 6)
+
+
+class PaperlessRunnerTotalBypassSkippedSensor(_BaseMetricSensor):
+    """Gesamtsumme vor KI übersprungener Bypass-Dokumente."""
+
+    _attr_icon = "mdi:skip-forward-circle-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        super().__init__(
+            entry_id,
+            runner,
+            suffix="total_bypass_skipped",
+            name="Paperless KIplus Gesamt Bypass-Skips",
+        )
+
+    @property
+    def native_value(self) -> int:
+        return self._runner.total_bypass_skipped

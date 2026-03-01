@@ -101,8 +101,10 @@ class PaperlessRunner:
         self.last_failed: int = 0
         self.last_run_total_tokens: int = 0
         self.last_run_cost_eur: float = 0.0
+        self.last_run_bypass_skipped: int = 0
         self.total_tokens: int = 0
         self.total_cost_eur: float = 0.0
+        self.total_bypass_skipped: int = 0
         self.last_metrics_updated: datetime | None = None
         self.last_command_executed: str = ""
         self.last_log_export_path: str = ""
@@ -263,8 +265,10 @@ class PaperlessRunner:
 
             self.last_run_total_tokens = int(last.get("total_tokens", 0) or 0)
             self.last_run_cost_eur = float(last.get("cost_eur", 0.0) or 0.0)
+            self.last_run_bypass_skipped = int(last.get("bypass_skipped", 0) or 0)
             self.total_tokens = int(totals.get("total_tokens", 0) or 0)
             self.total_cost_eur = float(totals.get("cost_eur", 0.0) or 0.0)
+            self.total_bypass_skipped = int(totals.get("bypass_skipped", 0) or 0)
             self.last_metrics_updated = datetime.now(UTC)
         except (OSError, json.JSONDecodeError, ValueError) as exc:
             _LOGGER.warning("Could not parse metrics file '%s': %s", path, exc)
@@ -353,6 +357,7 @@ class PaperlessRunner:
                 "completion_tokens": 0,
                 "total_tokens": 0,
                 "cost_eur": 0.0,
+                "bypass_skipped": 0,
                 "finished_at": None,
                 "model": None,
             },
@@ -361,6 +366,7 @@ class PaperlessRunner:
                 "completion_tokens": 0,
                 "total_tokens": 0,
                 "cost_eur": 0.0,
+                "bypass_skipped": 0,
                 "runs": 0,
             },
         }
@@ -373,8 +379,10 @@ class PaperlessRunner:
 
         self.last_run_total_tokens = 0
         self.last_run_cost_eur = 0.0
+        self.last_run_bypass_skipped = 0
         self.total_tokens = 0
         self.total_cost_eur = 0.0
+        self.total_bypass_skipped = 0
         self.last_metrics_updated = datetime.now(UTC)
         self.last_status = "metrics_reset"
         self.last_message = "token/cost metrics reset"

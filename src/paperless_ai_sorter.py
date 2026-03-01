@@ -765,6 +765,7 @@ def load_metrics(metrics_path: Path) -> Dict[str, Any]:
             "completion_tokens": 0,
             "total_tokens": 0,
             "cost_eur": 0.0,
+            "bypass_skipped": 0,
             "finished_at": None,
             "model": None,
         },
@@ -773,6 +774,7 @@ def load_metrics(metrics_path: Path) -> Dict[str, Any]:
             "completion_tokens": 0,
             "total_tokens": 0,
             "cost_eur": 0.0,
+            "bypass_skipped": 0,
             "runs": 0,
         },
     }
@@ -1453,6 +1455,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     skipped = 0
     failed = 0
     bypassed = 0
+    bypass_skipped = 0
     created_entities: Dict[str, List[str]] = {}
     error_details: List[Dict[str, Any]] = []
     run_prompt_tokens = 0
@@ -1537,6 +1540,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                 doc_id,
                 title,
             )
+            bypass_skipped += 1
             skipped += 1
             continue
 
@@ -2270,6 +2274,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     new_totals_completion = int(totals.get("completion_tokens", 0) or 0) + run_completion_tokens
     new_totals_tokens = int(totals.get("total_tokens", 0) or 0) + run_total_tokens
     new_totals_cost = float(totals.get("cost_eur", 0.0) or 0.0) + run_cost_eur
+    new_totals_bypass_skipped = int(totals.get("bypass_skipped", 0) or 0) + bypass_skipped
     new_totals_runs = int(totals.get("runs", 0) or 0) + 1
 
     metrics_payload = {
@@ -2278,6 +2283,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             "completion_tokens": run_completion_tokens,
             "total_tokens": run_total_tokens,
             "cost_eur": round(run_cost_eur, 6),
+            "bypass_skipped": bypass_skipped,
             "finished_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "model": config.ai_model,
         },
@@ -2286,6 +2292,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             "completion_tokens": new_totals_completion,
             "total_tokens": new_totals_tokens,
             "cost_eur": round(new_totals_cost, 6),
+            "bypass_skipped": new_totals_bypass_skipped,
             "runs": new_totals_runs,
         },
     }
@@ -2298,12 +2305,13 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         new_totals_cost,
     )
     LOGGER.info(
-        "Fertig. Gescannt=%s, Aktualisiert=%s, Übersprungen=%s, Fehler=%s, Bypass=%s",
+        "Fertig. Gescannt=%s, Aktualisiert=%s, Übersprungen=%s, Fehler=%s, Bypass=%s, BypassSkip=%s",
         scanned,
         updated,
         skipped,
         failed,
         bypassed,
+        bypass_skipped,
     )
 
 
