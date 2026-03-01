@@ -392,8 +392,10 @@ class PaperlessClient:
                 )
                 return
 
+            field_failure_text = "; ".join(field_failures) if field_failures else "keine"
             raise PaperlessApiError(
-                f"{exc} | Fallback-PATCH ebenfalls fehlgeschlagen: {last_error}"
+                f"{exc} | Fallback-PATCH ebenfalls fehlgeschlagen: {last_error} | "
+                f"Feldanalyse: {field_failure_text}"
             )
 
     def add_document_note(self, document_id: int, note: str) -> None:
@@ -859,6 +861,42 @@ def apply_forced_tag_rules(
         patch_payload["tags"] = sorted(final_tag_ids)
 
 
+def filter_unchanged_patch_fields(
+    *,
+    document: Dict[str, Any],
+    patch_payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Entfernt unveränderte Felder aus dem Patch, um unnötige PATCHes zu vermeiden."""
+
+    filtered = dict(patch_payload)
+
+    if "document_type" in filtered:
+        if (document.get("document_type") or None) == (filtered.get("document_type") or None):
+            filtered.pop("document_type", None)
+
+    if "correspondent" in filtered:
+        if (document.get("correspondent") or None) == (filtered.get("correspondent") or None):
+            filtered.pop("correspondent", None)
+
+    if "storage_path" in filtered:
+        if (document.get("storage_path") or None) == (filtered.get("storage_path") or None):
+            filtered.pop("storage_path", None)
+
+    if "created" in filtered:
+        current_created = normalize_iso_date(document.get("created"))
+        next_created = normalize_iso_date(filtered.get("created"))
+        if current_created == next_created:
+            filtered.pop("created", None)
+
+    if "tags" in filtered:
+        current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
+        next_tags = {int(tag_id) for tag_id in filtered.get("tags", [])}
+        if current_tags == next_tags:
+            filtered.pop("tags", None)
+
+    return filtered
+
+
 def build_ai_note_entry(
     *,
     prediction: Dict[str, Any],
@@ -1290,6 +1328,21 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                 remove_neu_tag_id=remove_neu_tag_id,
             )
 
+            patch_payload = filter_unchanged_patch_fields(
+                document=document,
+                patch_payload=patch_payload,
+            )
+            patch_payload_for_error = dict(patch_payload)
+
+            if not patch_payload:
+                LOGGER.info(
+                    "Skip Dokument %s (%s): Keine effektiven Änderungen nach Diff-Filter",
+                    doc_id,
+                    title,
+                )
+                skipped += 1
+                continue
+
             # Nach möglichen Neuanlagen Mappings aktualisieren, damit Logs/Notizen
             # die finalen Namen statt nur IDs anzeigen.
             tag_id_to_label = {entity_id: label for label, entity_id in tags_map.items()}
@@ -1360,6 +1413,8 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                 # Fehler dokumentieren: Tag setzen und Notiz am Dokument ergänzen.
                 current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
                 new_tags = set(current_tags)
+                if remove_neu_tag_id is not None:
+                    new_tags.discard(int(remove_neu_tag_id))
                 if error_tag_id is not None:
                     new_tags.add(int(error_tag_id))
                 if ki_tag_id is not None:
