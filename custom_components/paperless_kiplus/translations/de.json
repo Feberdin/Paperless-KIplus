@@ -17,6 +17,15 @@
           "max_documents": "Max. Dokumente pro Lauf (0 = Wert aus YAML verwenden)",
           "managed_config_yaml": "YAML-Konfiguration: Hier den kompletten YAML-Text einfügen (kein externes YAML)",
           "cooldown_seconds": "Cooldown in Sekunden zwischen automatischen Läufen"
+        },
+        "data_description": {
+          "dry_run": "Empfohlen für Testläufe. Keine Änderungen werden an Paperless geschrieben.",
+          "all_documents": "Nur bei Bedarf aktivieren. Sonst arbeitet der Runner mit deinen YAML-Filtern (z. B. #NEU).",
+          "input_cost_per_1k_tokens_eur": "Preis für Prompt-/Eingabe-Tokens pro 1.000 Tokens in EUR.",
+          "output_cost_per_1k_tokens_eur": "Preis für Antwort-/Ausgabe-Tokens pro 1.000 Tokens in EUR.",
+          "max_documents": "Sicherheitslimit pro Lauf. 0 bedeutet: verwende den Wert aus deiner YAML.",
+          "managed_config_yaml": "Hier gehört der vollständige YAML-Inhalt hinein. Keine externe Datei erforderlich.",
+          "cooldown_seconds": "Mindestabstand zwischen zwei automatischen Läufen."
         }
       }
     }
@@ -39,6 +48,15 @@
           "max_documents": "Max. Dokumente pro Lauf (0 = Wert aus YAML verwenden)",
           "managed_config_yaml": "YAML-Konfiguration: Hier den kompletten YAML-Text einfügen (kein externes YAML)",
           "cooldown_seconds": "Cooldown in Sekunden zwischen automatischen Läufen"
+        },
+        "data_description": {
+          "dry_run": "Empfohlen für Testläufe. Keine Änderungen werden an Paperless geschrieben.",
+          "all_documents": "Nur bei Bedarf aktivieren. Sonst arbeitet der Runner mit deinen YAML-Filtern (z. B. #NEU).",
+          "input_cost_per_1k_tokens_eur": "Preis für Prompt-/Eingabe-Tokens pro 1.000 Tokens in EUR.",
+          "output_cost_per_1k_tokens_eur": "Preis für Antwort-/Ausgabe-Tokens pro 1.000 Tokens in EUR.",
+          "max_documents": "Sicherheitslimit pro Lauf. 0 bedeutet: verwende den Wert aus deiner YAML.",
+          "managed_config_yaml": "Hier gehört der vollständige YAML-Inhalt hinein. Keine externe Datei erforderlich.",
+          "cooldown_seconds": "Mindestabstand zwischen zwei automatischen Läufen."
         }
       }
     }

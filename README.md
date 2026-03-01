@@ -121,8 +121,9 @@ Optionale Lauf-Overrides:
 
 ## Icon-Hinweis
 
-Wenn in Home Assistant "icon not available" angezeigt wird, liegt das an der HA-Branding-Darstellung für Custom-Integrationen.
-Die Funktion der Integration ist davon nicht betroffen.
+Die Integration liefert Branding-Dateien unter `custom_components/paperless_kiplus/brand/`.
+Ab Home Assistant 2026.3 können Custom Integrations dieses lokale Branding direkt nutzen.
+Wenn trotzdem \"icon not available\" erscheint, bitte HA-Core/HACS aktualisieren und neu starten.
 
 ## Support
 
