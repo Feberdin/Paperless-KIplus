@@ -1311,6 +1311,13 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     only_tag_id: Optional[int] = None
     only_tag_name = config.process_only_tag.strip()
     doc_query_params: Dict[str, Any] = {}
+    target_documents = max(1, int(config.max_documents))
+    fetch_limit = target_documents
+    if config.quarantine_failed_documents or config.enable_tag_bypass_on_tags_500:
+        # Zusätzlicher Puffer: Quarantäne/Bypass-Dokumente sollen nicht gegen das
+        # max_documents-Limit zählen, daher laden wir mehr Kandidaten nach.
+        fetch_limit = max(target_documents * 10, target_documents + 100)
+    budget_used = 0
     if process_all_documents:
         LOGGER.info(
             "All-Documents Modus aktiv: Tag-Filter und Standard-Skip-Regeln werden ignoriert."
@@ -1328,7 +1335,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         # Direkter API-Filter: lädt nur passende Dokumente.
         doc_query_params["tags__id"] = only_tag_id
 
-    for document in client.iter_documents(config.max_documents, extra_params=doc_query_params):
+    for document in client.iter_documents(fetch_limit, extra_params=doc_query_params):
         scanned += 1
         doc_id = document.get("id")
         doc_key = str(doc_id) if doc_id is not None else None
@@ -1417,6 +1424,10 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         if not process_all_documents and only_tag_id is not None and only_tag_id not in doc_tags:
             skipped += 1
             continue
+
+        if budget_used >= target_documents:
+            break
+        budget_used += 1
 
         if not process_all_documents and only_tag_id is None and not should_process_document(document):
             LOGGER.debug("Skip Dokument %s (%s): bereits klassifiziert", doc_id, title)

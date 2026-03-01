@@ -34,6 +34,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             PaperlessRunnerResetMetricsButton(entry.entry_id, runner),
+            PaperlessRunnerResetFailedDocumentsButton(entry.entry_id, runner),
             PaperlessRunnerExportLogButton(entry.entry_id, runner),
         ],
         True,
@@ -86,3 +87,27 @@ class PaperlessRunnerExportLogButton(ButtonEntity):
         """Export last run log to /config/www for browser download."""
 
         await self._runner.async_export_last_log()
+
+
+class PaperlessRunnerResetFailedDocumentsButton(ButtonEntity):
+    """Button to clear failed/quarantine state files."""
+
+    _attr_icon = "mdi:restore-alert"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        self._entry_id = entry_id
+        self._runner = runner
+        self._attr_unique_id = f"{entry_id}_reset_failed_documents"
+        self._attr_name = "Paperless KIplus Fehlgeschlagene Dokumente zurücksetzen"
+        self._attr_has_entity_name = True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Ordnet den Button dem zentralen Integrationsgerät zu."""
+
+        return _device_info(self._entry_id)
+
+    async def async_press(self) -> None:
+        """Clear failed/quarantine cache files."""
+
+        await self._runner.async_reset_failed_documents()

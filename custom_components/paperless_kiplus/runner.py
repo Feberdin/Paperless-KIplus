@@ -312,6 +312,54 @@ class PaperlessRunner:
         self._notify()
         return self.last_log_export_url
 
+    async def async_reset_failed_documents(self) -> None:
+        """Löscht Quarantäne-/Bypass-Dateien, damit Failed-Dokumente neu versucht werden."""
+
+        config_payload: dict = {}
+        if self.managed_config_enabled and self.managed_config_yaml.strip():
+            try:
+                parsed = yaml.safe_load(self.managed_config_yaml) or {}
+                if isinstance(parsed, dict):
+                    config_payload = parsed
+            except yaml.YAMLError:
+                config_payload = {}
+        else:
+            config_path = Path(self.config_file)
+            if not config_path.is_absolute():
+                config_path = Path(self.workdir) / config_path
+            if config_path.exists():
+                try:
+                    parsed = await self.hass.async_add_executor_job(
+                        lambda: yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+                    )
+                    if isinstance(parsed, dict):
+                        config_payload = parsed
+                except (OSError, yaml.YAMLError):
+                    config_payload = {}
+
+        file_candidates = {
+            str(config_payload.get("failed_documents_file", "failed_documents.json")).strip(),
+            str(config_payload.get("failed_patch_cache_file", "failed_patch_cache.json")).strip(),
+            str(config_payload.get("tag_bypass_file", "tag_bypass_documents.json")).strip(),
+        }
+        file_candidates = {name for name in file_candidates if name}
+
+        deleted_count = 0
+        for name in sorted(file_candidates):
+            path = Path(name)
+            if not path.is_absolute():
+                path = Path(self.workdir) / path
+            if path.exists():
+                try:
+                    await self.hass.async_add_executor_job(path.unlink)
+                    deleted_count += 1
+                except OSError as exc:
+                    _LOGGER.warning("Konnte Failed-Datei nicht löschen (%s): %s", path, exc)
+
+        self.last_status = "failed_docs_reset"
+        self.last_message = f"failed/quarantine documents reset ({deleted_count} files)"
+        self._notify()
+
     @staticmethod
     def _extract_last_line(text: str, marker: str) -> str:
         """Extract the most recent line containing a marker from a log text."""
