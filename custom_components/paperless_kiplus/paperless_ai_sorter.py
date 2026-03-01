@@ -64,6 +64,9 @@ class AppConfig:
     metrics_file: str
     input_cost_per_1k_tokens_eur: float
     output_cost_per_1k_tokens_eur: float
+    quarantine_failed_documents: bool
+    failed_document_cooldown_hours: int
+    failed_documents_file: str
 
 
 def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | None = None) -> AppConfig:
@@ -122,6 +125,9 @@ def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | No
         metrics_file=str(raw.get("metrics_file", "run_metrics.json")).strip(),
         input_cost_per_1k_tokens_eur=float(raw.get("input_cost_per_1k_tokens_eur", 0.0)),
         output_cost_per_1k_tokens_eur=float(raw.get("output_cost_per_1k_tokens_eur", 0.0)),
+        quarantine_failed_documents=bool(raw.get("quarantine_failed_documents", True)),
+        failed_document_cooldown_hours=int(raw.get("failed_document_cooldown_hours", 24)),
+        failed_documents_file=str(raw.get("failed_documents_file", "failed_documents.json")).strip(),
     )
 
 
@@ -680,6 +686,40 @@ def load_metrics(metrics_path: Path) -> Dict[str, Any]:
     return default
 
 
+def load_failed_documents(failed_docs_path: Path) -> Dict[str, float]:
+    """Lädt fehlgeschlagene Dokument-IDs mit nächstem Retry-Zeitpunkt."""
+
+    if not failed_docs_path.exists():
+        return {}
+    try:
+        loaded = json.loads(failed_docs_path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            return {}
+        result: Dict[str, float] = {}
+        for key, value in loaded.items():
+            try:
+                result[str(int(key))] = float(value)
+            except (TypeError, ValueError):
+                continue
+        return result
+    except (OSError, json.JSONDecodeError):
+        LOGGER.warning("Failed-Docs-Datei konnte nicht gelesen werden: %s", failed_docs_path)
+        return {}
+
+
+def save_failed_documents(failed_docs_path: Path, payload: Dict[str, float]) -> None:
+    """Speichert fehlgeschlagene Dokument-IDs mit nächstem Retry-Zeitpunkt."""
+
+    try:
+        failed_docs_path.parent.mkdir(parents=True, exist_ok=True)
+        failed_docs_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        LOGGER.error("Failed-Docs-Datei konnte nicht geschrieben werden: %s | %s", failed_docs_path, exc)
+
+
 def save_metrics(metrics_path: Path, payload: Dict[str, Any]) -> None:
     """Speichert Lauf-Metriken als JSON für externe Systeme (z. B. Home Assistant)."""
 
@@ -1099,6 +1139,18 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     doc_type_id_to_label = {entity_id: label for label, entity_id in doc_types_map.items()}
     correspondent_id_to_label = {entity_id: label for label, entity_id in correspondents_map.items()}
     storage_path_id_to_label = {entity_id: label for label, entity_id in storage_paths_map.items()}
+    failed_docs_path = Path(config.failed_documents_file)
+    failed_docs_until: Dict[str, float] = {}
+    failed_docs_cooldown_seconds = max(0, int(config.failed_document_cooldown_hours)) * 3600
+    if config.quarantine_failed_documents:
+        failed_docs_until = load_failed_documents(failed_docs_path)
+        now_ts = dt.datetime.now(dt.timezone.utc).timestamp()
+        # Abgelaufene Einträge direkt entfernen, damit die Datei klein bleibt.
+        failed_docs_until = {
+            doc_key: retry_ts
+            for doc_key, retry_ts in failed_docs_until.items()
+            if float(retry_ts) > now_ts
+        }
 
     scanned = 0
     updated = 0
@@ -1151,9 +1203,28 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     for document in client.iter_documents(config.max_documents, extra_params=doc_query_params):
         scanned += 1
         doc_id = document.get("id")
+        doc_key = str(doc_id) if doc_id is not None else None
         title = document.get("title", "<ohne Titel>")
         doc_tags = {int(tag_id) for tag_id in document.get("tags", [])}
         patch_payload_for_error: Optional[Dict[str, Any]] = None
+
+        if config.quarantine_failed_documents and doc_key is not None:
+            retry_after_ts = float(failed_docs_until.get(doc_key, 0.0) or 0.0)
+            now_ts = dt.datetime.now(dt.timezone.utc).timestamp()
+            if retry_after_ts > now_ts:
+                retry_after_text = dt.datetime.fromtimestamp(
+                    retry_after_ts, tz=dt.timezone.utc
+                ).isoformat()
+                LOGGER.info(
+                    "Skip Dokument %s (%s): Fehler-Quarantäne bis %s (UTC)",
+                    doc_id,
+                    title,
+                    retry_after_text,
+                )
+                skipped += 1
+                continue
+            if doc_key in failed_docs_until:
+                failed_docs_until.pop(doc_key, None)
 
         # Defensive Prüfung bleibt aktiv, falls API-Filter je nach Version anders reagiert.
         if not process_all_documents and only_tag_id is not None and only_tag_id not in doc_tags:
@@ -1166,6 +1237,11 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             continue
 
         try:
+            if config.quarantine_failed_documents and doc_key is not None:
+                # Bei neuem Versuch zunächst entsperren; bei erneutem Fehler wird der
+                # Eintrag im Exception-Zweig wieder mit neuer Cooldown-Zeit gesetzt.
+                failed_docs_until.pop(doc_key, None)
+
             prediction = classifier.classify(document)
             prediction = sanitize_prediction(prediction, storage_paths_map)
             prompt_tokens, completion_tokens, total_tokens = extract_usage(prediction)
@@ -1262,6 +1338,24 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             updated += 1
         except (AiClassificationError, PaperlessApiError, ValueError) as exc:
             failed += 1
+            if (
+                config.quarantine_failed_documents
+                and doc_key is not None
+                and failed_docs_cooldown_seconds > 0
+            ):
+                retry_after_ts = (
+                    dt.datetime.now(dt.timezone.utc).timestamp() + failed_docs_cooldown_seconds
+                )
+                failed_docs_until[doc_key] = retry_after_ts
+                retry_after_text = dt.datetime.fromtimestamp(
+                    retry_after_ts, tz=dt.timezone.utc
+                ).isoformat()
+                LOGGER.warning(
+                    "Dokument %s (%s) in Fehler-Quarantäne bis %s (UTC).",
+                    doc_id,
+                    title,
+                    retry_after_text,
+                )
             if not config.dry_run and doc_id is not None:
                 # Fehler dokumentieren: Tag setzen und Notiz am Dokument ergänzen.
                 current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
@@ -1272,7 +1366,15 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                     new_tags.add(int(ki_tag_id))
                 if new_tags != current_tags:
                     try:
-                        client.update_document(int(doc_id), {"tags": sorted(new_tags)})
+                        # Fehler-Markierung bewusst als einfacher Einmal-PATCH:
+                        # keine umfangreiche Fallback-Kaskade, damit bei kaputten
+                        # Dokumenten nicht dutzende zusätzliche Requests entstehen.
+                        client._request(
+                            "PATCH",
+                            f"/api/documents/{int(doc_id)}/",
+                            payload={"tags": sorted(new_tags)},
+                            retries=1,
+                        )
                     except PaperlessApiError as mark_tag_exc:
                         LOGGER.error(
                             "Fehler-Tag konnte für Dokument %s (%s) nicht gesetzt werden: %s",
@@ -1306,6 +1408,9 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                 }
             )
             LOGGER.error("Fehler bei Dokument %s (%s): %s", doc_id, title, exc)
+
+    if config.quarantine_failed_documents:
+        save_failed_documents(failed_docs_path, failed_docs_until)
 
     log_run_details(created_entities=created_entities, error_details=error_details)
     metrics_path = Path(config.metrics_file)
