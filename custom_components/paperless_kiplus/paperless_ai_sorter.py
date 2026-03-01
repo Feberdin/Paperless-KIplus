@@ -36,6 +36,29 @@ class AiClassificationError(Exception):
     """Fehler bei KI-Klassifizierung oder Antwortformat."""
 
 
+def parse_bool(value: Any, default: bool = False) -> bool:
+    """Parst boolesche Werte robust aus YAML/Strings/Numbers.
+
+    Wichtig für Home-Assistant-verwaltete YAMLs: Dort können Werte als String
+    ankommen (z. B. "false"), was mit `bool("false")` sonst fälschlich `True`
+    wäre.
+    """
+
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "ja"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "nein", ""}:
+            return False
+    return default
+
+
 @dataclass
 class AppConfig:
     """Strukturierte Konfiguration für das Skript."""
@@ -129,42 +152,46 @@ def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | No
         ai_model=str(raw["ai_model"]),
         ai_base_url=str(raw.get("ai_base_url", "https://api.openai.com/v1")).rstrip("/"),
         max_documents=max_documents,
-        dry_run=bool(raw.get("dry_run", False) or cli_dry_run),
-        create_missing_entities=bool(raw.get("create_missing_entities", True)),
+        dry_run=parse_bool(raw.get("dry_run", False), False) or cli_dry_run,
+        create_missing_entities=parse_bool(raw.get("create_missing_entities", True), True),
         confidence_threshold=float(raw.get("confidence_threshold", 0.70)),
         request_timeout_seconds=int(raw.get("request_timeout_seconds", 30)),
         log_level=str(raw.get("log_level", "INFO")),
-        enable_token_precheck=bool(raw.get("enable_token_precheck", False)),
+        enable_token_precheck=parse_bool(raw.get("enable_token_precheck", False), False),
         min_remaining_tokens=int(raw.get("min_remaining_tokens", 1500)),
         custom_prompt_instructions=str(raw.get("custom_prompt_instructions", "")).strip(),
         basis_config=dict(raw.get("basis_config", {})),
         process_only_tag=str(raw.get("process_only_tag", "")).strip(),
-        include_existing_entities_in_prompt=bool(
-            raw.get("include_existing_entities_in_prompt", True)
+        include_existing_entities_in_prompt=parse_bool(
+            raw.get("include_existing_entities_in_prompt", True),
+            True,
         ),
-        enable_ai_notes=bool(raw.get("enable_ai_notes", True)),
+        enable_ai_notes=parse_bool(raw.get("enable_ai_notes", True), True),
         ai_notes_max_chars=int(raw.get("ai_notes_max_chars", 800)),
-        enable_ai_note_summary=bool(raw.get("enable_ai_note_summary", True)),
+        enable_ai_note_summary=parse_bool(raw.get("enable_ai_note_summary", True), True),
         ai_note_summary_max_chars=int(raw.get("ai_note_summary_max_chars", 220)),
         metrics_file=str(raw.get("metrics_file", "run_metrics.json")).strip(),
         input_cost_per_1k_tokens_eur=float(raw.get("input_cost_per_1k_tokens_eur", 0.0)),
         output_cost_per_1k_tokens_eur=float(raw.get("output_cost_per_1k_tokens_eur", 0.0)),
-        quarantine_failed_documents=bool(raw.get("quarantine_failed_documents", True)),
+        quarantine_failed_documents=parse_bool(raw.get("quarantine_failed_documents", True), True),
         failed_document_cooldown_hours=int(raw.get("failed_document_cooldown_hours", 24)),
         failed_documents_file=str(raw.get("failed_documents_file", "failed_documents.json")).strip(),
         failed_tags_only_cooldown_hours=int(raw.get("failed_tags_only_cooldown_hours", 168)),
         failed_patch_cache_file=str(raw.get("failed_patch_cache_file", "failed_patch_cache.json")).strip(),
-        enable_tag_bypass_on_tags_500=bool(raw.get("enable_tag_bypass_on_tags_500", True)),
+        enable_tag_bypass_on_tags_500=parse_bool(raw.get("enable_tag_bypass_on_tags_500", True), True),
         tag_bypass_file=str(raw.get("tag_bypass_file", "tag_bypass_documents.json")).strip(),
-        already_classified_skip=bool(raw.get("already_classified_skip", True)),
-        already_classified_require_ki_tag=bool(raw.get("already_classified_require_ki_tag", False)),
+        already_classified_skip=parse_bool(raw.get("already_classified_skip", True), True),
+        already_classified_require_ki_tag=parse_bool(raw.get("already_classified_require_ki_tag", True), True),
         precheck_min_content_chars=int(raw.get("precheck_min_content_chars", 120)),
         precheck_min_word_count=int(raw.get("precheck_min_word_count", 20)),
         precheck_min_alnum_ratio=float(raw.get("precheck_min_alnum_ratio", 0.40)),
         precheck_blocked_filename_patterns=blocked_patterns,
-        precheck_image_only_gate=bool(raw.get("precheck_image_only_gate", True)),
-        precheck_duplicate_hash_gate=bool(raw.get("precheck_duplicate_hash_gate", True)),
-        precheck_duplicate_apply_metadata=bool(raw.get("precheck_duplicate_apply_metadata", True)),
+        precheck_image_only_gate=parse_bool(raw.get("precheck_image_only_gate", True), True),
+        precheck_duplicate_hash_gate=parse_bool(raw.get("precheck_duplicate_hash_gate", True), True),
+        precheck_duplicate_apply_metadata=parse_bool(
+            raw.get("precheck_duplicate_apply_metadata", True),
+            True,
+        ),
     )
 
 
@@ -1595,7 +1622,16 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         if config.already_classified_skip:
             has_type = document.get("document_type") is not None
             has_tags = bool(document.get("tags"))
-            has_ki_tag = bool(ki_tag_id is not None and int(ki_tag_id) in doc_tags)
+            # Dokumente mit KI_SKIP_PRECHECK wurden explizit ohne KI-Lauf markiert.
+            # Diese sollen nicht als "KI-klassifiziert" gelten.
+            has_skip_precheck_tag = bool(
+                skip_precheck_tag_id is not None and int(skip_precheck_tag_id) in doc_tags
+            )
+            has_ki_tag = bool(
+                ki_tag_id is not None
+                and int(ki_tag_id) in doc_tags
+                and not has_skip_precheck_tag
+            )
             if has_type and has_tags and (
                 not config.already_classified_require_ki_tag or has_ki_tag
             ):
@@ -1606,8 +1642,6 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                         new_tags.discard(int(remove_neu_tag_id))
                     if skip_precheck_tag_id is not None:
                         new_tags.add(int(skip_precheck_tag_id))
-                    if ki_tag_id is not None:
-                        new_tags.add(int(ki_tag_id))
                     if new_tags != current_tags:
                         try:
                             client._request(
@@ -1663,8 +1697,6 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                     new_tags.discard(int(remove_neu_tag_id))
                 if skip_precheck_tag_id is not None:
                     new_tags.add(int(skip_precheck_tag_id))
-                if ki_tag_id is not None:
-                    new_tags.add(int(ki_tag_id))
                 if new_tags != current_tags:
                     try:
                         client._request(
@@ -1728,8 +1760,6 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                     new_tags.discard(int(remove_neu_tag_id))
                 if skip_precheck_tag_id is not None:
                     new_tags.add(int(skip_precheck_tag_id))
-                if ki_tag_id is not None:
-                    new_tags.add(int(ki_tag_id))
                 if new_tags != current_tags:
                     try:
                         client._request(
@@ -1784,8 +1814,6 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                         new_tags.discard(int(remove_neu_tag_id))
                     if skip_precheck_tag_id is not None:
                         new_tags.add(int(skip_precheck_tag_id))
-                    if ki_tag_id is not None:
-                        new_tags.add(int(ki_tag_id))
                     if new_tags != current_tags:
                         try:
                             client._request(
@@ -1892,8 +1920,6 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                             new_tags.discard(int(remove_neu_tag_id))
                         if skip_precheck_tag_id is not None:
                             new_tags.add(int(skip_precheck_tag_id))
-                        if ki_tag_id is not None:
-                            new_tags.add(int(ki_tag_id))
                         if new_tags != current_tags:
                             try:
                                 client._request(

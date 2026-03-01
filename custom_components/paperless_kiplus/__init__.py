@@ -77,6 +77,28 @@ def _as_float(value: Any, default: float) -> float:
     except (TypeError, ValueError):
         return default
 
+
+def _as_bool(value: Any, default: bool) -> bool:
+    """Convert option values robustly to bool.
+
+    Schutz gegen String-Werte wie "false", die mit bool("false")
+    sonst fälschlich als True gelten.
+    """
+
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "ja"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "nein", ""}:
+            return False
+    return default
+
 RUN_SERVICE_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_FORCE, default=False): cv.boolean,
@@ -112,9 +134,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     metrics_file = DEFAULT_METRICS_FILE
     config_file = DEFAULT_CONFIG_FILE
-    dry_run = bool(options.get(CONF_DRY_RUN, data.get(CONF_DRY_RUN, DEFAULT_DRY_RUN)))
-    all_documents = bool(
-        options.get(CONF_ALL_DOCUMENTS, data.get(CONF_ALL_DOCUMENTS, DEFAULT_ALL_DOCUMENTS))
+    dry_run = _as_bool(
+        options.get(CONF_DRY_RUN, data.get(CONF_DRY_RUN, DEFAULT_DRY_RUN)),
+        DEFAULT_DRY_RUN,
+    )
+    all_documents = _as_bool(
+        options.get(CONF_ALL_DOCUMENTS, data.get(CONF_ALL_DOCUMENTS, DEFAULT_ALL_DOCUMENTS)),
+        DEFAULT_ALL_DOCUMENTS,
     )
     max_documents = int(options.get(CONF_MAX_DOCUMENTS, data.get(CONF_MAX_DOCUMENTS, DEFAULT_MAX_DOCUMENTS)))
     managed_config_enabled = DEFAULT_MANAGED_CONFIG_ENABLED
@@ -138,20 +164,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ),
         DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR,
     )
-    already_classified_skip = bool(
+    already_classified_skip = _as_bool(
         options.get(
             CONF_ALREADY_CLASSIFIED_SKIP,
             data.get(CONF_ALREADY_CLASSIFIED_SKIP, DEFAULT_ALREADY_CLASSIFIED_SKIP),
-        )
+        ),
+        DEFAULT_ALREADY_CLASSIFIED_SKIP,
     )
-    already_classified_require_ki_tag = bool(
+    already_classified_require_ki_tag = _as_bool(
         options.get(
             CONF_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
             data.get(
                 CONF_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
                 DEFAULT_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
             ),
-        )
+        ),
+        DEFAULT_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
     )
     precheck_min_content_chars = int(
         options.get(
@@ -181,26 +209,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ),
         )
     )
-    precheck_image_only_gate = bool(
+    precheck_image_only_gate = _as_bool(
         options.get(
             CONF_PRECHECK_IMAGE_ONLY_GATE,
             data.get(CONF_PRECHECK_IMAGE_ONLY_GATE, DEFAULT_PRECHECK_IMAGE_ONLY_GATE),
-        )
+        ),
+        DEFAULT_PRECHECK_IMAGE_ONLY_GATE,
     )
-    precheck_duplicate_hash_gate = bool(
+    precheck_duplicate_hash_gate = _as_bool(
         options.get(
             CONF_PRECHECK_DUPLICATE_HASH_GATE,
             data.get(CONF_PRECHECK_DUPLICATE_HASH_GATE, DEFAULT_PRECHECK_DUPLICATE_HASH_GATE),
-        )
+        ),
+        DEFAULT_PRECHECK_DUPLICATE_HASH_GATE,
     )
-    precheck_duplicate_apply_metadata = bool(
+    precheck_duplicate_apply_metadata = _as_bool(
         options.get(
             CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
             data.get(
                 CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
                 DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
             ),
-        )
+        ),
+        DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
     )
 
     runner = PaperlessRunner(
