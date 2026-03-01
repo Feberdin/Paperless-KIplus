@@ -68,6 +68,7 @@ class AppConfig:
     failed_document_cooldown_hours: int
     failed_documents_file: str
     failed_tags_only_cooldown_hours: int
+    failed_patch_cache_file: str
 
 
 def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | None = None) -> AppConfig:
@@ -130,6 +131,7 @@ def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | No
         failed_document_cooldown_hours=int(raw.get("failed_document_cooldown_hours", 24)),
         failed_documents_file=str(raw.get("failed_documents_file", "failed_documents.json")).strip(),
         failed_tags_only_cooldown_hours=int(raw.get("failed_tags_only_cooldown_hours", 168)),
+        failed_patch_cache_file=str(raw.get("failed_patch_cache_file", "failed_patch_cache.json")).strip(),
     )
 
 
@@ -724,6 +726,42 @@ def save_failed_documents(failed_docs_path: Path, payload: Dict[str, float]) -> 
         LOGGER.error("Failed-Docs-Datei konnte nicht geschrieben werden: %s | %s", failed_docs_path, exc)
 
 
+def load_failed_patch_cache(cache_path: Path) -> Dict[str, Dict[str, Any]]:
+    """Lädt zwischengespeicherte Patch-Payloads für Retry-Läufe ohne KI."""
+
+    if not cache_path.exists():
+        return {}
+    try:
+        loaded = json.loads(cache_path.read_text(encoding="utf-8"))
+        if not isinstance(loaded, dict):
+            return {}
+        result: Dict[str, Dict[str, Any]] = {}
+        for key, value in loaded.items():
+            try:
+                doc_key = str(int(key))
+            except (TypeError, ValueError):
+                continue
+            if isinstance(value, dict):
+                result[doc_key] = value
+        return result
+    except (OSError, json.JSONDecodeError):
+        LOGGER.warning("Failed-Patch-Cache konnte nicht gelesen werden: %s", cache_path)
+        return {}
+
+
+def save_failed_patch_cache(cache_path: Path, payload: Dict[str, Dict[str, Any]]) -> None:
+    """Speichert zwischengespeicherte Patch-Payloads für Retry-Läufe ohne KI."""
+
+    try:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        cache_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except OSError as exc:
+        LOGGER.error("Failed-Patch-Cache konnte nicht geschrieben werden: %s | %s", cache_path, exc)
+
+
 def save_metrics(metrics_path: Path, payload: Dict[str, Any]) -> None:
     """Speichert Lauf-Metriken als JSON für externe Systeme (z. B. Home Assistant)."""
 
@@ -1180,11 +1218,14 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     correspondent_id_to_label = {entity_id: label for label, entity_id in correspondents_map.items()}
     storage_path_id_to_label = {entity_id: label for label, entity_id in storage_paths_map.items()}
     failed_docs_path = Path(config.failed_documents_file)
+    failed_patch_cache_path = Path(config.failed_patch_cache_file)
     failed_docs_until: Dict[str, float] = {}
+    failed_patch_cache: Dict[str, Dict[str, Any]] = {}
     failed_docs_cooldown_seconds = max(0, int(config.failed_document_cooldown_hours)) * 3600
     failed_tags_only_cooldown_seconds = max(0, int(config.failed_tags_only_cooldown_hours)) * 3600
     if config.quarantine_failed_documents:
         failed_docs_until = load_failed_documents(failed_docs_path)
+        failed_patch_cache = load_failed_patch_cache(failed_patch_cache_path)
         now_ts = dt.datetime.now(dt.timezone.utc).timestamp()
         # Abgelaufene Einträge direkt entfernen, damit die Datei klein bleibt.
         failed_docs_until = {
@@ -1248,6 +1289,52 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         title = document.get("title", "<ohne Titel>")
         doc_tags = {int(tag_id) for tag_id in document.get("tags", [])}
         patch_payload_for_error: Optional[Dict[str, Any]] = None
+
+        if config.quarantine_failed_documents and doc_key is not None and doc_key in failed_patch_cache:
+            retry_payload = failed_patch_cache.get(doc_key) or {}
+            if config.dry_run:
+                LOGGER.info(
+                    "Dry-Run Retry ohne KI für Dokument %s (%s): %s",
+                    doc_id,
+                    title,
+                    retry_payload,
+                )
+                skipped += 1
+                continue
+            try:
+                client.update_document(int(doc_id), retry_payload)
+                failed_patch_cache.pop(doc_key, None)
+                failed_docs_until.pop(doc_key, None)
+                LOGGER.info("Aktualisiert Dokument %s (%s) via Retry ohne KI", doc_id, title)
+                updated += 1
+                continue
+            except PaperlessApiError as retry_exc:
+                failed += 1
+                retry_after_ts = (
+                    dt.datetime.now(dt.timezone.utc).timestamp()
+                    + max(failed_docs_cooldown_seconds, failed_tags_only_cooldown_seconds)
+                )
+                failed_docs_until[doc_key] = retry_after_ts
+                retry_after_text = dt.datetime.fromtimestamp(
+                    retry_after_ts, tz=dt.timezone.utc
+                ).isoformat()
+                LOGGER.warning(
+                    "Retry ohne KI fehlgeschlagen für Dokument %s (%s), Quarantäne bis %s (UTC): %s",
+                    doc_id,
+                    title,
+                    retry_after_text,
+                    retry_exc,
+                )
+                error_details.append(
+                    {
+                        "id": doc_id,
+                        "title": title,
+                        "error_type": type(retry_exc).__name__,
+                        "message": f"Retry ohne KI fehlgeschlagen: {retry_exc}",
+                        "patch_payload": retry_payload,
+                    }
+                )
+                continue
 
         if config.quarantine_failed_documents and doc_key is not None:
             retry_after_ts = float(failed_docs_until.get(doc_key, 0.0) or 0.0)
@@ -1391,6 +1478,9 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                         )
                 LOGGER.info("Aktualisiert Dokument %s (%s)", doc_id, title)
 
+            if config.quarantine_failed_documents and doc_key is not None:
+                failed_patch_cache.pop(doc_key, None)
+
             updated += 1
         except (AiClassificationError, PaperlessApiError, ValueError) as exc:
             failed += 1
@@ -1411,6 +1501,8 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                     and failed_tags_only_cooldown_seconds > retry_delay_seconds
                 ):
                     retry_delay_seconds = failed_tags_only_cooldown_seconds
+                    if patch_payload_for_error:
+                        failed_patch_cache[doc_key] = dict(patch_payload_for_error)
                     LOGGER.warning(
                         "Dokument %s (%s): Tags-only-Fehler erkannt, setze verlängerte Quarantäne auf %s Stunden.",
                         doc_id,
@@ -1486,6 +1578,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
 
     if config.quarantine_failed_documents:
         save_failed_documents(failed_docs_path, failed_docs_until)
+        save_failed_patch_cache(failed_patch_cache_path, failed_patch_cache)
 
     log_run_details(created_entities=created_entities, error_details=error_details)
     metrics_path = Path(config.metrics_file)
