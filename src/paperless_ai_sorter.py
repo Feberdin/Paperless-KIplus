@@ -1529,17 +1529,16 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         patch_payload_for_error: Optional[Dict[str, Any]] = None
 
         if config.enable_tag_bypass_on_tags_500 and doc_key is not None and doc_key in tag_bypass_docs:
-            if remove_neu_tag_id is not None and remove_neu_tag_id not in doc_tags:
-                # Dokument wurde inzwischen manuell repariert; Bypass-Eintrag entfernen.
-                tag_bypass_docs.pop(doc_key, None)
-            else:
-                LOGGER.info(
-                    "Skip Dokument %s (%s): Tag-Bypass aktiv (tags-only 500).",
-                    doc_id,
-                    title,
-                )
-                skipped += 1
-                continue
+            # Bypass-Einträge bleiben bewusst stabil bestehen, bis sie explizit
+            # zurückgesetzt werden (HA-Button). So verhindern wir zuverlässig,
+            # dass bekannte 500er erneut KI-Tokens verbrauchen.
+            LOGGER.info(
+                "Skip Dokument %s (%s): Tag-Bypass aktiv (tags-only 500).",
+                doc_id,
+                title,
+            )
+            skipped += 1
+            continue
 
         if config.quarantine_failed_documents and doc_key is not None and doc_key in failed_patch_cache:
             retry_payload = failed_patch_cache.get(doc_key) or {}
