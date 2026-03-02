@@ -1456,6 +1456,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     failed = 0
     bypassed = 0
     bypass_skipped = 0
+    skipped_with_neu_still_set = 0
     created_entities: Dict[str, List[str]] = {}
     error_details: List[Dict[str, Any]] = []
     run_prompt_tokens = 0
@@ -1558,6 +1559,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                             title,
                         )
                     except PaperlessApiError as bypass_mark_exc:
+                        skipped_with_neu_still_set += 1
                         LOGGER.warning(
                             "Bypass-Dokument %s (%s) konnte nicht auf KI_SKIP/#NEU aktualisiert werden: %s",
                             doc_id,
@@ -1623,6 +1625,33 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             retry_after_ts = float(failed_docs_until.get(doc_key, 0.0) or 0.0)
             now_ts = dt.datetime.now(dt.timezone.utc).timestamp()
             if retry_after_ts > now_ts:
+                if not config.dry_run and doc_id is not None:
+                    current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
+                    desired_tags = set(current_tags)
+                    if remove_neu_tag_id is not None:
+                        desired_tags.discard(int(remove_neu_tag_id))
+                    if error_tag_id is not None:
+                        desired_tags.add(int(error_tag_id))
+                    if desired_tags != current_tags:
+                        try:
+                            client.update_document(
+                                int(doc_id),
+                                {"tags": sorted(desired_tags)},
+                            )
+                            doc_tags = set(desired_tags)
+                            LOGGER.info(
+                                "Quarantäne-Dokument %s (%s) markiert: #NEU entfernt, KI_FEHLER gesetzt.",
+                                doc_id,
+                                title,
+                            )
+                        except PaperlessApiError as quarantine_mark_exc:
+                            skipped_with_neu_still_set += 1
+                            LOGGER.warning(
+                                "Quarantäne-Dokument %s (%s) konnte nicht auf KI_FEHLER/#NEU aktualisiert werden: %s",
+                                doc_id,
+                                title,
+                                quarantine_mark_exc,
+                            )
                 retry_after_text = dt.datetime.fromtimestamp(
                     retry_after_ts, tz=dt.timezone.utc
                 ).isoformat()
@@ -2342,6 +2371,12 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         bypassed,
         bypass_skipped,
     )
+    if skipped_with_neu_still_set > 0:
+        LOGGER.warning(
+            "Loop-Hinweis: Bei %s übersprungenen Dokument(en) konnte #NEU nicht entfernt werden "
+            "(API-Fehler bei Tag-Update). Diese Dokumente triggern externe #NEU-Automatiken weiter.",
+            skipped_with_neu_still_set,
+        )
 
 
 def parse_args() -> argparse.Namespace:
