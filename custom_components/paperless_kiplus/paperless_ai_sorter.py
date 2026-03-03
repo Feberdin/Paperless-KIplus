@@ -500,7 +500,23 @@ class PaperlessClient:
     def add_document_note(self, document_id: int, note: str) -> None:
         """Fügt eine Notiz über den dedizierten Notes-Endpoint hinzu."""
 
-        self._request("POST", f"/api/documents/{document_id}/notes/", payload={"note": note})
+        response = self._request(
+            "POST",
+            f"/api/documents/{document_id}/notes/",
+            payload={"note": note},
+        )
+        note_id = None
+        if isinstance(response, dict):
+            note_id = response.get("id")
+        note_preview = note.splitlines()[0].strip() if note else ""
+        if len(note_preview) > 120:
+            note_preview = note_preview[:117] + "..."
+        LOGGER.info(
+            "Notiz gespeichert für Dokument %s | Note-ID=%s | Vorschau=%s",
+            document_id,
+            note_id if note_id is not None else "-",
+            note_preview or "-",
+        )
 
 
 class AiClassifier:
