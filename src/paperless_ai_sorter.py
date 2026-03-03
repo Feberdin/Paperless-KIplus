@@ -2188,7 +2188,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             continue
 
         # ---------- Precheck-Gates vor KI ----------
-        if config.already_classified_skip:
+        if config.already_classified_skip and not process_all_documents:
             has_type = document.get("document_type") is not None
             has_tags = bool(document.get("tags"))
             # Regel für already_classified_skip:
