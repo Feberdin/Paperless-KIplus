@@ -135,6 +135,7 @@ class AppConfig:
     precheck_image_only_gate: bool
     precheck_duplicate_hash_gate: bool
     precheck_duplicate_apply_metadata: bool
+    reprocess_ki_tagged_documents: bool
     enable_parallel_ai: bool
     max_parallel_ai_jobs: int
 
@@ -236,6 +237,10 @@ def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | No
         precheck_duplicate_apply_metadata=parse_bool(
             raw.get("precheck_duplicate_apply_metadata", True),
             True,
+        ),
+        reprocess_ki_tagged_documents=parse_bool(
+            raw.get("reprocess_ki_tagged_documents", False),
+            False,
         ),
         enable_parallel_ai=parse_bool(raw.get("enable_parallel_ai", False), False),
         max_parallel_ai_jobs=max(1, int(raw.get("max_parallel_ai_jobs", 5))),
@@ -2188,13 +2193,43 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             continue
 
         # ---------- Precheck-Gates vor KI ----------
+        has_ki_tag = bool(ki_tag_id is not None and int(ki_tag_id) in doc_tags)
+        if has_ki_tag and not config.reprocess_ki_tagged_documents:
+            if not config.dry_run and doc_id is not None:
+                current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
+                new_tags = set(current_tags)
+                if remove_neu_tag_id is not None:
+                    new_tags.discard(int(remove_neu_tag_id))
+                if new_tags != current_tags:
+                    try:
+                        client._request(
+                            "PATCH",
+                            f"/api/documents/{int(doc_id)}/",
+                            payload={"tags": sorted(new_tags)},
+                            retries=1,
+                        )
+                    except PaperlessApiError as remove_neu_exc:
+                        skipped_with_neu_still_set += 1
+                        LOGGER.warning(
+                            "Precheck KI-Tag-Skip: #NEU konnte für Dokument %s (%s) nicht entfernt werden: %s",
+                            doc_id,
+                            title,
+                            remove_neu_exc,
+                        )
+            LOGGER.info(
+                "Skip Dokument %s (%s): Precheck ki_tag_skip (reprocess_ki_tagged_documents=false)",
+                doc_id,
+                title,
+            )
+            skipped += 1
+            continue
+
         if config.already_classified_skip and not process_all_documents:
             has_type = document.get("document_type") is not None
             has_tags = bool(document.get("tags"))
             # Regel für already_classified_skip:
             # Nur skippen, wenn KI-Tag vorhanden UND bereits eine KI-Notiz mit
             # Kurz-Zusammenfassung existiert.
-            has_ki_tag = bool(ki_tag_id is not None and int(ki_tag_id) in doc_tags)
             has_ki_summary_note = False
             if has_type and has_tags and has_ki_tag and doc_id is not None:
                 try:

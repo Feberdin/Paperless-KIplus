@@ -58,6 +58,7 @@ class PaperlessRunner:
         precheck_image_only_gate: bool,
         precheck_duplicate_hash_gate: bool,
         precheck_duplicate_apply_metadata: bool,
+        reprocess_ki_tagged_documents: bool,
         enable_parallel_ai: bool,
         max_parallel_ai_jobs: int,
     ) -> None:
@@ -83,6 +84,7 @@ class PaperlessRunner:
         self.precheck_image_only_gate = precheck_image_only_gate
         self.precheck_duplicate_hash_gate = precheck_duplicate_hash_gate
         self.precheck_duplicate_apply_metadata = precheck_duplicate_apply_metadata
+        self.reprocess_ki_tagged_documents = reprocess_ki_tagged_documents
         self.enable_parallel_ai = enable_parallel_ai
         self.max_parallel_ai_jobs = max_parallel_ai_jobs
 
@@ -548,6 +550,9 @@ class PaperlessRunner:
                 parsed["precheck_duplicate_hash_gate"] = bool(self.precheck_duplicate_hash_gate)
                 parsed["precheck_duplicate_apply_metadata"] = bool(
                     self.precheck_duplicate_apply_metadata
+                )
+                parsed["reprocess_ki_tagged_documents"] = bool(
+                    self.reprocess_ki_tagged_documents
                 )
                 parsed["enable_parallel_ai"] = bool(self.enable_parallel_ai)
                 parsed["max_parallel_ai_jobs"] = max(1, int(self.max_parallel_ai_jobs))

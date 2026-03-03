@@ -33,6 +33,7 @@ from .const import (
     CONF_PRECHECK_BLOCKED_FILENAME_PATTERNS,
     CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
     CONF_PRECHECK_DUPLICATE_HASH_GATE,
+    CONF_REPROCESS_KI_TAGGED_DOCUMENTS,
     CONF_PRECHECK_IMAGE_ONLY_GATE,
     CONF_PRECHECK_MIN_ALNUM_RATIO,
     CONF_PRECHECK_MIN_CONTENT_CHARS,
@@ -51,6 +52,7 @@ from .const import (
     DEFAULT_PRECHECK_BLOCKED_FILENAME_PATTERNS,
     DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
     DEFAULT_PRECHECK_DUPLICATE_HASH_GATE,
+    DEFAULT_REPROCESS_KI_TAGGED_DOCUMENTS,
     DEFAULT_PRECHECK_IMAGE_ONLY_GATE,
     DEFAULT_PRECHECK_MIN_ALNUM_RATIO,
     DEFAULT_PRECHECK_MIN_CONTENT_CHARS,
@@ -151,6 +153,10 @@ class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(
                     CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
                     default=DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_REPROCESS_KI_TAGGED_DOCUMENTS,
+                    default=DEFAULT_REPROCESS_KI_TAGGED_DOCUMENTS,
                 ): BooleanSelector(),
                 vol.Required(
                     CONF_ENABLE_PARALLEL_AI,
@@ -318,6 +324,16 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
                         data.get(
                             CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
                             DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
+                        ),
+                    ),
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_REPROCESS_KI_TAGGED_DOCUMENTS,
+                    default=options.get(
+                        CONF_REPROCESS_KI_TAGGED_DOCUMENTS,
+                        data.get(
+                            CONF_REPROCESS_KI_TAGGED_DOCUMENTS,
+                            DEFAULT_REPROCESS_KI_TAGGED_DOCUMENTS,
                         ),
                     ),
                 ): BooleanSelector(),

@@ -31,6 +31,7 @@ from .const import (
     CONF_PRECHECK_BLOCKED_FILENAME_PATTERNS,
     CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
     CONF_PRECHECK_DUPLICATE_HASH_GATE,
+    CONF_REPROCESS_KI_TAGGED_DOCUMENTS,
     CONF_ENABLE_PARALLEL_AI,
     CONF_MAX_PARALLEL_AI_JOBS,
     CONF_PRECHECK_IMAGE_ONLY_GATE,
@@ -53,6 +54,7 @@ from .const import (
     DEFAULT_PRECHECK_BLOCKED_FILENAME_PATTERNS,
     DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
     DEFAULT_PRECHECK_DUPLICATE_HASH_GATE,
+    DEFAULT_REPROCESS_KI_TAGGED_DOCUMENTS,
     DEFAULT_ENABLE_PARALLEL_AI,
     DEFAULT_MAX_PARALLEL_AI_JOBS,
     DEFAULT_PRECHECK_IMAGE_ONLY_GATE,
@@ -237,6 +239,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ),
         DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
     )
+    reprocess_ki_tagged_documents = _as_bool(
+        options.get(
+            CONF_REPROCESS_KI_TAGGED_DOCUMENTS,
+            data.get(
+                CONF_REPROCESS_KI_TAGGED_DOCUMENTS,
+                DEFAULT_REPROCESS_KI_TAGGED_DOCUMENTS,
+            ),
+        ),
+        DEFAULT_REPROCESS_KI_TAGGED_DOCUMENTS,
+    )
     enable_parallel_ai = _as_bool(
         options.get(
             CONF_ENABLE_PARALLEL_AI,
@@ -274,6 +286,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         precheck_image_only_gate=precheck_image_only_gate,
         precheck_duplicate_hash_gate=precheck_duplicate_hash_gate,
         precheck_duplicate_apply_metadata=precheck_duplicate_apply_metadata,
+        reprocess_ki_tagged_documents=reprocess_ki_tagged_documents,
         enable_parallel_ai=enable_parallel_ai,
         max_parallel_ai_jobs=max_parallel_ai_jobs,
     )
