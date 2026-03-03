@@ -24,9 +24,11 @@ from .const import (
     CONF_ALL_DOCUMENTS,
     CONF_COOLDOWN_SECONDS,
     CONF_DRY_RUN,
+    CONF_ENABLE_PARALLEL_AI,
     CONF_INPUT_COST_PER_1K_TOKENS_EUR,
     CONF_MANAGED_CONFIG_YAML,
     CONF_MAX_DOCUMENTS,
+    CONF_MAX_PARALLEL_AI_JOBS,
     CONF_OUTPUT_COST_PER_1K_TOKENS_EUR,
     CONF_PRECHECK_BLOCKED_FILENAME_PATTERNS,
     CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
@@ -40,9 +42,11 @@ from .const import (
     DEFAULT_ALL_DOCUMENTS,
     DEFAULT_COOLDOWN_SECONDS,
     DEFAULT_DRY_RUN,
+    DEFAULT_ENABLE_PARALLEL_AI,
     DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR,
     DEFAULT_MANAGED_CONFIG_YAML,
     DEFAULT_MAX_DOCUMENTS,
+    DEFAULT_MAX_PARALLEL_AI_JOBS,
     DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR,
     DEFAULT_PRECHECK_BLOCKED_FILENAME_PATTERNS,
     DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
@@ -110,12 +114,7 @@ class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     default=str(DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR),
                 ): TextSelector(),
                 vol.Required(CONF_MAX_DOCUMENTS, default=DEFAULT_MAX_DOCUMENTS): NumberSelector(
-                    NumberSelectorConfig(
-                        min=0,
-                        max=5000,
-                        step=1,
-                        mode="box",
-                    )
+                    NumberSelectorConfig(min=0, max=5000, step=1, mode="box")
                 ),
                 vol.Required(
                     CONF_ALREADY_CLASSIFIED_SKIP,
@@ -128,15 +127,11 @@ class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(
                     CONF_PRECHECK_MIN_CONTENT_CHARS,
                     default=DEFAULT_PRECHECK_MIN_CONTENT_CHARS,
-                ): NumberSelector(
-                    NumberSelectorConfig(min=0, max=20000, step=10, mode="box")
-                ),
+                ): NumberSelector(NumberSelectorConfig(min=0, max=20000, step=10, mode="box")),
                 vol.Required(
                     CONF_PRECHECK_MIN_WORD_COUNT,
                     default=DEFAULT_PRECHECK_MIN_WORD_COUNT,
-                ): NumberSelector(
-                    NumberSelectorConfig(min=0, max=2000, step=1, mode="box")
-                ),
+                ): NumberSelector(NumberSelectorConfig(min=0, max=2000, step=1, mode="box")),
                 vol.Required(
                     CONF_PRECHECK_MIN_ALNUM_RATIO,
                     default=str(DEFAULT_PRECHECK_MIN_ALNUM_RATIO),
@@ -158,24 +153,24 @@ class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     default=DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
                 ): BooleanSelector(),
                 vol.Required(
+                    CONF_ENABLE_PARALLEL_AI,
+                    default=DEFAULT_ENABLE_PARALLEL_AI,
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_MAX_PARALLEL_AI_JOBS,
+                    default=DEFAULT_MAX_PARALLEL_AI_JOBS,
+                ): NumberSelector(NumberSelectorConfig(min=1, max=20, step=1, mode="box")),
+                vol.Required(
                     CONF_MANAGED_CONFIG_YAML,
                     default=DEFAULT_MANAGED_CONFIG_YAML,
                 ): TextSelector(
-                    TextSelectorConfig(
-                        type=TextSelectorType.TEXT,
-                        multiline=True,
-                    )
+                    TextSelectorConfig(type=TextSelectorType.TEXT, multiline=True)
                 ),
                 vol.Required(
                     CONF_COOLDOWN_SECONDS,
                     default=DEFAULT_COOLDOWN_SECONDS,
                 ): NumberSelector(
-                    NumberSelectorConfig(
-                        min=0,
-                        max=86400,
-                        step=10,
-                        mode="box",
-                    )
+                    NumberSelectorConfig(min=0, max=86400, step=10, mode="box")
                 ),
             }
         )
@@ -250,14 +245,7 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
                         CONF_MAX_DOCUMENTS,
                         data.get(CONF_MAX_DOCUMENTS, DEFAULT_MAX_DOCUMENTS),
                     ),
-                ): NumberSelector(
-                    NumberSelectorConfig(
-                        min=0,
-                        max=5000,
-                        step=1,
-                        mode="box",
-                    )
-                ),
+                ): NumberSelector(NumberSelectorConfig(min=0, max=5000, step=1, mode="box")),
                 vol.Required(
                     CONF_ALREADY_CLASSIFIED_SKIP,
                     default=options.get(
@@ -281,18 +269,14 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
                         CONF_PRECHECK_MIN_CONTENT_CHARS,
                         data.get(CONF_PRECHECK_MIN_CONTENT_CHARS, DEFAULT_PRECHECK_MIN_CONTENT_CHARS),
                     ),
-                ): NumberSelector(
-                    NumberSelectorConfig(min=0, max=20000, step=10, mode="box")
-                ),
+                ): NumberSelector(NumberSelectorConfig(min=0, max=20000, step=10, mode="box")),
                 vol.Required(
                     CONF_PRECHECK_MIN_WORD_COUNT,
                     default=options.get(
                         CONF_PRECHECK_MIN_WORD_COUNT,
                         data.get(CONF_PRECHECK_MIN_WORD_COUNT, DEFAULT_PRECHECK_MIN_WORD_COUNT),
                     ),
-                ): NumberSelector(
-                    NumberSelectorConfig(min=0, max=2000, step=1, mode="box")
-                ),
+                ): NumberSelector(NumberSelectorConfig(min=0, max=2000, step=1, mode="box")),
                 vol.Required(
                     CONF_PRECHECK_MIN_ALNUM_RATIO,
                     default=options.get(
@@ -338,16 +322,27 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
                     ),
                 ): BooleanSelector(),
                 vol.Required(
+                    CONF_ENABLE_PARALLEL_AI,
+                    default=options.get(
+                        CONF_ENABLE_PARALLEL_AI,
+                        data.get(CONF_ENABLE_PARALLEL_AI, DEFAULT_ENABLE_PARALLEL_AI),
+                    ),
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_MAX_PARALLEL_AI_JOBS,
+                    default=options.get(
+                        CONF_MAX_PARALLEL_AI_JOBS,
+                        data.get(CONF_MAX_PARALLEL_AI_JOBS, DEFAULT_MAX_PARALLEL_AI_JOBS),
+                    ),
+                ): NumberSelector(NumberSelectorConfig(min=1, max=20, step=1, mode="box")),
+                vol.Required(
                     CONF_MANAGED_CONFIG_YAML,
                     default=options.get(
                         CONF_MANAGED_CONFIG_YAML,
                         data.get(CONF_MANAGED_CONFIG_YAML, DEFAULT_MANAGED_CONFIG_YAML),
                     ),
                 ): TextSelector(
-                    TextSelectorConfig(
-                        type=TextSelectorType.TEXT,
-                        multiline=True,
-                    )
+                    TextSelectorConfig(type=TextSelectorType.TEXT, multiline=True)
                 ),
                 vol.Required(
                     CONF_COOLDOWN_SECONDS,
@@ -356,12 +351,7 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
                         data.get(CONF_COOLDOWN_SECONDS, DEFAULT_COOLDOWN_SECONDS),
                     ),
                 ): NumberSelector(
-                    NumberSelectorConfig(
-                        min=0,
-                        max=86400,
-                        step=10,
-                        mode="box",
-                    )
+                    NumberSelectorConfig(min=0, max=86400, step=10, mode="box")
                 ),
             }
         )

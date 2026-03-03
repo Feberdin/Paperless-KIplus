@@ -8,6 +8,7 @@ klassifizieren und schreibt die vorgeschlagenen Metadaten zurück.
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import datetime as dt
 import json
 import logging
@@ -23,6 +24,9 @@ import yaml
 
 
 LOGGER = logging.getLogger("paperless_ai_sorter")
+UUID_TAG_PATTERN = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 
 
 class ConfigError(Exception):
@@ -35,6 +39,33 @@ class PaperlessApiError(Exception):
 
 class AiClassificationError(Exception):
     """Fehler bei KI-Klassifizierung oder Antwortformat."""
+
+
+def validate_new_tag_name(tag_name: str) -> tuple[bool, str]:
+    """Validiert neue KI-Tags, um technische Artefakte zu blockieren.
+
+    Ziel: Keine automatisch erzeugten ID-/UUID-/Nummern-Tags in Paperless anlegen.
+    Bereits vorhandene Tags im System werden nicht blockiert.
+    """
+
+    normalized = str(tag_name or "").strip()
+    if not normalized:
+        return False, "leer"
+    if len(normalized) > 80:
+        return False, "zu lang (>80 Zeichen)"
+    if UUID_TAG_PATTERN.match(normalized):
+        return False, "UUID-Muster erkannt"
+
+    has_letter = any(ch.isalpha() for ch in normalized)
+    if not has_letter:
+        return False, "kein Buchstabe enthalten (rein numerisch/technisch)"
+
+    digits = sum(1 for ch in normalized if ch.isdigit())
+    alnum = sum(1 for ch in normalized if ch.isalnum())
+    if alnum > 0 and (digits / alnum) >= 0.85 and digits >= 6:
+        return False, "überwiegend numerisches Muster"
+
+    return True, "ok"
 
 
 def parse_bool(value: Any, default: bool = False) -> bool:
@@ -104,6 +135,19 @@ class AppConfig:
     precheck_image_only_gate: bool
     precheck_duplicate_hash_gate: bool
     precheck_duplicate_apply_metadata: bool
+    enable_parallel_ai: bool
+    max_parallel_ai_jobs: int
+
+
+@dataclass
+class PendingAiDocument:
+    """Dokumentkontext für spätere (ggf. parallele) KI-Klassifizierung."""
+
+    document: Dict[str, Any]
+    doc_id: Optional[int]
+    doc_key: Optional[str]
+    title: str
+    doc_tags: set[int]
 
 
 def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | None = None) -> AppConfig:
@@ -193,6 +237,8 @@ def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | No
             raw.get("precheck_duplicate_apply_metadata", True),
             True,
         ),
+        enable_parallel_ai=parse_bool(raw.get("enable_parallel_ai", False), False),
+        max_parallel_ai_jobs=max(1, int(raw.get("max_parallel_ai_jobs", 5))),
     )
 
 
@@ -452,7 +498,7 @@ class PaperlessClient:
                         "PATCH",
                         f"/api/documents/{document_id}/",
                         payload=candidate,
-                        retries=1,
+                        retries=2,
                     )
                     LOGGER.warning(
                         "PATCH-Fallback erfolgreich für Dokument %s (%s). Originalpayload führte zu HTTP 500.",
@@ -477,7 +523,7 @@ class PaperlessClient:
                         "PATCH",
                         f"/api/documents/{document_id}/",
                         payload=single_payload,
-                        retries=1,
+                        retries=2,
                     )
                     partial_success = True
                 except PaperlessApiError as field_exc:
@@ -706,26 +752,56 @@ class AiClassifier:
             "temperature": 0.1,
         }
 
-        try:
-            response = self.session.post(
-                f"{self.base_url}/chat/completions",
-                data=json.dumps(req_body),
-                timeout=self.timeout,
-            )
-            response.raise_for_status()
-            raw = response.json()
-            message = raw["choices"][0]["message"]["content"]
-            parsed = json.loads(message)
-            self._validate_model_output(parsed)
-            usage = raw.get("usage") or {}
-            parsed["_meta_usage"] = {
-                "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
-                "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
-                "total_tokens": int(usage.get("total_tokens", 0) or 0),
-            }
-            return parsed
-        except (requests.RequestException, KeyError, ValueError, json.JSONDecodeError) as exc:
-            raise AiClassificationError(f"KI-Antwort ungültig oder Request fehlgeschlagen: {exc}") from exc
+        max_attempts = 3
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = self.session.post(
+                    f"{self.base_url}/chat/completions",
+                    data=json.dumps(req_body),
+                    timeout=self.timeout,
+                )
+                status_code = int(response.status_code)
+                if status_code == 429 or status_code >= 500:
+                    raise requests.HTTPError(
+                        f"HTTP {status_code}: {response.text}",
+                        response=response,
+                    )
+                response.raise_for_status()
+                raw = response.json()
+                message = raw["choices"][0]["message"]["content"]
+                parsed = json.loads(message)
+                self._validate_model_output(parsed)
+                usage = raw.get("usage") or {}
+                parsed["_meta_usage"] = {
+                    "prompt_tokens": int(usage.get("prompt_tokens", 0) or 0),
+                    "completion_tokens": int(usage.get("completion_tokens", 0) or 0),
+                    "total_tokens": int(usage.get("total_tokens", 0) or 0),
+                }
+                return parsed
+            except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as exc:
+                last_exc = exc
+                if attempt < max_attempts:
+                    wait_seconds = 0.7 * (2 ** (attempt - 1))
+                    LOGGER.warning(
+                        "KI-Request fehlgeschlagen (Versuch %s/%s), Retry in %.1fs: %s",
+                        attempt,
+                        max_attempts,
+                        wait_seconds,
+                        exc,
+                    )
+                    time.sleep(wait_seconds)
+                    continue
+                break
+            except (requests.RequestException, KeyError, ValueError, json.JSONDecodeError) as exc:
+                # Nicht-transiente Fehler (z. B. ungültige Antwortstruktur) direkt zurückgeben.
+                raise AiClassificationError(
+                    f"KI-Antwort ungültig oder Request fehlgeschlagen: {exc}"
+                ) from exc
+
+        raise AiClassificationError(
+            f"KI-Antwort ungültig oder Request fehlgeschlagen: {last_exc}"
+        ) from last_exc
 
     @staticmethod
     def _validate_model_output(payload: Dict[str, Any]) -> None:
@@ -984,6 +1060,16 @@ def ensure_entity_id(
 
     if key in mapping:
         return mapping[key]
+
+    if endpoint == "/api/tags/":
+        is_valid_tag, reason = validate_new_tag_name(name.strip())
+        if not is_valid_tag:
+            LOGGER.warning(
+                "Tag-Erstellung blockiert: '%s' (%s).",
+                name.strip(),
+                reason,
+            )
+            return None
 
     if not create_missing:
         LOGGER.info("Entity nicht vorhanden und Auto-Create deaktiviert: %s (%s)", name, endpoint)
@@ -1581,6 +1667,370 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         # Direkter API-Filter: lädt nur passende Dokumente.
         doc_query_params["tags__id"] = only_tag_id
 
+    pending_ai_documents: List[PendingAiDocument] = []
+    parallel_ai_enabled = bool(config.enable_parallel_ai and config.max_parallel_ai_jobs > 1)
+    parallel_ai_workers = max(1, int(config.max_parallel_ai_jobs))
+    if parallel_ai_enabled:
+        LOGGER.info(
+            "Parallele KI-Verarbeitung aktiv: max_parallel_ai_jobs=%s",
+            parallel_ai_workers,
+        )
+
+    def _classify_pending_documents(
+        items: List[PendingAiDocument],
+    ) -> List[tuple[PendingAiDocument, Optional[Dict[str, Any]], Optional[Exception]]]:
+        """Klassifiziert gepufferte Dokumente seriell oder parallel.
+
+        Bei Parallelmodus verwenden wir pro Worker einen eigenen AiClassifier,
+        damit Request-Sessions nicht zwischen Threads geteilt werden.
+        """
+
+        if not items:
+            return []
+
+        if not parallel_ai_enabled:
+            result: List[tuple[PendingAiDocument, Optional[Dict[str, Any]], Optional[Exception]]] = []
+            for item in items:
+                try:
+                    result.append((item, classifier.classify(item.document), None))
+                except Exception as exc:  # noqa: BLE001
+                    result.append((item, None, exc))
+            return result
+
+        known_doc_types = list(classifier.known_document_types)
+        known_correspondents = list(classifier.known_correspondents)
+        known_storage_paths = list(classifier.known_storage_paths)
+
+        def _worker_classify(item: PendingAiDocument) -> Dict[str, Any]:
+            worker = AiClassifier(config)
+            worker.set_known_entities(
+                document_types=known_doc_types,
+                correspondents=known_correspondents,
+                storage_paths=known_storage_paths,
+            )
+            return worker.classify(item.document)
+
+        results_map: Dict[int, tuple[Optional[Dict[str, Any]], Optional[Exception]]] = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=parallel_ai_workers) as executor:
+            futures = {
+                executor.submit(_worker_classify, item): idx
+                for idx, item in enumerate(items)
+            }
+            for future in concurrent.futures.as_completed(futures):
+                idx = futures[future]
+                try:
+                    results_map[idx] = (future.result(), None)
+                except Exception as exc:  # noqa: BLE001
+                    results_map[idx] = (None, exc)
+
+        ordered: List[tuple[PendingAiDocument, Optional[Dict[str, Any]], Optional[Exception]]] = []
+        for idx, item in enumerate(items):
+            prediction, exc = results_map.get(idx, (None, AiClassificationError("Parallel-Worker lieferte kein Ergebnis")))
+            ordered.append((item, prediction, exc))
+        return ordered
+
+    def _apply_ai_result(
+        pending: PendingAiDocument,
+        prediction: Optional[Dict[str, Any]],
+        classification_exc: Optional[Exception],
+    ) -> None:
+        """Verarbeitet ein KI-Ergebnis inkl. Patch/Skip/Fehlerbehandlung."""
+
+        nonlocal updated, skipped, failed, bypassed
+        nonlocal run_prompt_tokens, run_completion_tokens, run_total_tokens, run_cost_eur
+        nonlocal skipped_with_neu_still_set
+
+        document = pending.document
+        doc_id = pending.doc_id
+        doc_key = pending.doc_key
+        title = pending.title
+        doc_tags = pending.doc_tags
+        patch_payload_for_error: Optional[Dict[str, Any]] = None
+
+        try:
+            if classification_exc is not None:
+                raise classification_exc
+            if prediction is None:
+                raise AiClassificationError("KI lieferte kein Ergebnis.")
+
+            prediction = sanitize_prediction(prediction, storage_paths_map)
+            prompt_tokens, completion_tokens, total_tokens = extract_usage(prediction)
+            run_prompt_tokens += prompt_tokens
+            run_completion_tokens += completion_tokens
+            run_total_tokens += total_tokens
+            run_cost_eur += (
+                (prompt_tokens / 1000.0) * config.input_cost_per_1k_tokens_eur
+                + (completion_tokens / 1000.0) * config.output_cost_per_1k_tokens_eur
+            )
+            confidence = float(prediction["confidence"])
+            if confidence < config.confidence_threshold:
+                if not config.dry_run and doc_id is not None:
+                    current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
+                    new_tags = set(current_tags)
+                    if remove_neu_tag_id is not None:
+                        new_tags.discard(int(remove_neu_tag_id))
+                    if skip_tag_id is not None:
+                        new_tags.add(int(skip_tag_id))
+                    if ki_tag_id is not None:
+                        new_tags.add(int(ki_tag_id))
+                    if new_tags != current_tags:
+                        try:
+                            client._request(
+                                "PATCH",
+                                f"/api/documents/{int(doc_id)}/",
+                                payload={"tags": sorted(new_tags)},
+                                retries=1,
+                            )
+                        except PaperlessApiError as skip_tag_exc:
+                            LOGGER.error(
+                                "KI_SKIP-Tag konnte für Dokument %s (%s) nicht gesetzt werden: %s",
+                                doc_id,
+                                title,
+                                skip_tag_exc,
+                            )
+                    try:
+                        client.add_document_note(
+                            int(doc_id),
+                            build_skip_note_entry(
+                                prediction=prediction,
+                                confidence_threshold=config.confidence_threshold,
+                            ),
+                        )
+                    except PaperlessApiError as skip_note_exc:
+                        LOGGER.error(
+                            "KI-Skip-Notiz konnte für Dokument %s (%s) nicht gespeichert werden: %s",
+                            doc_id,
+                            title,
+                            skip_note_exc,
+                        )
+                LOGGER.info(
+                    "Skip Dokument %s (%s): Confidence %.2f unter Schwellwert %.2f",
+                    doc_id,
+                    title,
+                    confidence,
+                    config.confidence_threshold,
+                )
+                skipped += 1
+                return
+
+            patch_payload = build_patch_payload(
+                client=client,
+                prediction=prediction,
+                tags_map=tags_map,
+                doc_types_map=doc_types_map,
+                correspondents_map=correspondents_map,
+                storage_paths_map=storage_paths_map,
+                create_missing_entities=can_create_entities,
+                created_entities=created_entities,
+            )
+            patch_payload_for_error = dict(patch_payload)
+
+            if not patch_payload:
+                LOGGER.info("Skip Dokument %s (%s): Keine verwertbaren Felder im KI-Output", doc_id, title)
+                skipped += 1
+                return
+
+            apply_forced_tag_rules(
+                patch_payload=patch_payload,
+                current_tag_ids=doc_tags,
+                ki_tag_id=ki_tag_id,
+                remove_neu_tag_id=remove_neu_tag_id,
+            )
+            patch_payload = filter_unchanged_patch_fields(
+                document=document,
+                patch_payload=patch_payload,
+            )
+            patch_payload_for_error = dict(patch_payload)
+
+            if not patch_payload:
+                LOGGER.info(
+                    "Skip Dokument %s (%s): Keine effektiven Änderungen nach Diff-Filter",
+                    doc_id,
+                    title,
+                )
+                skipped += 1
+                return
+
+            tag_id_to_label_local = {entity_id: label for label, entity_id in tags_map.items()}
+            doc_type_id_to_label = {entity_id: label for label, entity_id in doc_types_map.items()}
+            correspondent_id_to_label = {entity_id: label for label, entity_id in correspondents_map.items()}
+            storage_path_id_to_label = {entity_id: label for label, entity_id in storage_paths_map.items()}
+
+            if config.enable_ai_notes:
+                note_entry = build_ai_note_entry(
+                    prediction=prediction,
+                    patch_payload=patch_payload,
+                    doc_type_id_to_label=doc_type_id_to_label,
+                    correspondent_id_to_label=correspondent_id_to_label,
+                    storage_path_id_to_label=storage_path_id_to_label,
+                    tag_id_to_label=tag_id_to_label_local,
+                    max_chars=config.ai_notes_max_chars,
+                    include_summary=config.enable_ai_note_summary,
+                    summary_max_chars=config.ai_note_summary_max_chars,
+                )
+
+            if config.dry_run:
+                log_dry_run_change(
+                    document=document,
+                    prediction=prediction,
+                    patch_payload=patch_payload,
+                    note_will_be_added=config.enable_ai_notes,
+                    tag_id_to_label=tag_id_to_label_local,
+                    doc_type_id_to_label=doc_type_id_to_label,
+                    correspondent_id_to_label=correspondent_id_to_label,
+                    storage_path_id_to_label=storage_path_id_to_label,
+                )
+            else:
+                client.update_document(int(doc_id), patch_payload)
+                if config.enable_ai_notes:
+                    try:
+                        client.add_document_note(int(doc_id), note_entry)
+                    except PaperlessApiError as note_exc:
+                        LOGGER.error(
+                            "Dokument %s (%s) aktualisiert, aber KI-Notiz konnte nicht gespeichert werden: %s",
+                            doc_id,
+                            title,
+                            note_exc,
+                        )
+                LOGGER.info("Aktualisiert Dokument %s (%s)", doc_id, title)
+
+            if config.quarantine_failed_documents and doc_key is not None:
+                failed_patch_cache.pop(doc_key, None)
+            updated += 1
+        except (AiClassificationError, PaperlessApiError, ValueError, Exception) as exc:  # noqa: BLE001
+            error_text = str(exc)
+            tags_only_patch = bool(
+                patch_payload_for_error
+                and set(patch_payload_for_error.keys()) == {"tags"}
+            )
+            tags_only_500 = tags_only_patch and (
+                ("Feldanalyse: tags:" in error_text) or ("HTTP 500" in error_text)
+            )
+            if (
+                config.enable_tag_bypass_on_tags_500
+                and doc_key is not None
+                and tags_only_500
+            ):
+                tag_bypass_docs[doc_key] = {
+                    "document_id": int(doc_id) if doc_id is not None else None,
+                    "title": title,
+                    "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+                    "reason": "tags-only PATCH führt zu HTTP 500",
+                    "patch_payload": dict(patch_payload_for_error or {}),
+                }
+                failed_docs_until.pop(doc_key, None)
+                failed_patch_cache.pop(doc_key, None)
+                bypassed += 1
+                updated += 1
+                LOGGER.warning(
+                    "Tag-Bypass aktiv für Dokument %s (%s): tags-only PATCH erzeugt HTTP 500. "
+                    "Dokument wird als verarbeitet markiert, Tag-Änderung bleibt offen.",
+                    doc_id,
+                    title,
+                )
+                if not config.dry_run and doc_id is not None:
+                    try:
+                        client.add_document_note(
+                            int(doc_id),
+                            (
+                                "[KI-Bypass] Tag-Update konnte nicht gespeichert werden "
+                                "(tags-only PATCH -> HTTP 500). "
+                                "Dokument wurde zur Vermeidung weiterer KI-Kosten in den "
+                                "Tag-Bypass übernommen."
+                            ),
+                        )
+                    except PaperlessApiError as bypass_note_exc:
+                        LOGGER.error(
+                            "Bypass-Notiz konnte für Dokument %s (%s) nicht gespeichert werden: %s",
+                            doc_id,
+                            title,
+                            bypass_note_exc,
+                        )
+                return
+
+            failed += 1
+            if (
+                config.quarantine_failed_documents
+                and doc_key is not None
+                and failed_docs_cooldown_seconds > 0
+            ):
+                retry_delay_seconds = failed_docs_cooldown_seconds
+                if (
+                    tags_only_patch
+                    and "Feldanalyse: tags:" in error_text
+                    and failed_tags_only_cooldown_seconds > retry_delay_seconds
+                ):
+                    retry_delay_seconds = failed_tags_only_cooldown_seconds
+                    if patch_payload_for_error:
+                        failed_patch_cache[doc_key] = dict(patch_payload_for_error)
+                    LOGGER.warning(
+                        "Dokument %s (%s): Tags-only-Fehler erkannt, setze verlängerte Quarantäne auf %s Stunden.",
+                        doc_id,
+                        title,
+                        int(config.failed_tags_only_cooldown_hours),
+                    )
+
+                retry_after_ts = dt.datetime.now(dt.timezone.utc).timestamp() + retry_delay_seconds
+                failed_docs_until[doc_key] = retry_after_ts
+                retry_after_text = dt.datetime.fromtimestamp(
+                    retry_after_ts, tz=dt.timezone.utc
+                ).isoformat()
+                LOGGER.warning(
+                    "Dokument %s (%s) in Fehler-Quarantäne bis %s (UTC).",
+                    doc_id,
+                    title,
+                    retry_after_text,
+                )
+            if not config.dry_run and doc_id is not None:
+                current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
+                new_tags = set(current_tags)
+                if remove_neu_tag_id is not None:
+                    new_tags.discard(int(remove_neu_tag_id))
+                if error_tag_id is not None:
+                    new_tags.add(int(error_tag_id))
+                if ki_tag_id is not None:
+                    new_tags.add(int(ki_tag_id))
+                if new_tags != current_tags:
+                    try:
+                        client._request(
+                            "PATCH",
+                            f"/api/documents/{int(doc_id)}/",
+                            payload={"tags": sorted(new_tags)},
+                            retries=1,
+                        )
+                    except PaperlessApiError as mark_tag_exc:
+                        LOGGER.error(
+                            "Fehler-Tag konnte für Dokument %s (%s) nicht gesetzt werden: %s",
+                            doc_id,
+                            title,
+                            mark_tag_exc,
+                        )
+                try:
+                    client.add_document_note(
+                        int(doc_id),
+                        build_error_note_entry(
+                            error_message=str(exc),
+                            patch_payload=patch_payload_for_error,
+                        ),
+                    )
+                except PaperlessApiError as mark_note_exc:
+                    LOGGER.error(
+                        "Fehler-Notiz konnte für Dokument %s (%s) nicht gespeichert werden: %s",
+                        doc_id,
+                        title,
+                        mark_note_exc,
+                    )
+            error_details.append(
+                {
+                    "id": doc_id,
+                    "title": title,
+                    "error_type": type(exc).__name__,
+                    "message": str(exc),
+                    "patch_payload": patch_payload_for_error,
+                }
+            )
+            LOGGER.error("Fehler bei Dokument %s (%s): %s", doc_id, title, exc)
+
     for document in client.iter_documents(fetch_limit, extra_params=doc_query_params):
         scanned += 1
         doc_id = document.get("id")
@@ -2066,302 +2516,31 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                     skipped += 1
                     continue
 
-        try:
-            if config.quarantine_failed_documents and doc_key is not None:
-                # Bei neuem Versuch zunächst entsperren; bei erneutem Fehler wird der
-                # Eintrag im Exception-Zweig wieder mit neuer Cooldown-Zeit gesetzt.
-                failed_docs_until.pop(doc_key, None)
+        if config.quarantine_failed_documents and doc_key is not None:
+            # Bei neuem Versuch zunächst entsperren; bei erneutem Fehler wird der
+            # Eintrag bei Fehlerbehandlung wieder gesetzt.
+            failed_docs_until.pop(doc_key, None)
 
-            prediction = classifier.classify(document)
-            prediction = sanitize_prediction(prediction, storage_paths_map)
-            prompt_tokens, completion_tokens, total_tokens = extract_usage(prediction)
-            run_prompt_tokens += prompt_tokens
-            run_completion_tokens += completion_tokens
-            run_total_tokens += total_tokens
-            run_cost_eur += (
-                (prompt_tokens / 1000.0) * config.input_cost_per_1k_tokens_eur
-                + (completion_tokens / 1000.0) * config.output_cost_per_1k_tokens_eur
-            )
-            confidence = float(prediction["confidence"])
-            if confidence < config.confidence_threshold:
-                if not config.dry_run and doc_id is not None:
-                    # Low-Confidence-Dokumente markieren: #NEU entfernen, KI_SKIP setzen.
-                    current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
-                    new_tags = set(current_tags)
-                    if remove_neu_tag_id is not None:
-                        new_tags.discard(int(remove_neu_tag_id))
-                    if skip_tag_id is not None:
-                        new_tags.add(int(skip_tag_id))
-                    if ki_tag_id is not None:
-                        new_tags.add(int(ki_tag_id))
-                    if new_tags != current_tags:
-                        try:
-                            client._request(
-                                "PATCH",
-                                f"/api/documents/{int(doc_id)}/",
-                                payload={"tags": sorted(new_tags)},
-                                retries=1,
-                            )
-                        except PaperlessApiError as skip_tag_exc:
-                            LOGGER.error(
-                                "KI_SKIP-Tag konnte für Dokument %s (%s) nicht gesetzt werden: %s",
-                                doc_id,
-                                title,
-                                skip_tag_exc,
-                            )
-                    try:
-                        client.add_document_note(
-                            int(doc_id),
-                            build_skip_note_entry(
-                                prediction=prediction,
-                                confidence_threshold=config.confidence_threshold,
-                            ),
-                        )
-                    except PaperlessApiError as skip_note_exc:
-                        LOGGER.error(
-                            "KI-Skip-Notiz konnte für Dokument %s (%s) nicht gespeichert werden: %s",
-                            doc_id,
-                            title,
-                            skip_note_exc,
-                        )
-                LOGGER.info(
-                    "Skip Dokument %s (%s): Confidence %.2f unter Schwellwert %.2f",
-                    doc_id,
-                    title,
-                    confidence,
-                    config.confidence_threshold,
-                )
-                skipped += 1
-                continue
-
-            patch_payload = build_patch_payload(
-                client=client,
-                prediction=prediction,
-                tags_map=tags_map,
-                doc_types_map=doc_types_map,
-                correspondents_map=correspondents_map,
-                storage_paths_map=storage_paths_map,
-                # Im Dry-Run niemals neue Entities anlegen.
-                create_missing_entities=can_create_entities,
-                created_entities=created_entities,
-            )
-            patch_payload_for_error = dict(patch_payload)
-
-            if not patch_payload:
-                LOGGER.info("Skip Dokument %s (%s): Keine verwertbaren Felder im KI-Output", doc_id, title)
-                skipped += 1
-                continue
-
-            # Erzwinge globale Tag-Regeln auf Basis des aktuellen Dokuments.
-            apply_forced_tag_rules(
-                patch_payload=patch_payload,
-                current_tag_ids=doc_tags,
-                ki_tag_id=ki_tag_id,
-                remove_neu_tag_id=remove_neu_tag_id,
-            )
-
-            patch_payload = filter_unchanged_patch_fields(
+        pending_ai_documents.append(
+            PendingAiDocument(
                 document=document,
-                patch_payload=patch_payload,
+                doc_id=int(doc_id) if doc_id is not None else None,
+                doc_key=doc_key,
+                title=title,
+                doc_tags=set(doc_tags),
             )
-            patch_payload_for_error = dict(patch_payload)
+        )
+        if len(pending_ai_documents) >= parallel_ai_workers:
+            batch_results = _classify_pending_documents(pending_ai_documents)
+            pending_ai_documents.clear()
+            for pending, prediction, pred_exc in batch_results:
+                _apply_ai_result(pending, prediction, pred_exc)
 
-            if not patch_payload:
-                LOGGER.info(
-                    "Skip Dokument %s (%s): Keine effektiven Änderungen nach Diff-Filter",
-                    doc_id,
-                    title,
-                )
-                skipped += 1
-                continue
-
-            # Nach möglichen Neuanlagen Mappings aktualisieren, damit Logs/Notizen
-            # die finalen Namen statt nur IDs anzeigen.
-            tag_id_to_label = {entity_id: label for label, entity_id in tags_map.items()}
-            doc_type_id_to_label = {entity_id: label for label, entity_id in doc_types_map.items()}
-            correspondent_id_to_label = {entity_id: label for label, entity_id in correspondents_map.items()}
-            storage_path_id_to_label = {entity_id: label for label, entity_id in storage_paths_map.items()}
-
-            if config.enable_ai_notes:
-                note_entry = build_ai_note_entry(
-                    prediction=prediction,
-                    patch_payload=patch_payload,
-                    doc_type_id_to_label=doc_type_id_to_label,
-                    correspondent_id_to_label=correspondent_id_to_label,
-                    storage_path_id_to_label=storage_path_id_to_label,
-                    tag_id_to_label=tag_id_to_label,
-                    max_chars=config.ai_notes_max_chars,
-                    include_summary=config.enable_ai_note_summary,
-                    summary_max_chars=config.ai_note_summary_max_chars,
-                )
-
-            if config.dry_run:
-                log_dry_run_change(
-                    document=document,
-                    prediction=prediction,
-                    patch_payload=patch_payload,
-                    note_will_be_added=config.enable_ai_notes,
-                    tag_id_to_label=tag_id_to_label,
-                    doc_type_id_to_label=doc_type_id_to_label,
-                    correspondent_id_to_label=correspondent_id_to_label,
-                    storage_path_id_to_label=storage_path_id_to_label,
-                )
-            else:
-                client.update_document(int(doc_id), patch_payload)
-                if config.enable_ai_notes:
-                    try:
-                        client.add_document_note(int(doc_id), note_entry)
-                    except PaperlessApiError as note_exc:
-                        LOGGER.error(
-                            "Dokument %s (%s) aktualisiert, aber KI-Notiz konnte nicht gespeichert werden: %s",
-                            doc_id,
-                            title,
-                            note_exc,
-                        )
-                LOGGER.info("Aktualisiert Dokument %s (%s)", doc_id, title)
-
-            if config.quarantine_failed_documents and doc_key is not None:
-                failed_patch_cache.pop(doc_key, None)
-
-            updated += 1
-        except (AiClassificationError, PaperlessApiError, ValueError) as exc:
-            error_text = str(exc)
-            tags_only_patch = bool(
-                patch_payload_for_error
-                and set(patch_payload_for_error.keys()) == {"tags"}
-            )
-            tags_only_500 = tags_only_patch and (
-                ("Feldanalyse: tags:" in error_text) or ("HTTP 500" in error_text)
-            )
-            if (
-                config.enable_tag_bypass_on_tags_500
-                and doc_key is not None
-                and tags_only_500
-            ):
-                tag_bypass_docs[doc_key] = {
-                    "document_id": int(doc_id) if doc_id is not None else None,
-                    "title": title,
-                    "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
-                    "reason": "tags-only PATCH führt zu HTTP 500",
-                    "patch_payload": dict(patch_payload_for_error or {}),
-                }
-                failed_docs_until.pop(doc_key, None)
-                failed_patch_cache.pop(doc_key, None)
-                bypassed += 1
-                updated += 1
-                LOGGER.warning(
-                    "Tag-Bypass aktiv für Dokument %s (%s): tags-only PATCH erzeugt HTTP 500. "
-                    "Dokument wird als verarbeitet markiert, Tag-Änderung bleibt offen.",
-                    doc_id,
-                    title,
-                )
-                if not config.dry_run and doc_id is not None:
-                    try:
-                        client.add_document_note(
-                            int(doc_id),
-                            (
-                                "[KI-Bypass] Tag-Update konnte nicht gespeichert werden "
-                                "(tags-only PATCH -> HTTP 500). "
-                                "Dokument wurde zur Vermeidung weiterer KI-Kosten in den "
-                                "Tag-Bypass übernommen."
-                            ),
-                        )
-                    except PaperlessApiError as bypass_note_exc:
-                        LOGGER.error(
-                            "Bypass-Notiz konnte für Dokument %s (%s) nicht gespeichert werden: %s",
-                            doc_id,
-                            title,
-                            bypass_note_exc,
-                        )
-                continue
-
-            failed += 1
-            if (
-                config.quarantine_failed_documents
-                and doc_key is not None
-                and failed_docs_cooldown_seconds > 0
-            ):
-                retry_delay_seconds = failed_docs_cooldown_seconds
-                if (
-                    tags_only_patch
-                    and "Feldanalyse: tags:" in error_text
-                    and failed_tags_only_cooldown_seconds > retry_delay_seconds
-                ):
-                    retry_delay_seconds = failed_tags_only_cooldown_seconds
-                    if patch_payload_for_error:
-                        failed_patch_cache[doc_key] = dict(patch_payload_for_error)
-                    LOGGER.warning(
-                        "Dokument %s (%s): Tags-only-Fehler erkannt, setze verlängerte Quarantäne auf %s Stunden.",
-                        doc_id,
-                        title,
-                        int(config.failed_tags_only_cooldown_hours),
-                    )
-
-                retry_after_ts = dt.datetime.now(dt.timezone.utc).timestamp() + retry_delay_seconds
-                failed_docs_until[doc_key] = retry_after_ts
-                retry_after_text = dt.datetime.fromtimestamp(
-                    retry_after_ts, tz=dt.timezone.utc
-                ).isoformat()
-                LOGGER.warning(
-                    "Dokument %s (%s) in Fehler-Quarantäne bis %s (UTC).",
-                    doc_id,
-                    title,
-                    retry_after_text,
-                )
-            if not config.dry_run and doc_id is not None:
-                # Fehler dokumentieren: Tag setzen und Notiz am Dokument ergänzen.
-                current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
-                new_tags = set(current_tags)
-                if remove_neu_tag_id is not None:
-                    new_tags.discard(int(remove_neu_tag_id))
-                if error_tag_id is not None:
-                    new_tags.add(int(error_tag_id))
-                if ki_tag_id is not None:
-                    new_tags.add(int(ki_tag_id))
-                if new_tags != current_tags:
-                    try:
-                        # Fehler-Markierung bewusst als einfacher Einmal-PATCH:
-                        # keine umfangreiche Fallback-Kaskade, damit bei kaputten
-                        # Dokumenten nicht dutzende zusätzliche Requests entstehen.
-                        client._request(
-                            "PATCH",
-                            f"/api/documents/{int(doc_id)}/",
-                            payload={"tags": sorted(new_tags)},
-                            retries=1,
-                        )
-                    except PaperlessApiError as mark_tag_exc:
-                        LOGGER.error(
-                            "Fehler-Tag konnte für Dokument %s (%s) nicht gesetzt werden: %s",
-                            doc_id,
-                            title,
-                            mark_tag_exc,
-                        )
-
-                try:
-                    client.add_document_note(
-                        int(doc_id),
-                        build_error_note_entry(
-                            error_message=str(exc),
-                            patch_payload=patch_payload_for_error,
-                        ),
-                    )
-                except PaperlessApiError as mark_note_exc:
-                    LOGGER.error(
-                        "Fehler-Notiz konnte für Dokument %s (%s) nicht gespeichert werden: %s",
-                        doc_id,
-                        title,
-                        mark_note_exc,
-                    )
-            error_details.append(
-                {
-                    "id": doc_id,
-                    "title": title,
-                    "error_type": type(exc).__name__,
-                    "message": str(exc),
-                    "patch_payload": patch_payload_for_error,
-                }
-            )
-            LOGGER.error("Fehler bei Dokument %s (%s): %s", doc_id, title, exc)
+    if pending_ai_documents:
+        batch_results = _classify_pending_documents(pending_ai_documents)
+        pending_ai_documents.clear()
+        for pending, prediction, pred_exc in batch_results:
+            _apply_ai_result(pending, prediction, pred_exc)
 
     if config.quarantine_failed_documents:
         save_failed_documents(failed_docs_path, failed_docs_until)

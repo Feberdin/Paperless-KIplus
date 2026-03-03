@@ -25,6 +25,8 @@ CONF_PRECHECK_BLOCKED_FILENAME_PATTERNS = "precheck_blocked_filename_patterns"
 CONF_PRECHECK_IMAGE_ONLY_GATE = "precheck_image_only_gate"
 CONF_PRECHECK_DUPLICATE_HASH_GATE = "precheck_duplicate_hash_gate"
 CONF_PRECHECK_DUPLICATE_APPLY_METADATA = "precheck_duplicate_apply_metadata"
+CONF_ENABLE_PARALLEL_AI = "enable_parallel_ai"
+CONF_MAX_PARALLEL_AI_JOBS = "max_parallel_ai_jobs"
 
 DEFAULT_COMMAND = "python3 /config/custom_components/paperless_kiplus/paperless_ai_sorter.py"
 DEFAULT_WORKDIR = "/config"
@@ -47,6 +49,8 @@ DEFAULT_PRECHECK_BLOCKED_FILENAME_PATTERNS = "smime,.p7m,.p7s,winmail.dat,ATT000
 DEFAULT_PRECHECK_IMAGE_ONLY_GATE = True
 DEFAULT_PRECHECK_DUPLICATE_HASH_GATE = True
 DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA = True
+DEFAULT_ENABLE_PARALLEL_AI = False
+DEFAULT_MAX_PARALLEL_AI_JOBS = 5
 
 SERVICE_RUN = "run"
 

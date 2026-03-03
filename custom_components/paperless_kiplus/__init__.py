@@ -31,6 +31,8 @@ from .const import (
     CONF_PRECHECK_BLOCKED_FILENAME_PATTERNS,
     CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
     CONF_PRECHECK_DUPLICATE_HASH_GATE,
+    CONF_ENABLE_PARALLEL_AI,
+    CONF_MAX_PARALLEL_AI_JOBS,
     CONF_PRECHECK_IMAGE_ONLY_GATE,
     CONF_PRECHECK_MIN_ALNUM_RATIO,
     CONF_PRECHECK_MIN_CONTENT_CHARS,
@@ -51,6 +53,8 @@ from .const import (
     DEFAULT_PRECHECK_BLOCKED_FILENAME_PATTERNS,
     DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
     DEFAULT_PRECHECK_DUPLICATE_HASH_GATE,
+    DEFAULT_ENABLE_PARALLEL_AI,
+    DEFAULT_MAX_PARALLEL_AI_JOBS,
     DEFAULT_PRECHECK_IMAGE_ONLY_GATE,
     DEFAULT_PRECHECK_MIN_ALNUM_RATIO,
     DEFAULT_PRECHECK_MIN_CONTENT_CHARS,
@@ -233,6 +237,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ),
         DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
     )
+    enable_parallel_ai = _as_bool(
+        options.get(
+            CONF_ENABLE_PARALLEL_AI,
+            data.get(CONF_ENABLE_PARALLEL_AI, DEFAULT_ENABLE_PARALLEL_AI),
+        ),
+        DEFAULT_ENABLE_PARALLEL_AI,
+    )
+    max_parallel_ai_jobs = int(
+        options.get(
+            CONF_MAX_PARALLEL_AI_JOBS,
+            data.get(CONF_MAX_PARALLEL_AI_JOBS, DEFAULT_MAX_PARALLEL_AI_JOBS),
+        )
+    )
 
     runner = PaperlessRunner(
         hass,
@@ -257,6 +274,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         precheck_image_only_gate=precheck_image_only_gate,
         precheck_duplicate_hash_gate=precheck_duplicate_hash_gate,
         precheck_duplicate_apply_metadata=precheck_duplicate_apply_metadata,
+        enable_parallel_ai=enable_parallel_ai,
+        max_parallel_ai_jobs=max_parallel_ai_jobs,
     )
     hass.data[DOMAIN][entry.entry_id] = runner
     await runner.async_load_initial_metrics()
