@@ -518,6 +518,38 @@ class PaperlessClient:
             note_preview or "-",
         )
 
+    def has_ki_summary_note(self, document_id: int) -> bool:
+        """Prüft, ob ein Dokument eine KI-Update-Notiz mit Kurz-Zusammenfassung hat."""
+
+        next_path: Optional[str] = f"/api/documents/{document_id}/notes/"
+        while next_path:
+            page = self._request(
+                "GET",
+                next_path,
+                params={"page_size": 100} if next_path.startswith("/api/") else None,
+                retries=1,
+            )
+            results = page.get("results") or []
+            if not isinstance(results, list):
+                break
+
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                text = str(item.get("note") or "")
+                text_lower = text.lower()
+                if "[ki-update" in text_lower and "kurz-zusammenfassung:" in text_lower:
+                    return True
+
+            next_url = page.get("next")
+            if not next_url:
+                break
+            if next_url.startswith(self.base_url):
+                next_path = next_url[len(self.base_url) :]
+            else:
+                next_path = str(next_url)
+        return False
+
 
 class AiClassifier:
     """Verwendet OpenAI-kompatible Chat-Completions für Klassifizierung."""
@@ -1700,26 +1732,28 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         if config.already_classified_skip:
             has_type = document.get("document_type") is not None
             has_tags = bool(document.get("tags"))
-            # Dokumente mit KI_SKIP_PRECHECK wurden explizit ohne KI-Lauf markiert.
-            # Diese sollen nicht als "KI-klassifiziert" gelten.
-            has_skip_precheck_tag = bool(
-                skip_precheck_tag_id is not None and int(skip_precheck_tag_id) in doc_tags
-            )
-            has_ki_tag = bool(
-                ki_tag_id is not None
-                and int(ki_tag_id) in doc_tags
-                and not has_skip_precheck_tag
-            )
-            if has_type and has_tags and (
-                not config.already_classified_require_ki_tag or has_ki_tag
-            ):
+            # Regel für already_classified_skip:
+            # Nur skippen, wenn KI-Tag vorhanden UND bereits eine KI-Notiz mit
+            # Kurz-Zusammenfassung existiert.
+            has_ki_tag = bool(ki_tag_id is not None and int(ki_tag_id) in doc_tags)
+            has_ki_summary_note = False
+            if has_type and has_tags and has_ki_tag and doc_id is not None:
+                try:
+                    has_ki_summary_note = client.has_ki_summary_note(int(doc_id))
+                except PaperlessApiError as notes_exc:
+                    LOGGER.warning(
+                        "Precheck already_classified_skip: Notizen für Dokument %s (%s) konnten nicht geprüft werden: %s",
+                        doc_id,
+                        title,
+                        notes_exc,
+                    )
+
+            if has_type and has_tags and has_ki_tag and has_ki_summary_note:
                 if not config.dry_run and doc_id is not None:
                     current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
                     new_tags = set(current_tags)
                     if remove_neu_tag_id is not None:
                         new_tags.discard(int(remove_neu_tag_id))
-                    if skip_precheck_tag_id is not None:
-                        new_tags.add(int(skip_precheck_tag_id))
                     if new_tags != current_tags:
                         try:
                             client._request(
@@ -1728,30 +1762,16 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                                 payload={"tags": sorted(new_tags)},
                                 retries=1,
                             )
-                        except PaperlessApiError as precheck_tag_exc:
-                            LOGGER.error(
-                                "KI_SKIP_PRECHECK-Tag konnte für Dokument %s (%s) nicht gesetzt werden: %s",
+                        except PaperlessApiError as remove_neu_exc:
+                            skipped_with_neu_still_set += 1
+                            LOGGER.warning(
+                                "Precheck already_classified_skip: #NEU konnte für Dokument %s (%s) nicht entfernt werden: %s",
                                 doc_id,
                                 title,
-                                precheck_tag_exc,
+                                remove_neu_exc,
                             )
-                    try:
-                        client.add_document_note(
-                            int(doc_id),
-                            build_precheck_skip_note_entry(
-                                reason="already_classified_skip",
-                                details="Dokumenttyp und Tags bereits vorhanden.",
-                            ),
-                        )
-                    except PaperlessApiError as precheck_note_exc:
-                        LOGGER.error(
-                            "Precheck-Notiz konnte für Dokument %s (%s) nicht gespeichert werden: %s",
-                            doc_id,
-                            title,
-                            precheck_note_exc,
-                        )
                 LOGGER.info(
-                    "Skip Dokument %s (%s): Precheck already_classified_skip",
+                    "Skip Dokument %s (%s): Precheck already_classified_skip (KI-Tag + Kurz-Zusammenfassung vorhanden)",
                     doc_id,
                     title,
                 )
