@@ -2,6 +2,54 @@
 
 Home-Assistant-Integration für die KI-gestützte Sortierung von Paperless-ngx Dokumenten.
 
+## Screenshots
+
+### Geräteansicht in Home Assistant
+![Home Assistant Geräteansicht](./Bildschirmfoto%202026-03-03%20um%2012.43.08.png)
+
+### Dokument mit KI-Notiz in Paperless-ngx
+![Paperless Dokumentansicht mit KI-Notiz](./Bildschirmfoto%202026-03-03%20um%2012.48.02.png)
+
+### Optionen in Home Assistant (Teil 1)
+![Home Assistant Optionen Teil 1](./Bildschirmfoto%202026-03-03%20um%2012.53.57.png)
+
+### Optionen in Home Assistant (Teil 2)
+![Home Assistant Optionen Teil 2](./Bildschirmfoto%202026-03-03%20um%2012.54.13.png)
+
+## Features der Integration
+
+- Native Home-Assistant Integration (HACS) mit Config Flow und Options-UI
+- KI-gestützte Dokumentklassifizierung für:
+  - Dokumenttyp
+  - Korrespondent
+  - Speicherpfad
+  - Tags
+  - Datum
+- Erstellung fehlender Entitäten in Paperless (optional), z. B. Korrespondenten/Tags
+- Verwaltung der kompletten YAML-Konfiguration direkt in Home Assistant (kein externer Dateizwang)
+- Dry-Run Modus für sichere Tests ohne Schreibzugriffe in Paperless
+- Vollscan-Option (`Alle Dokumente`) für kontrollierte Bestandsläufe
+- Detaillierter DEBUG-Kopierbereich im Log mit Entitäten- und Fehlerzusammenfassung
+- KI-Notizen im Dokument inkl. Begründung/Kurz-Zusammenfassung
+- Token- und Kosten-Tracking:
+  - Letzter Lauf (Tokens/Kosten)
+  - Gesamtsumme über alle Läufe
+- Robuste Skip-/Precheck-Logik zur Token-Einsparung:
+  - already-classified Skip
+  - content-quality Gate
+  - image-only Gate
+  - blocked filename patterns
+  - duplicate checksum Gate
+- Fehler-Quarantäne für fehlgeschlagene Dokumente mit Cooldown
+- Tag-Bypass für tags-only `HTTP 500` Fälle, um Endlosschleifen und Token-Verbrauch zu vermeiden
+- Bypass-/Quarantäne-Zähler als Entitäten
+- Buttons in Home Assistant:
+  - Letztes Protokoll anzeigen
+  - Letztes Protokoll exportieren
+  - Statistiken zurücksetzen
+  - Fehlgeschlagene Dokumente zurücksetzen
+- Service `paperless_kiplus.run` mit Overrides (`force`, `wait`, `dry_run`, `all_documents`, `max_documents`)
+
 ## Fokus dieser README
 
 Diese Datei beschreibt **nur** die Nutzung in Home Assistant (HACS).
