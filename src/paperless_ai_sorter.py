@@ -2183,10 +2183,6 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             skipped += 1
             continue
 
-        if budget_used >= target_documents:
-            break
-        budget_used += 1
-
         if not process_all_documents and only_tag_id is None and not should_process_document(document):
             LOGGER.debug("Skip Dokument %s (%s): bereits klassifiziert", doc_id, title)
             skipped += 1
@@ -2555,6 +2551,11 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             # Bei neuem Versuch zunächst entsperren; bei erneutem Fehler wird der
             # Eintrag bei Fehlerbehandlung wieder gesetzt.
             failed_docs_until.pop(doc_key, None)
+
+        # Budget zählt nur für Dokumente, die die Skip-Gates passiert haben.
+        if budget_used >= target_documents:
+            break
+        budget_used += 1
 
         pending_ai_documents.append(
             PendingAiDocument(
