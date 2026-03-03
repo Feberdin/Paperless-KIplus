@@ -529,7 +529,17 @@ class PaperlessClient:
                 params={"page_size": 100} if next_path.startswith("/api/") else None,
                 retries=1,
             )
-            results = page.get("results") or []
+            # API-Varianten:
+            # - paginiert: {"results": [...], "next": ...}
+            # - direkt: [...]
+            if isinstance(page, dict):
+                results = page.get("results") or []
+                next_url = page.get("next")
+            elif isinstance(page, list):
+                results = page
+                next_url = None
+            else:
+                break
             if not isinstance(results, list):
                 break
 
@@ -541,7 +551,6 @@ class PaperlessClient:
                 if "[ki-update" in text_lower and "kurz-zusammenfassung:" in text_lower:
                     return True
 
-            next_url = page.get("next")
             if not next_url:
                 break
             if next_url.startswith(self.base_url):
