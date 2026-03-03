@@ -1,0 +1,56 @@
+name: Bug Report
+description: Fehler in der Integration melden
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Danke für deinen Bug Report.
+        Bitte fülle die Felder möglichst vollständig aus.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Welche Version der Integration nutzt du?
+      placeholder: "z. B. 0.1.39"
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Kurzbeschreibung
+      description: Was funktioniert nicht?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Schritte zur Reproduktion
+      description: Bitte als nummerierte Schritte angeben
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Erwartetes Verhalten
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Tatsächliches Verhalten
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevante Logs
+      description: Bitte nur relevante Ausschnitte aus dem DEBUG/Kosten/Fertig-Bereich einfügen
+      render: shell
+    validations:
+      required: false
