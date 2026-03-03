@@ -5,16 +5,16 @@ Home-Assistant-Integration für die KI-gestützte Sortierung von Paperless-ngx D
 ## Screenshots
 
 ### Geräteansicht in Home Assistant
-![Home Assistant Geräteansicht](./Bildschirmfoto%202026-03-03%20um%2012.43.08.png)
+![Home Assistant Geräteansicht](./docs/images/ha-geraeteansicht.png)
 
 ### Dokument mit KI-Notiz in Paperless-ngx
-![Paperless Dokumentansicht mit KI-Notiz](./Bildschirmfoto%202026-03-03%20um%2012.48.02.png)
+![Paperless Dokumentansicht mit KI-Notiz](./docs/images/paperless-ki-notiz.png)
 
 ### Optionen in Home Assistant (Teil 1)
-![Home Assistant Optionen Teil 1](./Bildschirmfoto%202026-03-03%20um%2012.53.57.png)
+![Home Assistant Optionen Teil 1](./docs/images/ha-optionen-teil1.png)
 
 ### Optionen in Home Assistant (Teil 2)
-![Home Assistant Optionen Teil 2](./Bildschirmfoto%202026-03-03%20um%2012.54.13.png)
+![Home Assistant Optionen Teil 2](./docs/images/ha-optionen-teil2.png)
 
 ## Features der Integration
 
