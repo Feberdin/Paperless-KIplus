@@ -1611,6 +1611,11 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     run_completion_tokens = 0
     run_total_tokens = 0
     run_cost_eur = 0.0
+    perf_apply_seconds = 0.0
+    perf_ai_seconds = 0.0
+    perf_ai_batches = 0
+    perf_ai_docs = 0
+    prefilt_ki_tagged = 0
     can_create_entities = config.create_missing_entities and not config.dry_run
     ki_tag_id = ensure_entity_id(
         client,
@@ -1650,9 +1655,14 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     doc_query_params: Dict[str, Any] = {}
     target_documents = max(1, int(config.max_documents))
     fetch_limit = target_documents
-    if config.quarantine_failed_documents or config.enable_tag_bypass_on_tags_500:
+    if (
+        config.quarantine_failed_documents
+        or config.enable_tag_bypass_on_tags_500
+        or not config.reprocess_ki_tagged_documents
+    ):
         # Zusätzlicher Puffer: Quarantäne/Bypass-Dokumente sollen nicht gegen das
         # max_documents-Limit zählen, daher laden wir mehr Kandidaten nach.
+        # Dasselbe gilt für KI-Tag-Vorfilter.
         fetch_limit = max(target_documents * 10, target_documents + 100)
     budget_used = 0
     if process_all_documents:
@@ -1690,9 +1700,12 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         damit Request-Sessions nicht zwischen Threads geteilt werden.
         """
 
+        nonlocal perf_ai_seconds, perf_ai_batches, perf_ai_docs
+
         if not items:
             return []
 
+        batch_started = time.perf_counter()
         if not parallel_ai_enabled:
             result: List[tuple[PendingAiDocument, Optional[Dict[str, Any]], Optional[Exception]]] = []
             for item in items:
@@ -1700,6 +1713,9 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                     result.append((item, classifier.classify(item.document), None))
                 except Exception as exc:  # noqa: BLE001
                     result.append((item, None, exc))
+            perf_ai_seconds += max(0.0, time.perf_counter() - batch_started)
+            perf_ai_batches += 1
+            perf_ai_docs += len(items)
             return result
 
         known_doc_types = list(classifier.known_document_types)
@@ -1732,6 +1748,9 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         for idx, item in enumerate(items):
             prediction, exc = results_map.get(idx, (None, AiClassificationError("Parallel-Worker lieferte kein Ergebnis")))
             ordered.append((item, prediction, exc))
+        perf_ai_seconds += max(0.0, time.perf_counter() - batch_started)
+        perf_ai_batches += 1
+        perf_ai_docs += len(items)
         return ordered
 
     def _apply_ai_result(
@@ -1743,6 +1762,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
 
         nonlocal updated, skipped, failed, bypassed
         nonlocal run_prompt_tokens, run_completion_tokens, run_total_tokens, run_cost_eur
+        nonlocal perf_apply_seconds
         nonlocal skipped_with_neu_still_set
 
         document = pending.document
@@ -1886,6 +1906,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                     storage_path_id_to_label=storage_path_id_to_label,
                 )
             else:
+                apply_started = time.perf_counter()
                 client.update_document(int(doc_id), patch_payload)
                 if config.enable_ai_notes:
                     try:
@@ -1898,6 +1919,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                             note_exc,
                         )
                 LOGGER.info("Aktualisiert Dokument %s (%s)", doc_id, title)
+                perf_apply_seconds += max(0.0, time.perf_counter() - apply_started)
 
             if config.quarantine_failed_documents and doc_key is not None:
                 failed_patch_cache.pop(doc_key, None)
@@ -2037,12 +2059,20 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             LOGGER.error("Fehler bei Dokument %s (%s): %s", doc_id, title, exc)
 
     for document in client.iter_documents(fetch_limit, extra_params=doc_query_params):
-        scanned += 1
         doc_id = document.get("id")
         doc_key = str(doc_id) if doc_id is not None else None
         title = document.get("title", "<ohne Titel>")
         doc_tags = {int(tag_id) for tag_id in document.get("tags", [])}
         patch_payload_for_error: Optional[Dict[str, Any]] = None
+        has_ki_tag = bool(ki_tag_id is not None and int(ki_tag_id) in doc_tags)
+
+        # Harte Vorfilter-Regel: Dokumente mit KI-Tag werden gar nicht angefasst,
+        # außer Reprocessing wurde explizit aktiviert.
+        if has_ki_tag and not config.reprocess_ki_tagged_documents:
+            prefilt_ki_tagged += 1
+            continue
+
+        scanned += 1
 
         if config.enable_tag_bypass_on_tags_500 and doc_key is not None and doc_key in tag_bypass_docs:
             # Bypass-Dokumente sollen keine KI-Tokens verbrauchen.
@@ -2189,36 +2219,6 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             continue
 
         # ---------- Precheck-Gates vor KI ----------
-        has_ki_tag = bool(ki_tag_id is not None and int(ki_tag_id) in doc_tags)
-        if has_ki_tag and not config.reprocess_ki_tagged_documents:
-            if not config.dry_run and doc_id is not None:
-                current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
-                new_tags = set(current_tags)
-                if remove_neu_tag_id is not None:
-                    new_tags.discard(int(remove_neu_tag_id))
-                if new_tags != current_tags:
-                    try:
-                        client._request(
-                            "PATCH",
-                            f"/api/documents/{int(doc_id)}/",
-                            payload={"tags": sorted(new_tags)},
-                            retries=1,
-                        )
-                    except PaperlessApiError as remove_neu_exc:
-                        skipped_with_neu_still_set += 1
-                        LOGGER.warning(
-                            "Precheck KI-Tag-Skip: #NEU konnte für Dokument %s (%s) nicht entfernt werden: %s",
-                            doc_id,
-                            title,
-                            remove_neu_exc,
-                        )
-            LOGGER.info(
-                "Skip Dokument %s (%s): Precheck ki_tag_skip (reprocess_ki_tagged_documents=false)",
-                doc_id,
-                title,
-            )
-            skipped += 1
-            continue
 
         if config.already_classified_skip and not process_all_documents:
             has_type = document.get("document_type") is not None
@@ -2577,6 +2577,23 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         pending_ai_documents.clear()
         for pending, prediction, pred_exc in batch_results:
             _apply_ai_result(pending, prediction, pred_exc)
+
+    if prefilt_ki_tagged > 0:
+        LOGGER.info(
+            "Vorfilter aktiv: %s Dokument(e) mit KI-Tag wurden vollständig ausgeschlossen "
+            "(reprocess_ki_tagged_documents=false).",
+            prefilt_ki_tagged,
+        )
+    if perf_ai_batches > 0:
+        LOGGER.info(
+            "Performance: KI-Batches=%s | KI-Dokumente=%s | KI-Zeit=%.2fs | "
+            "Ø KI-Zeit/Dokument=%.3fs | Apply-Zeit=%.2fs",
+            perf_ai_batches,
+            perf_ai_docs,
+            perf_ai_seconds,
+            (perf_ai_seconds / perf_ai_docs) if perf_ai_docs else 0.0,
+            perf_apply_seconds,
+        )
 
     if config.quarantine_failed_documents:
         save_failed_documents(failed_docs_path, failed_docs_until)
