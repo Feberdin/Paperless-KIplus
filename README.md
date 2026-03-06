@@ -66,6 +66,29 @@ Diese Datei beschreibt **nur** die Nutzung in Home Assistant (HACS).
 4. Home Assistant neu starten
 5. Integration hinzufügen: `Einstellungen -> Geräte & Dienste -> Integration hinzufügen`
 
+## HACS Listing Readiness
+
+Der Repository-Stand erfüllt bereits die zentralen HACS-Integration-Anforderungen:
+
+- Public GitHub Repository mit README, License, Codeowners, Issue/PR Templates
+- Korrekte HA-Integration-Struktur unter `custom_components/paperless_kiplus`
+- `manifest.json` mit `domain`, `name`, `version`, `documentation`, `issue_tracker`, `codeowners`
+- `hacs.json` im Repository-Root
+- GitHub Actions für HACS-Validierung und Hassfest:
+  - `.github/workflows/hacs-hassfest-validate.yml`
+  - `.github/workflows/hacs-release.yml`
+  - `.github/workflows/version-guard.yml`
+
+Externe Schritte (außerhalb dieses Repos), die weiterhin nötig sind:
+
+1. Repository Topics auf GitHub setzen:
+   - `home-assistant`
+   - `hacs`
+   - `integration`
+2. Mindestens ein GitHub Release/Tag veröffentlichen (z. B. `v0.1.49`).
+3. Brands-Eintrag in `home-assistant/brands` einreichen (Icon/Logo).
+4. Eintrag in `hacs/default` unter `integration/paperless_kiplus.json` per PR hinzufügen.
+
 ## Optionen in der Integration
 
 In den Optionen sind nur die fachlich relevanten Felder sichtbar.
