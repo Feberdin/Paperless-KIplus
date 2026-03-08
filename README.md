@@ -30,6 +30,46 @@ Die Integration startet den KI-Sorter direkt aus Home Assistant, schreibt Ergebn
 4. Home Assistant neu starten.
 5. Unter `Einstellungen -> Geräte & Dienste` die Integration hinzufügen.
 6. In den Optionen deine YAML-Konfiguration vollständig im YAML-Feld pflegen.
+   Alternative mit ChatGPT:
+   - Nutze den folgenden Prompt, um dir eine vollständige YAML erstellen zu lassen.
+   - Ergebnis 1:1 in das YAML-Feld der Integration kopieren.
+
+```text
+Erstelle mir eine vollständige YAML-Konfiguration für die Home-Assistant Integration
+"Paperless KIplus Runner" (Paperless-ngx KI-Sorter).
+
+Ziel:
+- Dokumente in Paperless-ngx per KI klassifizieren (Dokumenttyp, Korrespondent,
+  Speicherpfad, Tags, Datum, Notiz).
+- Sicherer Betrieb in Home Assistant mit Fokus auf stabile Automationen.
+
+Wichtige Anforderungen:
+1) Gib nur gültiges YAML aus (ohne Markdown, ohne Erklärtext).
+2) Nutze sinnvolle Default-Werte für einen produktiven Start.
+3) Setze process_only_tag auf "#NEU".
+4) Setze dry_run auf false.
+5) Nutze Skip-/Precheck-Optionen so, dass bereits klassifizierte Dokumente
+   zuverlässig übersprungen werden.
+6) Setze reprocess_ki_tagged_documents auf false.
+7) Aktiviere Quarantäne- und Duplicate-Prechecks.
+8) Aktiviere parallele KI-Verarbeitung nur moderat (z. B. 3 bis 5 Jobs).
+9) Lass Platzhalter für:
+   - paperless_url
+   - paperless_token
+   - ai_api_key
+   - ai_model
+10) Gib alle relevanten Felder vollständig aus, damit die YAML direkt in Home
+    Assistant eingefügt werden kann.
+
+Rahmendaten:
+- Paperless URL: <PAPERLESS_URL>
+- Paperless Token: <PAPERLESS_TOKEN>
+- AI API Key: <AI_API_KEY>
+- AI Modell: <AI_MODEL>
+- AI Base URL (optional): <AI_BASE_URL>
+
+Erzeuge jetzt die vollständige YAML.
+```
 
 ## Welche Features hat die Integration?
 
