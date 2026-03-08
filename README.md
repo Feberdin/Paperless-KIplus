@@ -45,21 +45,66 @@ Ziel:
 
 Wichtige Anforderungen:
 1) Gib nur gültiges YAML aus (ohne Markdown, ohne Erklärtext).
-2) Nutze sinnvolle Default-Werte für einen produktiven Start.
+2) Gib alle unten genannten Felder vollständig aus, auch wenn du Defaultwerte nutzt.
 3) Setze process_only_tag auf "#NEU".
 4) Setze dry_run auf false.
-5) Nutze Skip-/Precheck-Optionen so, dass bereits klassifizierte Dokumente
-   zuverlässig übersprungen werden.
-6) Setze reprocess_ki_tagged_documents auf false.
+5) Setze reprocess_ki_tagged_documents auf false.
+6) Konfiguriere bereits klassifizierte Dokumente so, dass sie zuverlässig übersprungen werden.
 7) Aktiviere Quarantäne- und Duplicate-Prechecks.
-8) Aktiviere parallele KI-Verarbeitung nur moderat (z. B. 3 bis 5 Jobs).
-9) Lass Platzhalter für:
-   - paperless_url
-   - paperless_token
-   - ai_api_key
-   - ai_model
-10) Gib alle relevanten Felder vollständig aus, damit die YAML direkt in Home
-    Assistant eingefügt werden kann.
+8) Aktiviere parallele KI-Verarbeitung moderat (3 bis 5 Jobs).
+9) Nutze sinnvolle produktive Defaultwerte.
+
+Pflicht-Platzhalter:
+- paperless_url: <PAPERLESS_URL>
+- paperless_token: <PAPERLESS_TOKEN>
+- ai_api_key: <AI_API_KEY>
+- ai_model: <AI_MODEL>
+- ai_base_url: <AI_BASE_URL>
+
+Die YAML muss diese Felder enthalten:
+- paperless_url
+- paperless_token
+- ai_api_key
+- ai_model
+- ai_base_url
+- max_documents
+- dry_run
+- create_missing_entities
+- confidence_threshold
+- request_timeout_seconds
+- log_level
+- enable_token_precheck
+- min_remaining_tokens
+- custom_prompt_instructions
+- basis_config
+- process_only_tag
+- include_existing_entities_in_prompt
+- enable_ai_notes
+- ai_notes_max_chars
+- enable_ai_note_summary
+- ai_note_summary_max_chars
+- metrics_file
+- input_cost_per_1k_tokens_eur
+- output_cost_per_1k_tokens_eur
+- quarantine_failed_documents
+- failed_document_cooldown_hours
+- failed_documents_file
+- failed_tags_only_cooldown_hours
+- failed_patch_cache_file
+- enable_tag_bypass_on_tags_500
+- tag_bypass_file
+- already_classified_skip
+- already_classified_require_ki_tag
+- precheck_min_content_chars
+- precheck_min_word_count
+- precheck_min_alnum_ratio
+- precheck_blocked_filename_patterns
+- precheck_image_only_gate
+- precheck_duplicate_hash_gate
+- precheck_duplicate_apply_metadata
+- reprocess_ki_tagged_documents
+- enable_parallel_ai
+- max_parallel_ai_jobs
 
 Rahmendaten:
 - Paperless URL: <PAPERLESS_URL>
