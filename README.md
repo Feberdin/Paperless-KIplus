@@ -1,205 +1,85 @@
 # Paperless KIplus Home Assistant Integration
 
-Home-Assistant-Integration für die KI-gestützte Sortierung von Paperless-ngx Dokumenten.
+Die Integration verbindet Home Assistant mit deinem Paperless-ngx-Workflow und klassifiziert Dokumente per KI automatisiert.
 
-## Screenshots
+## Was macht die Integration?
 
-### Geräteansicht in Home Assistant
+Die Integration startet den KI-Sorter direkt aus Home Assistant, schreibt Ergebnisse zurück nach Paperless-ngx und stellt Laufstatus, Kosten und Logs als Entitäten/Buttons bereit.
+
+### Bilder
+
+#### Geräteansicht in Home Assistant
 ![Home Assistant Geräteansicht](./docs/images/ha-geraeteansicht.png)
 
-### Dokument mit KI-Notiz in Paperless-ngx
+#### Dokument mit KI-Notiz in Paperless-ngx
 ![Paperless Dokumentansicht mit KI-Notiz](./docs/images/paperless-ki-notiz.png)
 
-### Optionen in Home Assistant (Teil 1)
+#### Optionen in Home Assistant (Teil 1)
 ![Home Assistant Optionen Teil 1](./docs/images/ha-optionen-teil1.png)
 
-### Optionen in Home Assistant (Teil 2)
+#### Optionen in Home Assistant (Teil 2)
 ![Home Assistant Optionen Teil 2](./docs/images/ha-optionen-teil2.png)
 
-## Features der Integration
+## Wie installiere ich die Integration?
 
-- Native Home-Assistant Integration (HACS) mit Config Flow und Options-UI
+1. HACS öffnen -> `Integrationen` -> `Custom repositories`.
+2. Repository hinzufügen:
+   - URL: `https://github.com/Feberdin/Paperless-KIplus`
+   - Kategorie: `Integration`
+3. `Paperless KIplus Runner` installieren.
+4. Home Assistant neu starten.
+5. Unter `Einstellungen -> Geräte & Dienste` die Integration hinzufügen.
+6. In den Optionen deine YAML-Konfiguration vollständig im YAML-Feld pflegen.
+
+## Welche Features hat die Integration?
+
+- Native Home-Assistant Integration mit Config Flow und Options-UI
 - KI-gestützte Dokumentklassifizierung für:
   - Dokumenttyp
   - Korrespondent
   - Speicherpfad
   - Tags
-  - Datum
-- Erstellung fehlender Entitäten in Paperless (optional), z. B. Korrespondenten/Tags
-- Verwaltung der kompletten YAML-Konfiguration direkt in Home Assistant (kein externer Dateizwang)
-- Dry-Run Modus für sichere Tests ohne Schreibzugriffe in Paperless
-- Vollscan-Option (`Alle Dokumente`) für kontrollierte Bestandsläufe
-- Detaillierter DEBUG-Kopierbereich im Log mit Entitäten- und Fehlerzusammenfassung
-- KI-Notizen im Dokument inkl. Begründung/Kurz-Zusammenfassung
-- Token- und Kosten-Tracking:
-  - Letzter Lauf (Tokens/Kosten)
-  - Gesamtsumme über alle Läufe
-- Robuste Skip-/Precheck-Logik zur Token-Einsparung:
-  - already-classified Skip
-  - content-quality Gate
-  - image-only Gate
-  - blocked filename patterns
-  - duplicate checksum Gate
-- Fehler-Quarantäne für fehlgeschlagene Dokumente mit Cooldown
-- Tag-Bypass für tags-only `HTTP 500` Fälle, um Endlosschleifen und Token-Verbrauch zu vermeiden
-- Bypass-/Quarantäne-Zähler als Entitäten
-- Buttons in Home Assistant:
+  - Dokumentdatum
+- Optionales Auto-Anlegen fehlender Entitäten (Korrespondent, Dokumenttyp, Tags)
+- Dry-Run Modus ohne Schreibzugriffe in Paperless
+- Vollscan-Modus (`Alle Dokumente`) für Bestandsläufe
+- Precheck-/Skip-Logik zur Token-Einsparung
+- Doppelte Dokumente per Checksum erkennen (optional Metadatenübernahme)
+- Fehler-Quarantäne und Tag-Bypass für robuste Dauerläufe
+- KI-Notizen inkl. Begründung/Kurz-Zusammenfassung
+- Token-/Kosten-Tracking (letzter Lauf + Gesamtwerte)
+- Service `paperless_kiplus.run` mit Overrides (`force`, `wait`, `dry_run`, `all_documents`, `max_documents`)
+- Geräte-Buttons für:
   - Letztes Protokoll anzeigen
   - Letztes Protokoll exportieren
   - Statistiken zurücksetzen
   - Fehlgeschlagene Dokumente zurücksetzen
-- Service `paperless_kiplus.run` mit Overrides (`force`, `wait`, `dry_run`, `all_documents`, `max_documents`)
+- Parallele KI-Verarbeitung (konfigurierbar)
+- KI-Tag-Vorfilter: KI-getaggte Dokumente können standardmäßig komplett ausgeschlossen werden
 
-## Fokus dieser README
+## Versionsverlauf (antichronologisch)
 
-Diese Datei beschreibt **nur** die Nutzung in Home Assistant (HACS).
+- `v1.0.0` (2026-03-08)
+  - Erstes stabiles Release für HACS.
 
-- CLI / manuelles Python-Starten: siehe [README_CLI.md](README_CLI.md)
+- `v0.1.49` (2026-03-08)
+  - KI-Tag-Vorfilter vor der Abarbeitung ergänzt.
+  - Performance-Metriken im Log ergänzt (KI-Batches/Zeiten).
 
-## Installation (HACS)
+- `v0.1.48` (2026-03-06)
+  - `max_documents` zählt übersprungene Dokumente nicht mehr als Verarbeitungsbudget.
 
-1. HACS -> `Integrationen` -> `Custom repositories`
-2. Repository hinzufügen:
-   - URL: `https://github.com/Feberdin/Paperless-KIplus`
-   - Kategorie: `Integration`
-3. `Paperless KIplus Runner` installieren
-4. Home Assistant neu starten
-5. Integration hinzufügen: `Einstellungen -> Geräte & Dienste -> Integration hinzufügen`
+- `v0.1.47` (2026-03-06)
+  - Option `reprocess_ki_tagged_documents` eingeführt (Default AUS).
 
-## HACS Listing Readiness
+- `v0.1.46` (2026-03-03)
+  - `already_classified_skip` im All-Documents-Verhalten nachgeschärft.
 
-Der Repository-Stand erfüllt bereits die zentralen HACS-Integration-Anforderungen:
+- `v0.1.45` (2026-03-03)
+  - Tag-Sanitizer, KI-Retry-Backoff und robustere PATCH-Fallbacks.
 
-- Public GitHub Repository mit README, License, Codeowners, Issue/PR Templates
-- Korrekte HA-Integration-Struktur unter `custom_components/paperless_kiplus`
-- `manifest.json` mit `domain`, `name`, `version`, `documentation`, `issue_tracker`, `codeowners`
-- `hacs.json` im Repository-Root
-- GitHub Actions für HACS-Validierung und Hassfest:
-  - `.github/workflows/hacs-hassfest-validate.yml`
-  - `.github/workflows/hacs-release.yml`
-  - `.github/workflows/version-guard.yml`
+- `v0.1.44` (2026-03-03)
+  - Parallele KI-Verarbeitung mit konfigurierbarer Worker-Anzahl.
 
-Externe Schritte (außerhalb dieses Repos), die weiterhin nötig sind:
-
-1. Repository Topics auf GitHub setzen:
-   - `home-assistant`
-   - `hacs`
-   - `integration`
-2. Mindestens ein GitHub Release/Tag veröffentlichen (z. B. `v0.1.49`).
-3. Brands-Eintrag in `home-assistant/brands` einreichen (Icon/Logo).
-4. Eintrag in `hacs/default` unter `integration/paperless_kiplus.json` per PR hinzufügen.
-
-## Optionen in der Integration
-
-In den Optionen sind nur die fachlich relevanten Felder sichtbar.
-Technische Pfade/Befehle sind fest implementiert, um Fehlkonfigurationen zu vermeiden.
-
-### Dry-Run
-
-Wenn **Dry-Run aktiv** ist:
-
-- Es werden **keine Änderungen** in Paperless gespeichert.
-- Die KI analysiert Dokumente und erzeugt nur Vorschläge.
-- Du siehst in den Logs, was geändert würde (z. B. Typ, Korrespondent, Speicherpfad, Tags, Datum, Notiz).
-
-Verwendung:
-
-- Zum sicheren Testen neuer YAML-Regeln.
-- Nach Regeländerungen immer erst 1-2 Dry-Run-Läufe durchführen.
-
-### Alle Dokumente
-
-Wenn **Alle Dokumente aktiv** ist:
-
-- Der Lauf verarbeitet den gesamten Bestand (begrenzt durch `Max. Dokumente`).
-- Der übliche YAML-Filter (z. B. `process_only_tag: "#NEU"`) wird für diesen Lauf ignoriert.
-
-Wenn **Alle Dokumente aus** ist:
-
-- Es gelten die Filter/Regeln aus deiner YAML (empfohlen für den Alltag).
-
-### Input-/Output-Kosten
-
-Standardwerte:
-
-- `Input-Kosten pro 1.000 Tokens (EUR)`: `0.0004`
-- `Output-Kosten pro 1.000 Tokens (EUR)`: `0.0016`
-
-Quelle der Preisbasis:
-
-- OpenAI Preisseite (GPT-4.1 mini): [https://platform.openai.com/docs/pricing](https://platform.openai.com/docs/pricing)
-- Umrechnung aus den dort genannten Preisen pro 1M Tokens auf 1.000 Tokens.
-
-Hinweis:
-
-- Falls du ein anderes Modell/anderen Anbieter nutzt, bitte die beiden Werte anpassen.
-
-### YAML-Konfiguration (immer in HA)
-
-Die YAML wird **immer in Home Assistant** gepflegt.
-
-- Den kompletten YAML-Text im Feld `YAML-Konfiguration (kompletter Inhalt)` einfügen.
-- Keine externe YAML-Datei verwenden.
-
-Hilfelink zur YAML-Erstellung mit ChatGPT:
-
-- [ChatGPT Prompt für eigene YAML-Konfig](https://github.com/Feberdin/Paperless-KIplus?tab=readme-ov-file#-chatgpt-prompt-f%C3%BCr-eigene-yaml-konfig)
-
-## Entitäten im Gerät
-
-Alle Entitäten sind einem gemeinsamen Gerät zugeordnet:
-
-- **Paperless KIplus Runner**
-
-Dadurch siehst du die Werte direkt in der Geräte-/Integrationsansicht.
-
-Wichtige Entitäten:
-
-- Letzter Lauf Tokens
-- Letzter Lauf Kosten
-- Gesamt Tokens
-- Gesamtkosten
-- Letzte Zusammenfassung (G/A/U/F)
-- Letztes Protokoll
-
-## Buttons
-
-### Paperless KIplus Statistiken zurücksetzen
-
-- Setzt Token-/Kostenstatistiken auf 0 (letzter Lauf + Gesamt)
-- Schreibt die Werte auch in die Metrik-Datei zurück
-
-### Paperless KIplus Letztes Protokoll exportieren
-
-- Exportiert das letzte Protokoll nach:
-  - `/config/www/paperless_kiplus_last_log.txt`
-- Download in HA/Browser über:
-  - `/local/paperless_kiplus_last_log.txt`
-
-Damit können Nutzer das Log einfach teilen.
-
-## Service
-
-Service: `paperless_kiplus.run`
-
-Optionale Lauf-Overrides:
-
-- `force`
-- `wait`
-- `dry_run`
-- `all_documents`
-- `max_documents`
-
-## Icon-Hinweis
-
-Die Integration liefert Branding-Dateien unter `custom_components/paperless_kiplus/brand/`.
-Ab Home Assistant 2026.3 können Custom Integrations dieses lokale Branding direkt nutzen.
-Wenn trotzdem \"icon not available\" erscheint, bitte HA-Core/HACS aktualisieren und neu starten.
-
-## Support
-
-Bei Fehlern bitte mitsenden:
-
-1. Exportiertes Log (`/local/paperless_kiplus_last_log.txt`)
-2. `Fertig. Gescannt=..., Aktualisiert=..., Übersprungen=..., Fehler=...`
-3. `Kosten/Token`-Zeile
+- Ältere Releases
+  - Weitere Tags vorhanden: `v0.1.43` bis `v0.1.2`.
