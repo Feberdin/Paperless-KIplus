@@ -106,6 +106,60 @@ Die YAML muss diese Felder enthalten:
 - enable_parallel_ai
 - max_parallel_ai_jobs
 
+Die `basis_config` muss mindestens diese Struktur enthalten (Feldnamen exakt so verwenden):
+
+basis_config:
+  people:
+    owner:
+      full_name: "Max Mustermann"
+      aliases: []
+      address:
+        street: "Musterstraße 1"
+        postal_code: "12345"
+        city: "Musterstadt"
+      contact:
+        mobile: "0123456789"
+      tax:
+        tax_number: ""
+    household:
+      children: []
+      relatives: []
+    contacts: []
+  organizations:
+    employer_current:
+      name: ""
+      preferred_storage_path: ""
+    employer_former:
+      name: ""
+      locations: []
+      preferred_storage_path: ""
+      only_if_clear_business_context: true
+    clubs: []
+  identifiers:
+    meters: []
+  classification_rules:
+    document_type:
+      invoice_addressed_to_owner: "Rechnung"
+      legal_documents_force_type:
+        type: "Rechtsanwalt"
+        trigger_terms: ["Rechtsanwalt", "Gericht", "Klage", "Beschluss", "Einspruch", "Aktenzeichen"]
+    correspondent:
+      normalize:
+        - if_contains_any: ["Hotel", "Pension", "Unterkunft", "Übernachtung"]
+          set_to: "Hotel"
+    storage_path:
+      mappings: []
+      default: "Privat"
+    tags:
+      add_year_tag_for_invoices: true
+      add_customer_number_tag_for_contracts: true
+      legal_case_tag_prefers_case_reference: true
+      keep_sparse: true
+    date:
+      prefer_document_date_over_upload_date: true
+  guardrails:
+    forbidden_path_assignments: []
+
 Rahmendaten:
 - Paperless URL: <PAPERLESS_URL>
 - Paperless Token: <PAPERLESS_TOKEN>
