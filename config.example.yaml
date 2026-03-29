@@ -124,3 +124,32 @@ ai_notes_max_chars: 800
 # Optional: Kurz-Zusammenfassung in KI-Notizen
 enable_ai_note_summary: true
 ai_note_summary_max_chars: 220
+
+# Steuerorientierte Zusatzanalyse fuer private deutsche Einkommensteuerfaelle.
+# Diese Funktion greift zusaetzlich zur normalen Klassifikation und erzeugt
+# strukturierte Exporte fuer manuelle Weiterarbeit, z. B. Richtung WISO Steuer.
+enable_tax_enrichment: false
+
+# Zielverzeichnis fuer Steuer-Exporte. Pro Steuerjahr wird ein Unterordner mit
+# tax_export.json und tax_review.csv angelegt.
+tax_export_dir: "tax_exports"
+
+# Steuerjahre, fuer die Exporte geschrieben werden sollen.
+# Leer = alle erkannten Jahre exportieren.
+tax_export_years:
+  - 2025
+
+# Optional: Bereits mit KI-Tag versehene Dokumente einmal nur durch die
+# Steuerpruefung laufen lassen, ohne die normale Dokument-Klassifikation erneut
+# auszufuehren. Nützlich fuer Altbestände.
+tax_process_ki_tagged_documents: false
+
+# Optional: Freitext mit privatem Steuerkontext fuer die Steuer-KI.
+# Beispiel: verheiratet/getrennt, Kinder mit Alter, Betreuungsmodell,
+# Haushaltszuordnung, Pflege-/Unterhaltskonstellationen.
+tax_personal_context: |
+  Steuerpflichtiger: Max Mustermann
+  Familienstand:
+  Kinder:
+  Betreuungsmodell:
+  Sonstige steuerlich wichtige Hinweise:

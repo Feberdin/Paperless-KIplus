@@ -61,6 +61,9 @@ class PaperlessRunner:
         reprocess_ki_tagged_documents: bool,
         enable_parallel_ai: bool,
         max_parallel_ai_jobs: int,
+        enable_tax_enrichment: bool,
+        tax_process_ki_tagged_documents: bool,
+        tax_personal_context: str,
     ) -> None:
         self.hass = hass
         self.command = command
@@ -87,6 +90,9 @@ class PaperlessRunner:
         self.reprocess_ki_tagged_documents = reprocess_ki_tagged_documents
         self.enable_parallel_ai = enable_parallel_ai
         self.max_parallel_ai_jobs = max_parallel_ai_jobs
+        self.enable_tax_enrichment = enable_tax_enrichment
+        self.tax_process_ki_tagged_documents = tax_process_ki_tagged_documents
+        self.tax_personal_context = tax_personal_context
 
         self._lock = asyncio.Lock()
         self.running = False
@@ -556,6 +562,11 @@ class PaperlessRunner:
                 )
                 parsed["enable_parallel_ai"] = bool(self.enable_parallel_ai)
                 parsed["max_parallel_ai_jobs"] = max(1, int(self.max_parallel_ai_jobs))
+                parsed["enable_tax_enrichment"] = bool(self.enable_tax_enrichment)
+                parsed["tax_process_ki_tagged_documents"] = bool(
+                    self.tax_process_ki_tagged_documents
+                )
+                parsed["tax_personal_context"] = str(self.tax_personal_context or "")
                 content = yaml.safe_dump(parsed, allow_unicode=True, sort_keys=False)
             else:
                 content = raw_yaml

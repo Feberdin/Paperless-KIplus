@@ -25,6 +25,7 @@ from .const import (
     CONF_COOLDOWN_SECONDS,
     CONF_DRY_RUN,
     CONF_ENABLE_PARALLEL_AI,
+    CONF_ENABLE_TAX_ENRICHMENT,
     CONF_INPUT_COST_PER_1K_TOKENS_EUR,
     CONF_MANAGED_CONFIG_YAML,
     CONF_MAX_DOCUMENTS,
@@ -38,12 +39,15 @@ from .const import (
     CONF_PRECHECK_MIN_ALNUM_RATIO,
     CONF_PRECHECK_MIN_CONTENT_CHARS,
     CONF_PRECHECK_MIN_WORD_COUNT,
+    CONF_TAX_PERSONAL_CONTEXT,
+    CONF_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
     DEFAULT_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
     DEFAULT_ALREADY_CLASSIFIED_SKIP,
     DEFAULT_ALL_DOCUMENTS,
     DEFAULT_COOLDOWN_SECONDS,
     DEFAULT_DRY_RUN,
     DEFAULT_ENABLE_PARALLEL_AI,
+    DEFAULT_ENABLE_TAX_ENRICHMENT,
     DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR,
     DEFAULT_MANAGED_CONFIG_YAML,
     DEFAULT_MAX_DOCUMENTS,
@@ -57,6 +61,8 @@ from .const import (
     DEFAULT_PRECHECK_MIN_ALNUM_RATIO,
     DEFAULT_PRECHECK_MIN_CONTENT_CHARS,
     DEFAULT_PRECHECK_MIN_WORD_COUNT,
+    DEFAULT_TAX_PERSONAL_CONTEXT,
+    DEFAULT_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
     DOMAIN,
 )
 
@@ -158,6 +164,20 @@ class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     CONF_REPROCESS_KI_TAGGED_DOCUMENTS,
                     default=DEFAULT_REPROCESS_KI_TAGGED_DOCUMENTS,
                 ): BooleanSelector(),
+                vol.Required(
+                    CONF_ENABLE_TAX_ENRICHMENT,
+                    default=DEFAULT_ENABLE_TAX_ENRICHMENT,
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
+                    default=DEFAULT_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_TAX_PERSONAL_CONTEXT,
+                    default=DEFAULT_TAX_PERSONAL_CONTEXT,
+                ): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.TEXT, multiline=True)
+                ),
                 vol.Required(
                     CONF_ENABLE_PARALLEL_AI,
                     default=DEFAULT_ENABLE_PARALLEL_AI,
@@ -337,6 +357,35 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
                         ),
                     ),
                 ): BooleanSelector(),
+                vol.Required(
+                    CONF_ENABLE_TAX_ENRICHMENT,
+                    default=options.get(
+                        CONF_ENABLE_TAX_ENRICHMENT,
+                        data.get(
+                            CONF_ENABLE_TAX_ENRICHMENT,
+                            DEFAULT_ENABLE_TAX_ENRICHMENT,
+                        ),
+                    ),
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
+                    default=options.get(
+                        CONF_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
+                        data.get(
+                            CONF_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
+                            DEFAULT_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
+                        ),
+                    ),
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_TAX_PERSONAL_CONTEXT,
+                    default=options.get(
+                        CONF_TAX_PERSONAL_CONTEXT,
+                        data.get(CONF_TAX_PERSONAL_CONTEXT, DEFAULT_TAX_PERSONAL_CONTEXT),
+                    ),
+                ): TextSelector(
+                    TextSelectorConfig(type=TextSelectorType.TEXT, multiline=True)
+                ),
                 vol.Required(
                     CONF_ENABLE_PARALLEL_AI,
                     default=options.get(

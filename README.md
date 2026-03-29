@@ -6,6 +6,13 @@ Die Integration verbindet Home Assistant mit deinem Paperless-ngx-Workflow und k
 
 Die Integration startet den KI-Sorter direkt aus Home Assistant, schreibt Ergebnisse zurück nach Paperless-ngx und stellt Laufstatus, Kosten und Logs als Entitäten/Buttons bereit.
 
+Zusätzlich kann die Integration optional ein steuerorientiertes `Tax Enrichment`
+pro Dokument erzeugen. Diese Erweiterung richtet Dokumente auf private deutsche
+Einkommensteuerfälle aus, bewertet Nachweisqualität vorsichtig und erzeugt
+arbeitbare JSON-/CSV-Exporte für die manuelle Übernahme nach WISO Steuer.
+Wenn du diese Funktion nicht möchtest, bleibt sie mit `enable_tax_enrichment: false`
+komplett ausgeschaltet.
+
 ### Bilder
 
 #### Geräteansicht in Home Assistant
@@ -195,8 +202,240 @@ Erzeuge jetzt die vollständige YAML.
   - Fehlgeschlagene Dokumente zurücksetzen
 - Parallele KI-Verarbeitung (konfigurierbar)
 - KI-Tag-Vorfilter: KI-getaggte Dokumente können standardmäßig komplett ausgeschlossen werden
+- Optionales Tax Enrichment für Einkommensteuer-Vorbereitung:
+  - feste Steuer-Taxonomie
+  - semantischer WISO-Mapping-Layer
+  - Review-Flags und Confidence-Werte
+  - formale Nachweisprüfung
+  - Exporte als `tax_export.json` und `tax_review.csv`
+  - steuerliche Ergebnis-Tags in Paperless
+  - eigene UI-Optionen für Steuer-Kontext und Tax-only-Nachlauf
+
+## Tax Enrichment
+
+### Ziel
+
+Die Tax-Enrichment-Funktion ergänzt die normale Dokumentklassifikation um eine
+steuerorientierte Sicht pro Dokument. Sie ist als Vorschlagssystem gebaut und
+trifft keine endgültigen Rechtsentscheidungen.
+
+### Architekturüberblick
+
+- Die bestehende Paperless-Klassifikation bleibt unverändert und läuft weiter wie bisher.
+- Optional wird danach ein separates, versioniertes `tax_enrichment` pro Dokument erzeugt.
+- Das Steuerobjekt nutzt:
+  - eine feste interne Taxonomie
+  - einen semantischen WISO-Zielbereich
+  - eine formale Nachweis-/Validierungslogik
+  - Review-Flags für menschliche Nacharbeit
+- Es wird bewusst kein proprietäres WISO-Dateiformat erzeugt.
+
+### Datenmodell
+
+Das Steuerobjekt enthält unter anderem:
+
+- `tax_year`
+- `document_date`
+- `service_period_from`
+- `service_period_to`
+- `document_type`
+- `issuer`
+- `recipient`
+- `total_amount`
+- `currency`
+- `payment_method`
+- `payment_verified`
+- `evidence_type`
+- `tax_category`
+- `tax_subcategory`
+- `deduction_domain`
+- `wiso_target_area`
+- `classification_confidence`
+- `eligibility_confidence`
+- `reasoning_summary`
+- `flags`
+- optional zusätzlich `person_reference`, `child_reference`, `household_reference`, `extracted_evidence`, `missing_requirements`, `recommended_follow_up`, `formal_validity`
+
+### Steuerkategorien
+
+Hauptkategorien:
+
+- `werbungskosten`
+- `sonderausgaben`
+- `aussergewoehnliche_belastungen`
+- `kinderbetreuungskosten`
+- `haushaltsnahe_dienstleistungen`
+- `handwerkerleistungen`
+- `unterhalt`
+- `pflege`
+- `kapitalvermoegen`
+- `vermietung`
+- `selbststaendigkeit`
+- `nicht_steuerrelevant`
+- `unklar`
+
+Beispiel-Unterkategorien:
+
+- `arbeitsmittel`
+- `homeoffice`
+- `weiterbildung`
+- `fahrtkosten`
+- `kita`
+- `tagesmutter`
+- `babysitter`
+- `reinigung`
+- `gartenpflege`
+- `winterdienst`
+- `handwerker_lohnkosten`
+- `medikamente`
+- `apotheke`
+- `pflegedienst`
+- `pflegeheim`
+
+### Review-Flags
+
+Mindestens diese Review-Flags werden unterstützt:
+
+- `needs_review`
+- `needs_payment_proof`
+- `needs_person_assignment`
+- `needs_year_assignment`
+- `high_audit_relevance`
+- `possible_finanzamt_query`
+- `not_tax_relevant`
+- `mixed_private_and_tax_relevant`
+- `missing_labor_split`
+- `cash_payment_not_eligible`
+
+### Exportformate
+
+Bei aktivierter Funktion werden pro Steuerjahr Dateien erzeugt:
+
+- `tax_exports/<jahr>/tax_export.json`
+- `tax_exports/<jahr>/tax_review.csv`
+
+`tax_export.json` enthält:
+
+- `taxpayer`
+- `tax_year`
+- `documents`
+- `category_totals`
+- `review_items`
+- `missing_evidence`
+- `notes_for_wiso`
+
+`tax_review.csv` enthält pro Dokument mindestens:
+
+- `document_id`
+- `title`
+- `document_date`
+- `issuer`
+- `total_amount`
+- `tax_year`
+- `tax_category`
+- `tax_subcategory`
+- `wiso_target_area`
+- `formal_validity`
+- `classification_confidence`
+- `eligibility_confidence`
+- `flags`
+- `reasoning_summary`
+
+### Grenzen der Automatisierung
+
+- Die Steueranalyse ist ein Vorschlagssystem, keine Rechtsberatung.
+- WISO wird nur semantisch vorbereitet, nicht über ein proprietäres Dateiformat angesteuert.
+- Fehlende Zahlungsnachweise, fehlende Personenzuordnung oder unklare Jahre werden bewusst als Review-Fall markiert.
+- Bei haushaltsnahen Dienstleistungen und Handwerkerleistungen werden Barzahlung und fehlende Lohn-/Materialtrennung explizit markiert.
+
+### Beispielkonfiguration
+
+Zusätzliche Konfigurationsfelder:
+
+```yaml
+enable_tax_enrichment: true
+tax_export_dir: "tax_exports"
+tax_export_years:
+  - 2025
+tax_process_ki_tagged_documents: false
+tax_personal_context: |
+  Steuerpflichtiger: Max Mustermann
+  Familienstand:
+  Kinder:
+  Betreuungsmodell:
+  Sonstige steuerlich wichtige Hinweise:
+```
+
+### Steuer-Tags in Paperless
+
+Wenn Tax Enrichment aktiv ist, werden steuerliche Ergebnis-Tags best effort nach
+Paperless gespiegelt:
+
+- `KI Steuerrelevant <Jahr>` bei steuerlich relevantem Dokument mit erkanntem Steuerjahr
+- `KI nicht Steuerrelevant` bei klar nicht steuerrelevanten Dokumenten
+
+So kannst du spaeter direkt nach Steuerjahr oder Nicht-Relevanz filtern.
+
+### Alte KI-Dokumente einmal steuerlich nachziehen
+
+Wenn du bereits viele Dokumente mit KI-Tag hast und diese nicht neu klassifizieren,
+aber einmal steuerlich prüfen lassen willst, nutze:
+
+```yaml
+enable_tax_enrichment: true
+tax_process_ki_tagged_documents: true
+reprocess_ki_tagged_documents: false
+```
+
+Dann werden bestehende KI-Dokumente nur fuer Tax Enrichment erneut betrachtet,
+ohne die normale Dokument-Klassifikation noch einmal durchzuschicken.
+
+### Prompt fuer deinen privaten Steuerkontext
+
+Du kannst dir einen guten Freitext fuer `tax_personal_context` mit ChatGPT erzeugen
+lassen und dann in Home Assistant direkt in dein YAML-Feld einfügen.
+
+```text
+Erstelle mir einen kompakten, gut strukturierten Freitext fuer die YAML-Einstellung
+"tax_personal_context" meiner Home-Assistant Integration "Paperless KIplus Runner".
+
+Ziel:
+- Die Information soll einer Steuer-KI helfen, private deutsche Dokumente fuer die
+  Einkommensteuer sinnvoller zu bewerten.
+- Es geht nur um Kontext, nicht um eine Steuererklaerung.
+- Gib nur klaren, kopierbaren Text aus, kein Markdown, keine Erklaerungen.
+
+Bitte frage bzw. strukturiere die Antwort nach diesen Punkten:
+- Steuerpflichtige Hauptperson mit Name
+- Ehe-/Partnerschaftsstatus
+- Zusammenveranlagung oder Trennung, falls bekannt
+- Kinder mit Name, Geburtsjahr/Alter und Wohn-/Betreuungssituation
+- Bei getrennten Eltern: Verteilung der Kinderbetreuung und wer welche Kosten traegt
+- Weitere haushaltszugehoerige oder unterstuetzte Personen
+- Pflegefaelle, Unterhalt, Behinderung, Krankheitskosten oder andere besondere Belastungen
+- Berufliche Situation, soweit fuer Werbungskosten wichtig
+- Vermietung, Selbststaendigkeit, Kapitalertraege oder sonstige steuerlich relevante Lebensbereiche
+- Sonstige Hinweise, wonach eine Steuer-KI besonders schauen soll
+
+Anforderungen:
+- Formuliere neutral, knapp und sachlich.
+- Verwende Abschnitte mit klaren Ueberschriften.
+- Erfinde nichts und lasse unbekannte Punkte als "unbekannt" stehen.
+- Optimiere den Text fuer spaeteres maschinelles Mitlesen.
+```
 
 ## Versionsverlauf (antichronologisch)
+
+- `v1.1.1` (2026-03-29)
+  - UI-Optionen für Steuerfunktion ergänzt.
+  - Privater Steuerkontext direkt in Home Assistant pflegbar.
+  - Bereits KI-getaggte Dokumente können einmalig nur steuerlich nachgeprüft werden.
+  - Steuer-Tags `KI Steuerrelevant <Jahr>` und `KI nicht Steuerrelevant` ergänzt.
+
+- `v1.1.0` (2026-03-28)
+  - Erste produktiv nutzbare Tax-Enrichment-Erweiterung hinzugefügt.
+  - Feste Steuer-Taxonomie, WISO-Mapping-Layer, Review-Flags und Nachweisprüfung ergänzt.
+  - Export pro Steuerjahr als `tax_export.json` und `tax_review.csv` eingeführt.
 
 - `v1.0.0` (2026-03-08)
   - Erstes stabiles Release für HACS.

@@ -33,11 +33,14 @@ from .const import (
     CONF_PRECHECK_DUPLICATE_HASH_GATE,
     CONF_REPROCESS_KI_TAGGED_DOCUMENTS,
     CONF_ENABLE_PARALLEL_AI,
+    CONF_ENABLE_TAX_ENRICHMENT,
     CONF_MAX_PARALLEL_AI_JOBS,
     CONF_PRECHECK_IMAGE_ONLY_GATE,
     CONF_PRECHECK_MIN_ALNUM_RATIO,
     CONF_PRECHECK_MIN_CONTENT_CHARS,
     CONF_PRECHECK_MIN_WORD_COUNT,
+    CONF_TAX_PERSONAL_CONTEXT,
+    CONF_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
     DEFAULT_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
     DEFAULT_ALREADY_CLASSIFIED_SKIP,
     DEFAULT_ALL_DOCUMENTS,
@@ -56,11 +59,14 @@ from .const import (
     DEFAULT_PRECHECK_DUPLICATE_HASH_GATE,
     DEFAULT_REPROCESS_KI_TAGGED_DOCUMENTS,
     DEFAULT_ENABLE_PARALLEL_AI,
+    DEFAULT_ENABLE_TAX_ENRICHMENT,
     DEFAULT_MAX_PARALLEL_AI_JOBS,
     DEFAULT_PRECHECK_IMAGE_ONLY_GATE,
     DEFAULT_PRECHECK_MIN_ALNUM_RATIO,
     DEFAULT_PRECHECK_MIN_CONTENT_CHARS,
     DEFAULT_PRECHECK_MIN_WORD_COUNT,
+    DEFAULT_TAX_PERSONAL_CONTEXT,
+    DEFAULT_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
     DEFAULT_WORKDIR,
     DOMAIN,
     SERVICE_RUN,
@@ -262,6 +268,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             data.get(CONF_MAX_PARALLEL_AI_JOBS, DEFAULT_MAX_PARALLEL_AI_JOBS),
         )
     )
+    enable_tax_enrichment = _as_bool(
+        options.get(
+            CONF_ENABLE_TAX_ENRICHMENT,
+            data.get(CONF_ENABLE_TAX_ENRICHMENT, DEFAULT_ENABLE_TAX_ENRICHMENT),
+        ),
+        DEFAULT_ENABLE_TAX_ENRICHMENT,
+    )
+    tax_process_ki_tagged_documents = _as_bool(
+        options.get(
+            CONF_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
+            data.get(
+                CONF_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
+                DEFAULT_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
+            ),
+        ),
+        DEFAULT_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
+    )
+    tax_personal_context = str(
+        options.get(
+            CONF_TAX_PERSONAL_CONTEXT,
+            data.get(CONF_TAX_PERSONAL_CONTEXT, DEFAULT_TAX_PERSONAL_CONTEXT),
+        )
+    )
 
     runner = PaperlessRunner(
         hass,
@@ -289,6 +318,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         reprocess_ki_tagged_documents=reprocess_ki_tagged_documents,
         enable_parallel_ai=enable_parallel_ai,
         max_parallel_ai_jobs=max_parallel_ai_jobs,
+        enable_tax_enrichment=enable_tax_enrichment,
+        tax_process_ki_tagged_documents=tax_process_ki_tagged_documents,
+        tax_personal_context=tax_personal_context,
     )
     hass.data[DOMAIN][entry.entry_id] = runner
     await runner.async_load_initial_metrics()

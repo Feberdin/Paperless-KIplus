@@ -28,6 +28,9 @@ CONF_PRECHECK_DUPLICATE_APPLY_METADATA = "precheck_duplicate_apply_metadata"
 CONF_REPROCESS_KI_TAGGED_DOCUMENTS = "reprocess_ki_tagged_documents"
 CONF_ENABLE_PARALLEL_AI = "enable_parallel_ai"
 CONF_MAX_PARALLEL_AI_JOBS = "max_parallel_ai_jobs"
+CONF_ENABLE_TAX_ENRICHMENT = "enable_tax_enrichment"
+CONF_TAX_PROCESS_KI_TAGGED_DOCUMENTS = "tax_process_ki_tagged_documents"
+CONF_TAX_PERSONAL_CONTEXT = "tax_personal_context"
 
 DEFAULT_COMMAND = "python3 /config/custom_components/paperless_kiplus/paperless_ai_sorter.py"
 DEFAULT_WORKDIR = "/config"
@@ -53,6 +56,9 @@ DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA = True
 DEFAULT_REPROCESS_KI_TAGGED_DOCUMENTS = False
 DEFAULT_ENABLE_PARALLEL_AI = False
 DEFAULT_MAX_PARALLEL_AI_JOBS = 5
+DEFAULT_ENABLE_TAX_ENRICHMENT = False
+DEFAULT_TAX_PROCESS_KI_TAGGED_DOCUMENTS = False
+DEFAULT_TAX_PERSONAL_CONTEXT = ""
 
 SERVICE_RUN = "run"
 

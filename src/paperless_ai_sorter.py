@@ -22,6 +22,13 @@ from typing import Any, Dict, Iterable, List, Optional
 import requests
 import yaml
 
+from tax_enrichment import (
+    TaxEnrichmentError,
+    TaxEnrichmentService,
+    TaxExportCollector,
+    build_tax_tag_labels,
+)
+
 
 LOGGER = logging.getLogger("paperless_ai_sorter")
 UUID_TAG_PATTERN = re.compile(
@@ -138,6 +145,11 @@ class AppConfig:
     reprocess_ki_tagged_documents: bool
     enable_parallel_ai: bool
     max_parallel_ai_jobs: int
+    enable_tax_enrichment: bool
+    tax_export_dir: str
+    tax_export_years: List[int]
+    tax_personal_context: str
+    tax_process_ki_tagged_documents: bool
 
 
 @dataclass
@@ -184,12 +196,27 @@ def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | No
         "precheck_blocked_filename_patterns",
         ["smime", ".p7m", ".p7s", "winmail.dat", "att00001"],
     )
+    tax_export_years_raw = raw.get("tax_export_years", [2025])
     if isinstance(blocked_patterns_raw, str):
         blocked_patterns = [part.strip() for part in blocked_patterns_raw.split(",") if part.strip()]
     elif isinstance(blocked_patterns_raw, list):
         blocked_patterns = [str(part).strip() for part in blocked_patterns_raw if str(part).strip()]
     else:
         blocked_patterns = ["smime", ".p7m", ".p7s", "winmail.dat", "att00001"]
+    if isinstance(tax_export_years_raw, list):
+        tax_export_years = []
+        for value in tax_export_years_raw:
+            try:
+                tax_export_years.append(int(value))
+            except (TypeError, ValueError):
+                continue
+    elif tax_export_years_raw in (None, "", []):
+        tax_export_years = []
+    else:
+        try:
+            tax_export_years = [int(tax_export_years_raw)]
+        except (TypeError, ValueError):
+            tax_export_years = [2025]
 
     return AppConfig(
         paperless_url=str(raw["paperless_url"]).rstrip("/"),
@@ -244,6 +271,14 @@ def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | No
         ),
         enable_parallel_ai=parse_bool(raw.get("enable_parallel_ai", False), False),
         max_parallel_ai_jobs=max(1, int(raw.get("max_parallel_ai_jobs", 5))),
+        enable_tax_enrichment=parse_bool(raw.get("enable_tax_enrichment", False), False),
+        tax_export_dir=str(raw.get("tax_export_dir", "tax_exports")).strip() or "tax_exports",
+        tax_export_years=sorted(set(tax_export_years)),
+        tax_personal_context=str(raw.get("tax_personal_context", "")).strip(),
+        tax_process_ki_tagged_documents=parse_bool(
+            raw.get("tax_process_ki_tagged_documents", False),
+            False,
+        ),
     )
 
 
@@ -1557,6 +1592,27 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
 
     client = PaperlessClient(config)
     classifier = AiClassifier(config)
+    tax_service: Optional[TaxEnrichmentService] = None
+    tax_export_collector: Optional[TaxExportCollector] = None
+    tax_enrichment_errors = 0
+    if config.enable_tax_enrichment:
+        tax_service = TaxEnrichmentService(
+            ai_model=config.ai_model,
+            ai_api_key=config.ai_api_key,
+            ai_base_url=config.ai_base_url,
+            request_timeout_seconds=config.request_timeout_seconds,
+            basis_config=config.basis_config,
+            personal_context=config.tax_personal_context,
+        )
+        tax_export_collector = TaxExportCollector(
+            basis_config=config.basis_config,
+            export_years=config.tax_export_years,
+        )
+        LOGGER.info(
+            "Tax Enrichment aktiv: Export-Verzeichnis=%s | Steuerjahre=%s",
+            config.tax_export_dir,
+            ", ".join(str(year) for year in config.tax_export_years) if config.tax_export_years else "alle",
+        )
 
     LOGGER.info("Prüfe KI-Token-Budget...")
     classifier.preflight_token_budget()
@@ -1649,6 +1705,16 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         can_create_entities,
         created_entities,
     )
+    tax_not_relevant_tag_id: Optional[int] = None
+    if config.enable_tax_enrichment:
+        tax_not_relevant_tag_id = ensure_entity_id(
+            client,
+            tags_map,
+            "KI nicht Steuerrelevant",
+            "/api/tags/",
+            can_create_entities,
+            created_entities,
+        )
     remove_neu_tag_id = tags_map.get("#neu")
     only_tag_id: Optional[int] = None
     only_tag_name = config.process_only_tag.strip()
@@ -1690,6 +1756,142 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             "Parallele KI-Verarbeitung aktiv: max_parallel_ai_jobs=%s",
             parallel_ai_workers,
         )
+
+    def _build_existing_prediction(document: Dict[str, Any]) -> Dict[str, Any]:
+        """Builds a classification-like object from already stored Paperless metadata.
+
+        Why this exists:
+        - Existing KI-tagged documents should be tax-enriched without forcing a
+          second full standard classification run.
+        - The tax AI still benefits from structured context that looks like the
+          normal classifier output.
+        """
+
+        def _label_from_id(entity_id: Any, mapping: Dict[int, str]) -> Optional[str]:
+            try:
+                if entity_id is None:
+                    return None
+                return mapping.get(int(entity_id))
+            except (TypeError, ValueError):
+                return None
+
+        tag_labels: List[str] = []
+        for tag_id in document.get("tags", []) or []:
+            try:
+                label = tag_id_to_label.get(int(tag_id))
+            except (TypeError, ValueError):
+                label = None
+            if label:
+                tag_labels.append(label)
+
+        return {
+            "document_type": _label_from_id(document.get("document_type"), doc_type_id_to_label),
+            "correspondent": _label_from_id(document.get("correspondent"), correspondent_id_to_label),
+            "storage_path": _label_from_id(document.get("storage_path"), storage_path_id_to_label),
+            "tags": sorted(tag_labels),
+            "document_date": normalize_iso_date(document.get("created")),
+            "summary": "Bestehende Paperless-Metadaten als Kontext fuer Tax Enrichment verwendet.",
+            "confidence": 1.0,
+            "rationale": "Dokument war bereits KI-getaggt; fuer die Steueranalyse wurden die vorhandenen Metadaten wiederverwendet.",
+        }
+
+    def _apply_tax_tags(
+        *,
+        document: Dict[str, Any],
+        enrichment: Any,
+    ) -> None:
+        """Mirrors the tax result into Paperless tags without breaking the main run.
+
+        We keep this best-effort:
+        - Tax exports remain usable even if a Paperless tag update fails.
+        - Existing classification must not fail just because a tax tag could not
+          be written.
+        """
+
+        if config.dry_run:
+            return
+        doc_id_local = document.get("id")
+        if doc_id_local is None:
+            return
+
+        current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
+        desired_tags = set(current_tags)
+        relevant_tag_ids = {
+            int(entity_id)
+            for label, entity_id in tags_map.items()
+            if label.startswith("ki steuerrelevant ")
+        }
+
+        desired_tags.difference_update(relevant_tag_ids)
+        if tax_not_relevant_tag_id is not None:
+            desired_tags.discard(int(tax_not_relevant_tag_id))
+
+        for tag_label in build_tax_tag_labels(enrichment):
+            tag_id = ensure_entity_id(
+                client,
+                tags_map,
+                tag_label,
+                "/api/tags/",
+                can_create_entities,
+                created_entities,
+            )
+            if tag_id is not None:
+                desired_tags.add(int(tag_id))
+
+        if desired_tags == current_tags:
+            return
+        try:
+            client.update_document(int(doc_id_local), {"tags": sorted(desired_tags)})
+            document["tags"] = sorted(desired_tags)
+        except PaperlessApiError as tax_tag_exc:
+            LOGGER.warning(
+                "Tax-Tags konnten fuer Dokument %s (%s) nicht gesetzt werden: %s",
+                doc_id_local,
+                document.get("title", "<ohne Titel>"),
+                tax_tag_exc,
+            )
+
+    def _run_tax_only_for_document(
+        *,
+        document: Dict[str, Any],
+        doc_id: Optional[int],
+        title: str,
+    ) -> bool:
+        """Runs tax enrichment for an already KI-tagged document.
+
+        Returns True if a tax analysis was performed, False if the feature is not
+        active. This path intentionally skips the normal classification update.
+        """
+
+        nonlocal updated, failed, tax_enrichment_errors
+
+        if tax_service is None or tax_export_collector is None:
+            return False
+
+        try:
+            enrichment = tax_service.enrich(
+                document=document,
+                classification_prediction=_build_existing_prediction(document),
+            )
+            tax_export_collector.add(enrichment)
+            _apply_tax_tags(document=document, enrichment=enrichment)
+            LOGGER.info(
+                "Tax Enrichment fuer bereits KI-getaggtes Dokument %s (%s) abgeschlossen",
+                doc_id,
+                title,
+            )
+            updated += 1
+            return True
+        except TaxEnrichmentError as tax_exc:
+            tax_enrichment_errors += 1
+            failed += 1
+            LOGGER.warning(
+                "Tax Enrichment fehlgeschlagen fuer KI-getaggtes Dokument %s (%s): %s",
+                doc_id,
+                title,
+                tax_exc,
+            )
+            return True
 
     def _classify_pending_documents(
         items: List[PendingAiDocument],
@@ -1764,6 +1966,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         nonlocal run_prompt_tokens, run_completion_tokens, run_total_tokens, run_cost_eur
         nonlocal perf_apply_seconds
         nonlocal skipped_with_neu_still_set
+        nonlocal tax_enrichment_errors
 
         document = pending.document
         doc_id = pending.doc_id
@@ -1787,6 +1990,22 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                 (prompt_tokens / 1000.0) * config.input_cost_per_1k_tokens_eur
                 + (completion_tokens / 1000.0) * config.output_cost_per_1k_tokens_eur
             )
+            if tax_service is not None and tax_export_collector is not None:
+                try:
+                    enrichment = tax_service.enrich(
+                        document=document,
+                        classification_prediction=prediction,
+                    )
+                    tax_export_collector.add(enrichment)
+                    _apply_tax_tags(document=document, enrichment=enrichment)
+                except TaxEnrichmentError as tax_exc:
+                    tax_enrichment_errors += 1
+                    LOGGER.warning(
+                        "Tax Enrichment fehlgeschlagen fuer Dokument %s (%s): %s",
+                        doc_id,
+                        title,
+                        tax_exc,
+                    )
             confidence = float(prediction["confidence"])
             if confidence < config.confidence_threshold:
                 if not config.dry_run and doc_id is not None:
@@ -2068,7 +2287,11 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
 
         # Harte Vorfilter-Regel: Dokumente mit KI-Tag werden gar nicht angefasst,
         # außer Reprocessing wurde explizit aktiviert.
-        if has_ki_tag and not config.reprocess_ki_tagged_documents:
+        if (
+            has_ki_tag
+            and not config.reprocess_ki_tagged_documents
+            and not (config.enable_tax_enrichment and config.tax_process_ki_tagged_documents)
+        ):
             prefilt_ki_tagged += 1
             continue
 
@@ -2552,6 +2775,18 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             # Eintrag bei Fehlerbehandlung wieder gesetzt.
             failed_docs_until.pop(doc_key, None)
 
+        if (
+            has_ki_tag
+            and not config.reprocess_ki_tagged_documents
+            and config.enable_tax_enrichment
+            and config.tax_process_ki_tagged_documents
+        ):
+            if budget_used >= target_documents:
+                break
+            budget_used += 1
+            _run_tax_only_for_document(document=document, doc_id=doc_id, title=title)
+            continue
+
         # Budget zählt nur für Dokumente, die die Skip-Gates passiert haben.
         if budget_used >= target_documents:
             break
@@ -2600,6 +2835,23 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         save_failed_patch_cache(failed_patch_cache_path, failed_patch_cache)
     if config.enable_tag_bypass_on_tags_500:
         save_tag_bypass_documents(tag_bypass_path, tag_bypass_docs)
+    if tax_export_collector is not None:
+        exported_paths = tax_export_collector.write_exports(Path(config.tax_export_dir))
+        if exported_paths:
+            LOGGER.info(
+                "Tax Exporte geschrieben: %s",
+                ", ".join(str(path) for path in exported_paths),
+            )
+        else:
+            LOGGER.info(
+                "Tax Enrichment aktiv, aber keine Exportdateien geschrieben "
+                "(keine Dokumente fuer die konfigurierten Steuerjahre gefunden)."
+            )
+        if tax_enrichment_errors > 0:
+            LOGGER.warning(
+                "Tax Enrichment: %s Dokument(e) konnten nicht angereichert werden.",
+                tax_enrichment_errors,
+            )
 
     log_run_details(created_entities=created_entities, error_details=error_details)
     metrics_path = Path(config.metrics_file)
