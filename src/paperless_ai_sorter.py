@@ -2080,6 +2080,55 @@ def build_secondbrain_sync_report() -> Dict[str, Any]:
     }
 
 
+def collect_populated_secondbrain_fields(
+    document: Dict[str, Any],
+    custom_fields_map: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> List[str]:
+    """Sammelt bereits befüllte `sb_`-Felder eines Dokuments.
+
+    Warum diese Prüfung wichtig ist:
+    - Backfill-Läufe sollen keine neuen KI-Tokens verbrauchen, wenn das
+      Dokument für SecondBrain bereits vorbereitet ist.
+    - Gleichzeitig wollen wir tolerant gegenüber unterschiedlichen
+      Paperless-Payload-Formaten bleiben.
+
+    Beispiel:
+    - Input: Dokument mit `sb_document_category=Rechnung`
+    - Output: `["sb_document_category"]`
+    """
+
+    populated: List[str] = []
+    existing_values = extract_document_custom_field_values(document)
+
+    if custom_fields_map:
+        for definition in SECOND_BRAIN_CUSTOM_FIELD_DEFINITIONS.values():
+            field = custom_fields_map.get(definition.paperless_name.lower())
+            if field is None:
+                continue
+            current_value = get_existing_custom_field_value(document, field, definition)
+            if has_meaningful_custom_field_value(current_value):
+                populated.append(definition.key)
+
+    if populated:
+        return sorted(set(populated))
+
+    for raw_key, raw_value in existing_values.items():
+        normalized_key = str(raw_key).strip().lower()
+        if not normalized_key.startswith("sb_"):
+            continue
+        if has_meaningful_custom_field_value(raw_value):
+            populated.append(normalized_key)
+    return sorted(set(populated))
+
+
+def should_mark_secondbrain_ready(sync_report: Optional[Dict[str, Any]]) -> bool:
+    """Entscheidet, ob ein Dokument als SecondBrain-vorbereitet markiert werden soll."""
+
+    if not isinstance(sync_report, dict):
+        return False
+    return bool((sync_report.get("written") or {}) or (sync_report.get("preserved_existing") or {}))
+
+
 def set_secondbrain_suggestion_if_missing(
     suggestions: Dict[str, SecondBrainFieldSuggestion],
     *,
@@ -3220,6 +3269,7 @@ def build_patch_payload(
     created_entities: Optional[Dict[str, List[str]]] = None,
     custom_field_id_to_definition: Optional[Dict[int, CustomFieldDefinition]] = None,
     secondbrain_sync_report: Optional[Dict[str, Any]] = None,
+    secondbrain_ready_tag_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Konvertiert KI-Output in ein valides PATCH-Payload für Paperless."""
 
@@ -3321,6 +3371,13 @@ def build_patch_payload(
             custom_fields_payload[int(custom_field_id)] = field_value
         if custom_fields_payload:
             payload.setdefault("custom_fields", {}).update(custom_fields_payload)
+
+    if secondbrain_ready_tag_id is not None and should_mark_secondbrain_ready(secondbrain_sync_report):
+        current_tag_ids = {int(tag_id) for tag_id in document.get("tags", [])}
+        next_tag_ids = set(current_tag_ids)
+        next_tag_ids.add(int(secondbrain_ready_tag_id))
+        if next_tag_ids != current_tag_ids:
+            payload["tags"] = sorted(next_tag_ids)
 
     return payload
 
@@ -4036,6 +4093,7 @@ def process_documents(
     perf_ai_batches = 0
     perf_ai_docs = 0
     prefilt_ki_tagged = 0
+    prefilt_secondbrain_ready = 0
     completed_document_ids: set[int] = set()
     restored_pending_documents: List[PendingAiDocument] = []
     progress_total_documents = 0
@@ -4074,11 +4132,21 @@ def process_documents(
         created_entities,
     )
     tax_not_relevant_tag_id: Optional[int] = None
+    secondbrain_ready_tag_id: Optional[int] = None
     if config.enable_tax_enrichment:
         tax_not_relevant_tag_id = ensure_entity_id(
             client,
             tags_map,
             "KI nicht Steuerrelevant",
+            "/api/tags/",
+            can_create_entities,
+            created_entities,
+        )
+    if secondbrain_sync_enabled:
+        secondbrain_ready_tag_id = ensure_entity_id(
+            client,
+            tags_map,
+            "SB",
             "/api/tags/",
             can_create_entities,
             created_entities,
@@ -4243,6 +4311,7 @@ def process_documents(
                 "bypassed": bypassed,
                 "bypass_skipped": bypass_skipped,
                 "prefilt_ki_tagged": prefilt_ki_tagged,
+                "prefilt_secondbrain_ready": prefilt_secondbrain_ready,
                 "skipped_with_neu_still_set": skipped_with_neu_still_set,
                 "budget_used": budget_used,
                 "run_prompt_tokens": run_prompt_tokens,
@@ -4769,6 +4838,7 @@ def process_documents(
                 created_entities=created_entities,
                 custom_field_id_to_definition=custom_field_id_to_definition,
                 secondbrain_sync_report=secondbrain_sync_report,
+                secondbrain_ready_tag_id=secondbrain_ready_tag_id,
             )
             patch_payload_for_error = dict(patch_payload)
 
@@ -5038,6 +5108,48 @@ def process_documents(
         )
         if doc_id is not None and int(doc_id) in completed_document_ids:
             continue
+
+        if backfill_existing_documents and secondbrain_sync_enabled:
+            existing_secondbrain_fields = collect_populated_secondbrain_fields(
+                document,
+                custom_fields_map,
+            )
+            if existing_secondbrain_fields:
+                prefilt_secondbrain_ready += 1
+                if not config.dry_run and doc_id is not None and secondbrain_ready_tag_id is not None:
+                    desired_tags = set(doc_tags)
+                    desired_tags.add(int(secondbrain_ready_tag_id))
+                    if desired_tags != doc_tags:
+                        try:
+                            client.update_document(
+                                int(doc_id),
+                                {"tags": sorted(desired_tags)},
+                            )
+                            doc_tags = set(desired_tags)
+                            LOGGER.info(
+                                "Backfill-Dokument %s (%s) als SecondBrain-vorbereitet markiert: SB-Tag gesetzt.",
+                                doc_id,
+                                title,
+                            )
+                        except PaperlessApiError as secondbrain_tag_exc:
+                            LOGGER.warning(
+                                "SB-Tag konnte für bereits vorbereitete Backfill-Datei %s (%s) nicht gesetzt werden: %s",
+                                doc_id,
+                                title,
+                                secondbrain_tag_exc,
+                            )
+                LOGGER.info(
+                    "Skip Dokument %s (%s): Backfill secondbrain_ready_prefilter (%s)",
+                    doc_id,
+                    title,
+                    ", ".join(existing_secondbrain_fields[:6])
+                    + (" ..." if len(existing_secondbrain_fields) > 6 else ""),
+                )
+                _mark_completed(
+                    document_id=int(doc_id) if doc_id is not None else None,
+                    document_title=title,
+                )
+                continue
 
         # Harte Vorfilter-Regel: Dokumente mit KI-Tag werden gar nicht angefasst,
         # außer Reprocessing wurde explizit aktiviert.
@@ -5654,6 +5766,12 @@ def process_documents(
             "Vorfilter aktiv: %s Dokument(e) mit KI-Tag wurden vollständig ausgeschlossen "
             "(reprocess_ki_tagged_documents=false).",
             prefilt_ki_tagged,
+        )
+    if prefilt_secondbrain_ready > 0:
+        LOGGER.info(
+            "Backfill-Vorfilter aktiv: %s Dokument(e) mit bereits befüllten "
+            "SecondBrain-Feldern wurden ohne neuen KI-Aufruf ausgeschlossen.",
+            prefilt_secondbrain_ready,
         )
     if perf_ai_batches > 0:
         LOGGER.info(

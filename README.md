@@ -245,6 +245,7 @@ Paperless-Custom-Fields befüllen. Es gibt dafür jetzt zwei getrennte Wege:
   (Vertrag / Lohnabrechnung)
 - `enable_secondbrain_custom_fields` für bereits in Paperless angelegte
   `sb_`-Felder, die von `SecondBrain` später strukturiert ausgelesen werden
+- automatischer Tag `SB`, sobald ein Dokument als SecondBrain-vorbereitet gilt
 
 ### SecondBrain `sb_`-Felder
 
@@ -288,6 +289,8 @@ Wichtig:
   Paperless hinterlegten Select-Optionen aufgelöst.
 - Bestehende Werte werden standardmäßig nicht überschrieben.
 - Im Dry-Run wird nur angezeigt, was geschrieben würde.
+- Dokumente mit sinnvoll befüllten `sb_`-Feldern gelten als vorbereitet und
+  bekommen zusätzlich den Tag `SB`.
 
 #### Unterstützte `sb_`-Felder
 
@@ -422,6 +425,14 @@ service: paperless_kiplus.run
 data:
   backfill_existing_documents: true
 ```
+
+Im Backfill gilt zusätzlich:
+
+- Bereits befüllte SecondBrain-Dokumente werden vor dem KI-Aufruf erkannt.
+- Wenn schon sinnvolle `sb_`-Felder vorhanden sind, wird das Dokument ohne neue
+  KI-Tokens übersprungen.
+- Solche Dokumente bekommen, falls noch nicht vorhanden, automatisch den Tag
+  `SB`.
 
 #### Live-Fortschritt, Pause und Resume
 
@@ -769,6 +780,11 @@ Anforderungen:
 ```
 
 ## Versionsverlauf (antichronologisch)
+
+- `v1.3.2` (2026-04-26)
+  - Backfill prüft jetzt vor dem KI-Aufruf, ob ein Dokument bereits sinnvolle `sb_`-Felder besitzt.
+  - Bereits vorbereitete SecondBrain-Dokumente werden im Backfill ohne neue KI-Tokens übersprungen.
+  - Dokumente mit vorhandenen oder frisch gesetzten SecondBrain-Feldern bekommen automatisch den Tag `SB`.
 
 - `v1.3.1` (2026-04-26)
   - Echten Sofort-Stopp per Home-Assistant-Service `paperless_kiplus.stop_now` ergänzt.

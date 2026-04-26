@@ -34,6 +34,7 @@ from paperless_ai_sorter import (
     CustomFieldDefinition,
     build_ai_note_entry,
     build_patch_payload,
+    collect_populated_secondbrain_fields,
     build_secondbrain_custom_fields_payload,
     build_secondbrain_suggestions,
     build_select_option_lookup,
@@ -462,6 +463,36 @@ class CustomFieldTests(unittest.TestCase):
         self.assertEqual(values[201], 11)
         self.assertIn("sb_document_category", report["written"])
 
+    def test_collect_populated_secondbrain_fields_detects_existing_values(self) -> None:
+        populated = collect_populated_secondbrain_fields(
+            {
+                "title": "Rechnung",
+                "custom_fields": {
+                    "sb_document_category": {"value": 11},
+                    "sb_amount_total": {"value": "EUR49.90"},
+                    "other_field": {"value": "ignore"},
+                },
+            },
+            self._secondbrain_field_map(),
+        )
+
+        self.assertIn("sb_document_category", populated)
+        self.assertIn("sb_amount_total", populated)
+
+    def test_collect_populated_secondbrain_fields_falls_back_to_raw_sb_keys(self) -> None:
+        populated = collect_populated_secondbrain_fields(
+            {
+                "title": "Rechnung",
+                "custom_fields": {
+                    "sb_due_date": {"value": "2026-05-15"},
+                    "foo": {"value": "bar"},
+                },
+            },
+            {},
+        )
+
+        self.assertEqual(populated, ["sb_due_date"])
+
     def test_tax_enrichment_backfills_secondbrain_fields(self) -> None:
         suggestions = build_secondbrain_suggestions(
             document={
@@ -626,6 +657,65 @@ class CustomFieldTests(unittest.TestCase):
         self.assertNotIn("tags", payload)
         self.assertEqual(payload["custom_fields"][201], 11)
         self.assertEqual(payload["custom_fields"][204], "EUR49.90")
+
+    def test_build_patch_payload_adds_sb_tag_when_secondbrain_ready(self) -> None:
+        client = _FakeClient()
+        payload = build_patch_payload(
+            client=client,
+            document={
+                "title": "Bestehende Rechnung",
+                "tags": [7],
+                "custom_fields": {"sb_document_category": {"value": 11}},
+            },
+            prediction={
+                "document_type": "Rechnung",
+                "correspondent": "Stromversorger",
+                "storage_path": "Privat",
+                "tags": [],
+                "document_date": "2026-04-03",
+                "summary": "Rechnung erkannt.",
+                "confidence": 0.91,
+                "rationale": "Rechnungsdaten klar erkennbar.",
+                "secondbrain_custom_fields": {
+                    "sb_document_category": {
+                        "value": "Rechnung",
+                        "confidence": 0.95,
+                        "reason": "Rechnung erkannt.",
+                    }
+                },
+            },
+            tags_map={"sb": 999},
+            doc_types_map={},
+            correspondents_map={},
+            storage_paths_map={},
+            custom_fields_map=self._secondbrain_field_map(),
+            custom_field_definitions=None,
+            create_missing_entities=False,
+            create_missing_custom_fields=False,
+            include_standard_metadata=False,
+            enable_secondbrain_custom_fields=True,
+            secondbrain_overwrite_existing=False,
+            secondbrain_attach_empty_when_unknown=False,
+            secondbrain_confidence_threshold=0.70,
+            secondbrain_log_missing_fields=True,
+            created_entities={},
+            custom_field_id_to_definition={},
+            secondbrain_sync_report={
+                "enabled": True,
+                "prepared": {},
+                "written": {},
+                "cleared": [],
+                "below_threshold": {},
+                "preserved_existing": {"sb_document_category": 11},
+                "missing_fields": [],
+                "unresolved_selects": {},
+                "invalid_values": {},
+                "api_errors": [],
+            },
+            secondbrain_ready_tag_id=999,
+        )
+
+        self.assertEqual(payload["tags"], [7, 999])
 
     def test_filter_unchanged_patch_fields_removes_equal_custom_fields(self) -> None:
         custom_field_id_to_definition = {
