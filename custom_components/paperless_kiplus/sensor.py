@@ -15,6 +15,12 @@ from .const import DOMAIN, SIGNAL_STATUS_UPDATED
 from .runner import PaperlessRunner
 
 
+def _iso(ts: datetime | None) -> str | None:
+    """Formats timestamps consistently for HA state attributes."""
+
+    return ts.isoformat() if ts else None
+
+
 def _device_info(entry_id: str) -> DeviceInfo:
     """Gemeinsame Gerätezuordnung für alle Entitäten dieser Integration.
 
@@ -42,6 +48,8 @@ async def async_setup_entry(
         [
             PaperlessRunnerStatusSensor(entry.entry_id, runner),
             PaperlessRunnerProgressSensor(entry.entry_id, runner),
+            PaperlessRunnerCurrentDocumentSensor(entry.entry_id, runner),
+            PaperlessRunnerLastCompletedDocumentSensor(entry.entry_id, runner),
             PaperlessRunnerRunLogSensor(entry.entry_id, runner),
             PaperlessRunnerSummarySensor(entry.entry_id, runner),
             PaperlessRunnerErrorsSensor(entry.entry_id, runner),
@@ -99,9 +107,6 @@ class PaperlessRunnerStatusSensor(SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, str | int | float | None]:
         """Return useful status details for troubleshooting."""
-
-        def _iso(ts: datetime | None) -> str | None:
-            return ts.isoformat() if ts else None
 
         return {
             "message": self._runner.last_message,
@@ -161,6 +166,11 @@ class PaperlessRunnerStatusSensor(SensorEntity):
             "progress_pending_documents": self._runner.progress_pending_documents,
             "progress_current_document_id": self._runner.progress_current_document_id,
             "progress_current_document_title": self._runner.progress_current_document_title or None,
+            "progress_current_document_url": self._runner.progress_current_document_url or None,
+            "last_completed_document_id": self._runner.last_completed_document_id,
+            "last_completed_document_title": self._runner.last_completed_document_title or None,
+            "last_completed_document_url": self._runner.last_completed_document_url or None,
+            "last_completed_document_at": _iso(self._runner.last_completed_document_at),
             "progress_last_event_at": _iso(self._runner.progress_last_event_at),
         }
 
@@ -272,9 +282,67 @@ class PaperlessRunnerProgressSensor(_BaseMetricSensor):
             "pending_documents": self._runner.progress_pending_documents,
             "current_document_id": self._runner.progress_current_document_id,
             "current_document_title": self._runner.progress_current_document_title or None,
+            "current_document_url": self._runner.progress_current_document_url or None,
+            "last_completed_document_id": self._runner.last_completed_document_id,
+            "last_completed_document_title": self._runner.last_completed_document_title or None,
+            "last_completed_document_url": self._runner.last_completed_document_url or None,
             "last_event_at": _iso(self._runner.progress_last_event_at),
             "resume_available": self._runner.resume_available,
             "pause_reason": self._runner.pause_reason or None,
+        }
+
+
+class PaperlessRunnerCurrentDocumentSensor(_BaseMetricSensor):
+    """Shows the document currently being processed as readable sensor state."""
+
+    _attr_icon = "mdi:file-clock-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        super().__init__(
+            entry_id,
+            runner,
+            suffix="current_document",
+            name="Paperless KIplus Aktuelles Dokument",
+        )
+
+    @property
+    def native_value(self) -> str:
+        return self._runner.progress_current_document_title or "kein aktuelles Dokument"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | int | None]:
+        return {
+            "document_id": self._runner.progress_current_document_id,
+            "document_title": self._runner.progress_current_document_title or None,
+            "document_url": self._runner.progress_current_document_url or None,
+            "last_event_at": _iso(self._runner.progress_last_event_at),
+        }
+
+
+class PaperlessRunnerLastCompletedDocumentSensor(_BaseMetricSensor):
+    """Shows the last completed document as readable sensor state."""
+
+    _attr_icon = "mdi:file-check-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        super().__init__(
+            entry_id,
+            runner,
+            suffix="last_completed_document",
+            name="Paperless KIplus Letztes fertiges Dokument",
+        )
+
+    @property
+    def native_value(self) -> str:
+        return self._runner.last_completed_document_title or "noch kein fertiges Dokument"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | int | None]:
+        return {
+            "document_id": self._runner.last_completed_document_id,
+            "document_title": self._runner.last_completed_document_title or None,
+            "document_url": self._runner.last_completed_document_url or None,
+            "completed_at": _iso(self._runner.last_completed_document_at),
         }
 
 

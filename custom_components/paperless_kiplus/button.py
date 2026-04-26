@@ -37,6 +37,8 @@ async def async_setup_entry(
             PaperlessRunnerStopButton(entry.entry_id, runner),
             PaperlessRunnerHardStopButton(entry.entry_id, runner),
             PaperlessRunnerResumeButton(entry.entry_id, runner),
+            PaperlessRunnerOpenCurrentDocumentButton(entry.entry_id, runner),
+            PaperlessRunnerOpenLastCompletedDocumentButton(entry.entry_id, runner),
             PaperlessRunnerResetMetricsButton(entry.entry_id, runner),
             PaperlessRunnerResetFailedDocumentsButton(entry.entry_id, runner),
             PaperlessRunnerShowLogButton(entry.entry_id, runner),
@@ -162,6 +164,50 @@ class PaperlessRunnerResumeButton(ButtonEntity):
         self.hass.async_create_task(self._runner.async_resume())
 
 
+class PaperlessRunnerOpenCurrentDocumentButton(ButtonEntity):
+    """Button to show a clickable link for the document currently in progress."""
+
+    _attr_icon = "mdi:file-eye-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        self._entry_id = entry_id
+        self._runner = runner
+        self._attr_unique_id = f"{entry_id}_open_current_document"
+        self._attr_name = "Paperless KIplus Aktuelles Dokument öffnen"
+        self._attr_has_entity_name = True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry_id)
+
+    async def async_press(self) -> None:
+        """Show a clickable Paperless link for the current document."""
+
+        await self._runner.async_open_current_document()
+
+
+class PaperlessRunnerOpenLastCompletedDocumentButton(ButtonEntity):
+    """Button to show a clickable link for the last completed document."""
+
+    _attr_icon = "mdi:file-check-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        self._entry_id = entry_id
+        self._runner = runner
+        self._attr_unique_id = f"{entry_id}_open_last_completed_document"
+        self._attr_name = "Paperless KIplus Letztes fertiges Dokument öffnen"
+        self._attr_has_entity_name = True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry_id)
+
+    async def async_press(self) -> None:
+        """Show a clickable Paperless link for the last completed document."""
+
+        await self._runner.async_open_last_completed_document()
+
+
 class PaperlessRunnerExportLogButton(ButtonEntity):
     """Button to export last log for easy support sharing."""
 
@@ -171,7 +217,7 @@ class PaperlessRunnerExportLogButton(ButtonEntity):
         self._entry_id = entry_id
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_export_log"
-        self._attr_name = "Paperless KIplus Letztes Protokoll exportieren"
+        self._attr_name = "Paperless KIplus Letztes Protokoll herunterladen"
         self._attr_has_entity_name = True
 
     @property

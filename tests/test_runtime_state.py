@@ -207,6 +207,7 @@ class HomeAssistantRunnerHelperTests(unittest.TestCase):
         spec.loader.exec_module(module)
 
         cls.build_force_stop_resume_payload = staticmethod(module.build_force_stop_resume_payload)
+        cls.build_paperless_document_url = staticmethod(module.build_paperless_document_url)
 
     def test_force_stop_payload_marks_resume_state_cleanly(self) -> None:
         payload = self.build_force_stop_resume_payload(
@@ -236,6 +237,19 @@ class HomeAssistantRunnerHelperTests(unittest.TestCase):
 
     def test_force_stop_payload_returns_empty_for_missing_progress(self) -> None:
         self.assertEqual(self.build_force_stop_resume_payload({}), {})
+
+    def test_build_paperless_document_url_returns_detail_link(self) -> None:
+        self.assertEqual(
+            self.build_paperless_document_url("https://paperless.example", 123),
+            "https://paperless.example/documents/123/details",
+        )
+
+    def test_build_paperless_document_url_returns_empty_without_base_or_id(self) -> None:
+        self.assertEqual(self.build_paperless_document_url("", 123), "")
+        self.assertEqual(
+            self.build_paperless_document_url("https://paperless.example", None),
+            "",
+        )
 
 
 if __name__ == "__main__":

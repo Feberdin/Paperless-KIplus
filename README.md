@@ -445,8 +445,21 @@ Sichtbar sind unter anderem:
 - `Paperless KIplus Fortschritt` als Prozent-Sensor
 - `progress_current_document_title` im Statussensor
 - `progress_last_event_at`, damit man sofort sieht, wann der letzte echte Fortschritt ankam
+- eigener Sensor `Paperless KIplus Aktuelles Dokument`
+- eigener Sensor `Paperless KIplus Letztes fertiges Dokument`
 - `progress_scanned`, `progress_updated`, `progress_skipped`, `progress_failed`
 - `resume_available`, `pause_reason` und `auto_resume_at`
+
+Zusätzlich gibt es jetzt klickbare Hilfs-Buttons:
+
+- `Paperless KIplus Aktuelles Dokument öffnen`
+- `Paperless KIplus Letztes fertiges Dokument öffnen`
+- `Paperless KIplus Letztes Protokoll herunterladen`
+
+Die Dokument-Buttons erzeugen in Home Assistant eine anklickbare
+Benachrichtigung mit direktem Paperless-Link zum jeweiligen Dokument. Der
+Log-Download-Button exportiert das letzte Protokoll nach `/config/www` und
+zeigt direkt einen anklickbaren Download-Link an.
 
 Neuer Service zum sicheren Pausieren:
 
@@ -781,6 +794,12 @@ Anforderungen:
 ```
 
 ## Versionsverlauf (antichronologisch)
+
+- `v1.3.4` (2026-04-26)
+  - Neue Sensoren für `Aktuelles Dokument` und `Letztes fertiges Dokument` ergänzt.
+  - Neue Buttons ergänzt, die anklickbare Paperless-Links für aktuelles und zuletzt abgeschlossenes Dokument bereitstellen.
+  - Log-Download-Button verbessert: Export erzeugt jetzt direkt eine anklickbare Home-Assistant-Benachrichtigung mit Download-Link.
+  - Statussensor enthält jetzt zusätzlich URLs für aktuelles und letztes fertiges Dokument.
 
 - `v1.3.3` (2026-04-26)
   - Live-Fortschritts-Events deutlich verschlankt, damit Home Assistant nicht mehr komplette OCR-Inhalte als Fortschritt mitschleppen muss.

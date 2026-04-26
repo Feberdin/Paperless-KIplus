@@ -57,6 +57,22 @@ TAIL_LIMIT_CHARS = 20000
 FORCE_STOP_GRACE_SECONDS = 5.0
 
 
+def build_paperless_document_url(base_url: str, document_id: int | None) -> str:
+    """Builds a Paperless document detail URL from base URL and document id.
+
+    Why this exists:
+    - The Home Assistant UI should offer stable, shareable links to the current
+      and last completed document.
+    - The Paperless detail route is centralized here so we can adapt it in one
+      place if upstream frontend routing changes in the future.
+    """
+
+    normalized_base = str(base_url or "").strip().rstrip("/")
+    if not normalized_base or document_id is None:
+        return ""
+    return f"{normalized_base}/documents/{int(document_id)}/details"
+
+
 @dataclass
 class RunResult:
     """Result metadata for a script run."""
@@ -218,6 +234,14 @@ class PaperlessRunner:
         self.progress_budget_used: int = 0
         self.progress_pending_documents: int = 0
         self.progress_last_event_at: datetime | None = None
+        self.paperless_base_url: str = ""
+        self.progress_current_document_url: str = ""
+        self.last_completed_document_id: int | None = None
+        self.last_completed_document_title: str = ""
+        self.last_completed_document_url: str = ""
+        self.last_completed_document_at: datetime | None = None
+
+        self._refresh_paperless_base_url()
 
     @property
     def cooldown_until(self) -> datetime | None:
@@ -302,6 +326,12 @@ class PaperlessRunner:
             self.last_summary_line = ""
             self.last_cost_line = ""
             self.last_log_combined = ""
+            self.progress_current_document_url = ""
+            if not resume_run:
+                self.last_completed_document_id = None
+                self.last_completed_document_title = ""
+                self.last_completed_document_url = ""
+                self.last_completed_document_at = None
             self._notify()
 
             try:
@@ -316,6 +346,7 @@ class PaperlessRunner:
 
                 if self.managed_config_enabled:
                     await self._write_managed_config(effective_config_file)
+                self._refresh_paperless_base_url(effective_config_file)
 
                 await self.hass.async_add_executor_job(
                     lambda: self._delete_file(self._stop_request_path())
@@ -358,6 +389,7 @@ class PaperlessRunner:
                     self.auto_resume_at = None
                     self.progress_current_document_title = ""
                     self.progress_current_document_id = None
+                    self.progress_current_document_url = ""
                 elif self.last_exit_code == RUN_PAUSE_EXIT_CODE:
                     await self._refresh_resume_state()
                     if self.pause_reason == "manual_stop":
@@ -547,6 +579,63 @@ class PaperlessRunner:
 
         self._rebuild_combined_log()
 
+    def _load_yaml_mapping(self, yaml_text: str, *, source_name: str) -> dict[str, Any]:
+        """Parses a YAML config defensively and returns a mapping.
+
+        Why this exists:
+        - Document links should reuse the same `paperless_url` as the actual run.
+        - Broken YAML should not break the HA integration; it should only
+          disable the convenience links and log a clear hint.
+        """
+
+        try:
+            payload = yaml.safe_load(yaml_text) or {}
+        except yaml.YAMLError as exc:
+            _LOGGER.warning("Could not parse %s for Paperless links: %s", source_name, exc)
+            return {}
+        return payload if isinstance(payload, dict) else {}
+
+    def _load_config_mapping(self, config_file: str | None = None) -> dict[str, Any]:
+        """Loads the effective YAML config to resolve the Paperless base URL."""
+
+        if self.managed_config_enabled and str(self.managed_config_yaml or "").strip():
+            payload = self._load_yaml_mapping(
+                self.managed_config_yaml,
+                source_name="managed YAML config",
+            )
+            if payload:
+                return payload
+
+        config_path = Path(config_file or self.config_file or "")
+        if not str(config_path).strip():
+            return {}
+        if not config_path.is_absolute():
+            config_path = Path(self.workdir) / config_path
+        try:
+            if not config_path.exists():
+                return {}
+            return self._load_yaml_mapping(
+                config_path.read_text(encoding="utf-8"),
+                source_name=f"config file {config_path}",
+            )
+        except OSError as exc:
+            _LOGGER.warning("Could not read config file %s for Paperless links: %s", config_path, exc)
+            return {}
+
+    def _refresh_paperless_base_url(self, config_file: str | None = None) -> None:
+        """Refreshes cached Paperless base URL from the effective config."""
+
+        payload = self._load_config_mapping(config_file)
+        self.paperless_base_url = str(payload.get("paperless_url") or "").strip().rstrip("/")
+        self.progress_current_document_url = build_paperless_document_url(
+            self.paperless_base_url,
+            self.progress_current_document_id,
+        )
+        self.last_completed_document_url = build_paperless_document_url(
+            self.paperless_base_url,
+            self.last_completed_document_id,
+        )
+
     def _extract_runtime_event(self, line: str) -> dict[str, Any] | None:
         """Parses machine-readable progress events emitted by the CLI script."""
 
@@ -592,10 +681,30 @@ class PaperlessRunner:
                 self.progress_last_event_at = datetime.fromisoformat(updated_at_raw)
         if self.progress_last_event_at is None:
             self.progress_last_event_at = datetime.now(UTC)
+        self.progress_current_document_url = build_paperless_document_url(
+            self.paperless_base_url,
+            self.progress_current_document_id,
+        )
         self.last_scanned = self.progress_scanned
         self.last_updated = self.progress_updated
         self.last_skipped = self.progress_skipped
         self.last_failed = self.progress_failed
+
+        completed_ids = {
+            self._safe_int(doc_id)
+            for doc_id in (payload.get("completed_document_ids") or [])
+        }
+        if (
+            self.progress_current_document_id is not None
+            and self.progress_current_document_id in completed_ids
+        ):
+            self.last_completed_document_id = self.progress_current_document_id
+            self.last_completed_document_title = self.progress_current_document_title
+            self.last_completed_document_url = build_paperless_document_url(
+                self.paperless_base_url,
+                self.last_completed_document_id,
+            )
+            self.last_completed_document_at = self.progress_last_event_at
 
         kind = str(payload.get("kind") or "")
         status = str(payload.get("status") or "")
@@ -805,11 +914,81 @@ class PaperlessRunner:
         )
 
         self.last_log_export_path = str(export_path)
-        self.last_log_export_url = "/local/paperless_kiplus_last_log.txt"
+        self.last_log_export_url = f"/local/paperless_kiplus_last_log.txt?v={int(datetime.now(UTC).timestamp())}"
         self.last_status = "log_exported"
         self.last_message = f"log exported to {self.last_log_export_url}"
+        await self.hass.services.async_call(
+            "persistent_notification",
+            "create",
+            {
+                "title": "Paperless KIplus Log-Export",
+                "message": (
+                    "Der Log wurde exportiert.\n\n"
+                    f"[Log herunterladen]({self.last_log_export_url})\n\n"
+                    f"Pfad: `{self.last_log_export_path}`"
+                ),
+                "notification_id": "paperless_kiplus_log_export",
+            },
+            blocking=True,
+        )
         self._notify()
         return self.last_log_export_url
+
+    async def _async_show_document_link(
+        self,
+        *,
+        title: str,
+        document_id: int | None,
+        document_url: str,
+        notification_id: str,
+    ) -> str:
+        """Shows a clickable Paperless document link in a HA notification."""
+
+        if not document_url:
+            self.last_status = "document_link_unavailable"
+            self.last_message = "no Paperless document link is available yet"
+            self._notify()
+            return ""
+
+        display_title = title or f"Dokument {document_id}"
+        await self.hass.services.async_call(
+            "persistent_notification",
+            "create",
+            {
+                "title": display_title,
+                "message": (
+                    f"[Dokument in Paperless öffnen]({document_url})\n\n"
+                    f"Dokument-ID: `{document_id}`\n\n"
+                    f"URL: `{document_url}`"
+                ),
+                "notification_id": notification_id,
+            },
+            blocking=True,
+        )
+        self.last_status = "document_link_ready"
+        self.last_message = f"document link ready for {display_title}"
+        self._notify()
+        return document_url
+
+    async def async_open_current_document(self) -> str:
+        """Shows a clickable link for the document currently being processed."""
+
+        return await self._async_show_document_link(
+            title=self.progress_current_document_title,
+            document_id=self.progress_current_document_id,
+            document_url=self.progress_current_document_url,
+            notification_id="paperless_kiplus_current_document_link",
+        )
+
+    async def async_open_last_completed_document(self) -> str:
+        """Shows a clickable link for the last completed document."""
+
+        return await self._async_show_document_link(
+            title=self.last_completed_document_title,
+            document_id=self.last_completed_document_id,
+            document_url=self.last_completed_document_url,
+            notification_id="paperless_kiplus_last_completed_document_link",
+        )
 
     async def async_show_last_log(self) -> None:
         """Zeigt den Inhalt des letzten Protokolls direkt als HA-Benachrichtigung an."""
