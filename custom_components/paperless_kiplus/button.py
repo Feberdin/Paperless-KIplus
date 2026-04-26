@@ -35,6 +35,7 @@ async def async_setup_entry(
         [
             PaperlessRunnerBackfillButton(entry.entry_id, runner),
             PaperlessRunnerStopButton(entry.entry_id, runner),
+            PaperlessRunnerHardStopButton(entry.entry_id, runner),
             PaperlessRunnerResumeButton(entry.entry_id, runner),
             PaperlessRunnerResetMetricsButton(entry.entry_id, runner),
             PaperlessRunnerResetFailedDocumentsButton(entry.entry_id, runner),
@@ -115,6 +116,28 @@ class PaperlessRunnerStopButton(ButtonEntity):
         """Request a safe pause after the current document/batch."""
 
         await self._runner.async_request_stop()
+
+
+class PaperlessRunnerHardStopButton(ButtonEntity):
+    """Button to stop the current process immediately."""
+
+    _attr_icon = "mdi:stop-circle-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        self._entry_id = entry_id
+        self._runner = runner
+        self._attr_unique_id = f"{entry_id}_force_stop"
+        self._attr_name = "Paperless KIplus Lauf sofort stoppen"
+        self._attr_has_entity_name = True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry_id)
+
+    async def async_press(self) -> None:
+        """Terminate the active process immediately."""
+
+        await self._runner.async_force_stop()
 
 
 class PaperlessRunnerResumeButton(ButtonEntity):

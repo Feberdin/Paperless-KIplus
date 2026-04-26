@@ -62,6 +62,7 @@ DEFAULT_TAX_PERSONAL_CONTEXT = ""
 
 SERVICE_RUN = "run"
 SERVICE_STOP = "stop"
+SERVICE_STOP_NOW = "stop_now"
 SERVICE_RESUME = "resume"
 
 ATTR_FORCE = "force"

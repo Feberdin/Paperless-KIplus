@@ -205,10 +205,12 @@ Erzeuge jetzt die vollständige YAML.
 - Services:
   - `paperless_kiplus.run`
   - `paperless_kiplus.stop`
+  - `paperless_kiplus.stop_now`
   - `paperless_kiplus.resume`
 - Geräte-Buttons für:
   - Bestandsdaten neu anreichern
   - Lauf pausieren
+  - Lauf sofort stoppen
   - Pausierten Lauf fortsetzen
   - Letztes Protokoll anzeigen
   - Letztes Protokoll exportieren
@@ -441,6 +443,13 @@ service: paperless_kiplus.stop
 data: {}
 ```
 
+Neuer Service für einen echten Sofort-Stopp:
+
+```yaml
+service: paperless_kiplus.stop_now
+data: {}
+```
+
 Neuer Service zum Fortsetzen eines pausierten Laufs:
 
 ```yaml
@@ -453,6 +462,9 @@ Wichtige Regeln:
 
 - `stop` ist bewusst ein kontrollierter Stop nach aktuellem Dokument oder
   aktuellem KI-Batch. Der Prozess wird nicht blind hart beendet.
+- `stop_now` beendet den laufenden Prozess sofort. Wenn bereits ein
+  Fortschrittszustand geschrieben wurde, kann der Lauf später trotzdem wieder
+  aufgenommen werden.
 - Ein pausierter Lauf speichert seinen Zustand in einer Resume-Datei und setzt
   später genau dort fort.
 - Bei kurzen Rate-Limits mit kleinem `Retry-After` wartet der Lauf direkt im
@@ -757,6 +769,12 @@ Anforderungen:
 ```
 
 ## Versionsverlauf (antichronologisch)
+
+- `v1.3.1` (2026-04-26)
+  - Echten Sofort-Stopp per Home-Assistant-Service `paperless_kiplus.stop_now` ergänzt.
+  - Neuen Geräte-Button `Paperless KIplus Lauf sofort stoppen` ergänzt.
+  - Runner bewahrt beim Sofort-Stopp den letzten bekannten Fortschrittszustand, damit ein späteres Resume möglich bleibt.
+  - Statussensor zeigt jetzt zusätzlich `force_stop_requested`.
 
 - `v1.3.0` (2026-04-26)
   - Echte Live-Fortschrittsanzeige mit Prozent, aktuellem Dokument und laufenden Zählern ergänzt.

@@ -73,6 +73,7 @@ from .const import (
     SERVICE_RESUME,
     SERVICE_RUN,
     SERVICE_STOP,
+    SERVICE_STOP_NOW,
 )
 from .runner import PaperlessRunner
 
@@ -427,6 +428,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             schema=STOP_SERVICE_SCHEMA,
         )
 
+    if not hass.services.has_service(DOMAIN, SERVICE_STOP_NOW):
+
+        async def _handle_stop_now(call: ServiceCall) -> None:
+            target_entry_id = call.data.get(ATTR_ENTRY_ID)
+            if target_entry_id:
+                target_runners = [
+                    (target_entry_id, hass.data[DOMAIN].get(target_entry_id))
+                ]
+            else:
+                target_runners = list(hass.data[DOMAIN].items())
+
+            for entry_id, target_runner in target_runners:
+                if target_runner is None:
+                    _LOGGER.warning("Paperless KIplus entry '%s' not found", entry_id)
+                    continue
+                await target_runner.async_force_stop()
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_STOP_NOW,
+            _handle_stop_now,
+            schema=STOP_SERVICE_SCHEMA,
+        )
+
     if not hass.services.has_service(DOMAIN, SERVICE_RESUME):
 
         async def _handle_resume(call: ServiceCall) -> None:
@@ -480,7 +505,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN].pop(entry.entry_id, None)
 
     if not hass.data[DOMAIN]:
-        for service_name in (SERVICE_RUN, SERVICE_STOP, SERVICE_RESUME):
+        for service_name in (SERVICE_RUN, SERVICE_STOP, SERVICE_STOP_NOW, SERVICE_RESUME):
             if hass.services.has_service(DOMAIN, service_name):
                 hass.services.async_remove(DOMAIN, service_name)
 

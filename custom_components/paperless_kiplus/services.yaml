@@ -71,6 +71,18 @@ stop:
       selector:
         text:
 
+stop_now:
+  name: Paperless KIplus Lauf sofort stoppen
+  description: Beendet den aktuell laufenden Prozess sofort. Wenn bereits Fortschrittsevents gespeichert wurden, bleibt ein Resume-Zustand für eine spätere Fortsetzung erhalten.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Optional. Stoppt nur diese Integration-Instanz sofort.
+      example: "abcd1234"
+      required: false
+      selector:
+        text:
+
 resume:
   name: Paperless KIplus Lauf fortsetzen
   description: Setzt einen zuvor pausierten Lauf anhand der gespeicherten Resume-Datei fort.

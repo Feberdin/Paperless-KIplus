@@ -15,6 +15,7 @@ import sys
 import tempfile
 import types
 import unittest
+import importlib.util
 from pathlib import Path
 
 import requests
@@ -139,6 +140,85 @@ class RuntimeStateTests(unittest.TestCase):
         self.assertIsNotNone(pause_error)
         self.assertEqual(pause_error.pause_reason, "rate_limit_wait")
         self.assertEqual(pause_error.retry_after_seconds, 12.5)
+
+
+class HomeAssistantRunnerHelperTests(unittest.TestCase):
+    """Prüft kleine, reine Helper-Logik des HA-Runners ohne echte HA-Installation."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        homeassistant_module = types.ModuleType("homeassistant")
+        core_module = types.ModuleType("homeassistant.core")
+        helpers_module = types.ModuleType("homeassistant.helpers")
+        dispatcher_module = types.ModuleType("homeassistant.helpers.dispatcher")
+
+        class _FakeHomeAssistant:  # noqa: D401 - schlanker Stub für den Import
+            """Minimaler Typstub für den Runner-Import."""
+
+        dispatcher_module.async_dispatcher_send = lambda *_args, **_kwargs: None
+        core_module.HomeAssistant = _FakeHomeAssistant
+        homeassistant_module.core = core_module
+        homeassistant_module.helpers = helpers_module
+        helpers_module.dispatcher = dispatcher_module
+
+        sys.modules.setdefault("homeassistant", homeassistant_module)
+        sys.modules.setdefault("homeassistant.core", core_module)
+        sys.modules.setdefault("homeassistant.helpers", helpers_module)
+        sys.modules.setdefault("homeassistant.helpers.dispatcher", dispatcher_module)
+
+        custom_components_module = types.ModuleType("custom_components")
+        package_module = types.ModuleType("custom_components.paperless_kiplus")
+        package_module.__path__ = [
+            str(ROOT / "custom_components" / "paperless_kiplus")
+        ]
+        const_module = types.ModuleType("custom_components.paperless_kiplus.const")
+        const_module.SIGNAL_STATUS_UPDATED = "paperless_kiplus_test_signal"
+
+        sys.modules.setdefault("custom_components", custom_components_module)
+        sys.modules.setdefault("custom_components.paperless_kiplus", package_module)
+        sys.modules.setdefault("custom_components.paperless_kiplus.const", const_module)
+
+        runner_path = ROOT / "custom_components" / "paperless_kiplus" / "runner.py"
+        spec = importlib.util.spec_from_file_location(
+            "custom_components.paperless_kiplus.runner",
+            runner_path,
+        )
+        if spec is None or spec.loader is None:
+            raise RuntimeError(f"Runner-Modul konnte nicht geladen werden: {runner_path}")
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        spec.loader.exec_module(module)
+
+        cls.build_force_stop_resume_payload = staticmethod(module.build_force_stop_resume_payload)
+
+    def test_force_stop_payload_marks_resume_state_cleanly(self) -> None:
+        payload = self.build_force_stop_resume_payload(
+            {
+                "kind": "progress",
+                "version": 1,
+                "status": "running",
+                "pause_reason": None,
+                "retry_after_seconds": 12.5,
+                "mode": {"backfill_existing_documents": True},
+                "progress": {"completed_documents": 42, "total_documents": 100},
+                "completed_document_ids": [1, 2, 3],
+                "pending_documents": [{"doc_id": 9, "title": "Test"}],
+                "current_document": {"id": 11, "title": "Rechnung"},
+            }
+        )
+
+        self.assertNotIn("kind", payload)
+        self.assertEqual(payload["status"], "paused")
+        self.assertEqual(payload["pause_reason"], "force_stop")
+        self.assertIsNone(payload["retry_after_seconds"])
+        self.assertEqual(payload["mode"]["backfill_existing_documents"], True)
+        self.assertEqual(payload["progress"]["completed_documents"], 42)
+        self.assertEqual(payload["pending_documents"][0]["doc_id"], 9)
+        self.assertEqual(payload["current_document"]["id"], 11)
+        self.assertIn("updated_at", payload)
+
+    def test_force_stop_payload_returns_empty_for_missing_progress(self) -> None:
+        self.assertEqual(self.build_force_stop_resume_payload({}), {})
 
 
 if __name__ == "__main__":

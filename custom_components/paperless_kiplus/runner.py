@@ -14,6 +14,8 @@ Input / Output:
 Important invariants:
 - Ein manueller Stop ist ein kontrollierter "Pause nach sicherem Punkt", kein
   harter Kill des Prozesses.
+- Ein Sofort-Stopp beendet den Prozess aktiv. Wenn bereits Fortschrittsevents
+  vorliegen, bleibt daraus ein Resume-Zustand erhalten.
 - Eine Provider-Pause (429 / Quota / Retry-After) bleibt als Resume-State
   erhalten und kann automatisch oder manuell fortgesetzt werden.
 - Dry-Run, Backfill und normale Läufe nutzen denselben Runner-Pfad.
@@ -52,6 +54,7 @@ _LOGGER = logging.getLogger(__name__)
 RUNTIME_EVENT_MARKER = "PAPERLESS_RUNTIME_EVENT "
 RUN_PAUSE_EXIT_CODE = 75
 TAIL_LIMIT_CHARS = 20000
+FORCE_STOP_GRACE_SECONDS = 5.0
 
 
 @dataclass
@@ -61,6 +64,38 @@ class RunResult:
     status: str
     exit_code: int | None
     message: str
+
+
+def build_force_stop_resume_payload(
+    source_payload: dict[str, Any],
+    *,
+    paused_at: datetime | None = None,
+) -> dict[str, Any]:
+    """Leitet aus dem letzten Fortschritt einen Resume-Zustand für Sofort-Stopps ab.
+
+    Warum diese Hilfsfunktion existiert:
+    - Ein harter Stop beendet den CLI-Prozess außerhalb seines normalen
+      Pause-Pfads.
+    - Damit ein späteres Resume trotzdem möglich bleibt, konservieren wir den
+      letzten bekannten Fortschrittszustand und markieren ihn explizit als
+      `force_stop`.
+
+    Beispiel:
+    - Input: `{"kind": "progress", "progress": {"completed_documents": 12}}`
+    - Output: derselbe Stand, aber mit `status="paused"` und
+      `pause_reason="force_stop"`.
+    """
+
+    if not isinstance(source_payload, dict) or not source_payload:
+        return {}
+
+    payload = dict(source_payload)
+    payload.pop("kind", None)
+    payload["status"] = "paused"
+    payload["pause_reason"] = "force_stop"
+    payload["retry_after_seconds"] = None
+    payload["updated_at"] = (paused_at or datetime.now(UTC)).isoformat()
+    return payload
 
 
 class PaperlessRunner:
@@ -132,8 +167,11 @@ class PaperlessRunner:
         self._lock = asyncio.Lock()
         self._process: asyncio.subprocess.Process | None = None
         self._auto_resume_task: asyncio.Task | None = None
+        self._force_stop_task: asyncio.Task | None = None
+        self._latest_runtime_state_payload: dict[str, Any] = {}
         self.running = False
         self.stop_requested = False
+        self.force_stop_requested = False
         self.resume_available = False
         self.pause_reason: str = ""
         self.auto_resume_at: datetime | None = None
@@ -245,13 +283,16 @@ class PaperlessRunner:
             return RunResult(self.last_status, self.last_exit_code, self.last_message)
 
         self._cancel_auto_resume_task()
+        self._cancel_force_stop_task()
 
         async with self._lock:
             self.running = True
             self.stop_requested = False
+            self.force_stop_requested = False
             self.resume_available = False
             self.pause_reason = ""
             self.auto_resume_at = None
+            self._latest_runtime_state_payload = {}
             self.last_started = datetime.now(UTC)
             self.last_status = "running"
             self.last_message = "paused run is resuming" if resume_run else "script is running"
@@ -331,6 +372,19 @@ class PaperlessRunner:
                                 f" until {self.auto_resume_at.isoformat()}"
                             )
                             self._schedule_auto_resume()
+                elif self.force_stop_requested:
+                    await self._refresh_resume_state()
+                    self.last_status = "force_stopped"
+                    self.auto_resume_at = None
+                    self.pause_reason = self.pause_reason or "force_stop"
+                    if self.resume_available:
+                        self.last_message = (
+                            "run stopped immediately; resume available from last saved progress"
+                        )
+                    else:
+                        self.last_message = (
+                            "run stopped immediately; no resume state was available yet"
+                        )
                 else:
                     self.last_status = "error"
                     self.last_message = f"script failed with exit code {self.last_exit_code}"
@@ -359,6 +413,7 @@ class PaperlessRunner:
                     )
                 _LOGGER.exception("Paperless KIplus run crashed: %s", exc)
             finally:
+                self._cancel_force_stop_task()
                 self._process = None
                 await self._refresh_metrics_from_file()
                 await self._refresh_failed_state_counts()
@@ -367,6 +422,7 @@ class PaperlessRunner:
                     self.pause_reason = ""
                 self.running = False
                 self.stop_requested = False
+                self.force_stop_requested = False
                 self.last_finished = datetime.now(UTC)
                 self._notify()
 
@@ -394,6 +450,37 @@ class PaperlessRunner:
         self.last_status = "stop_requested"
         self.last_message = "stop requested; runner pauses after current document/batch"
         self._notify()
+        return RunResult(self.last_status, self.last_exit_code, self.last_message)
+
+    async def async_force_stop(self) -> RunResult:
+        """Beendet den Prozess aktiv und bewahrt nach Möglichkeit einen Resume-Stand."""
+
+        process = self._process
+        if not self.running or process is None or process.returncode is not None:
+            self.last_status = "stop_ignored"
+            self.last_message = "no active run to stop immediately"
+            self._notify()
+            return RunResult(self.last_status, self.last_exit_code, self.last_message)
+
+        self._cancel_auto_resume_task()
+        self._cancel_force_stop_task()
+        await self.hass.async_add_executor_job(self._persist_force_stop_resume_state)
+        await self.hass.async_add_executor_job(
+            lambda: self._delete_file(self._stop_request_path())
+        )
+
+        self.stop_requested = True
+        self.force_stop_requested = True
+        self.last_status = "stop_now_requested"
+        self.last_message = "immediate stop requested; terminating active process"
+        self._notify()
+
+        with contextlib.suppress(ProcessLookupError):
+            process.terminate()
+
+        self._force_stop_task = self.hass.async_create_task(
+            self._force_stop_after_grace(process)
+        )
         return RunResult(self.last_status, self.last_exit_code, self.last_message)
 
     async def async_resume(self, *, force: bool = True) -> RunResult:
@@ -477,6 +564,9 @@ class PaperlessRunner:
     def _apply_runtime_event(self, payload: dict[str, Any]) -> None:
         """Maps CLI runtime events into Home Assistant visible runner state."""
 
+        self._latest_runtime_state_payload = {
+            key: value for key, value in payload.items() if key != "kind"
+        }
         progress = payload.get("progress") or {}
         current_document = payload.get("current_document") or {}
         self.progress_total_documents = int(progress.get("total_documents", 0) or 0)
@@ -632,6 +722,7 @@ class PaperlessRunner:
             self.auto_resume_at = None
             return
 
+        self._latest_runtime_state_payload = dict(payload)
         self._apply_runtime_event({"kind": "paused", **payload})
         self.resume_available = True
         self.pause_reason = str(payload.get("pause_reason") or self.pause_reason or "")
@@ -936,6 +1027,34 @@ class PaperlessRunner:
             self._auto_resume_task.cancel()
         self._auto_resume_task = None
 
+    async def _force_stop_after_grace(
+        self,
+        process: asyncio.subprocess.Process,
+    ) -> None:
+        """Eskaliert von terminate auf kill, falls der Prozess nicht endet."""
+
+        try:
+            await asyncio.sleep(FORCE_STOP_GRACE_SECONDS)
+            if process.returncode is not None:
+                return
+            self.last_message = (
+                "immediate stop still pending; process did not exit after terminate and will be killed"
+            )
+            self._notify()
+            with contextlib.suppress(ProcessLookupError):
+                process.kill()
+        except asyncio.CancelledError:
+            return
+
+    def _cancel_force_stop_task(self) -> None:
+        """Cancels the escalation task for hard stops if it is still pending."""
+
+        if self._force_stop_task is None:
+            return
+        if not self._force_stop_task.done():
+            self._force_stop_task.cancel()
+        self._force_stop_task = None
+
     def _append_tail(self, existing: str, line: str) -> str:
         """Appends one line to a rolling output tail."""
 
@@ -999,3 +1118,28 @@ class PaperlessRunner:
         with contextlib.suppress(OSError):
             if path.exists():
                 path.unlink()
+
+    @staticmethod
+    def _read_json_file(path: Path) -> dict[str, Any]:
+        """Reads a small runtime JSON file defensively for resume preservation."""
+
+        try:
+            if not path.exists():
+                return {}
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            return payload if isinstance(payload, dict) else {}
+        except (OSError, json.JSONDecodeError):
+            return {}
+
+    def _persist_force_stop_resume_state(self) -> bool:
+        """Preserves the latest known progress as resumable state before a hard stop."""
+
+        base_payload = dict(self._latest_runtime_state_payload)
+        if not base_payload:
+            base_payload = self._read_json_file(self._run_state_path())
+        pause_payload = build_force_stop_resume_payload(base_payload)
+        if not pause_payload:
+            return False
+        self._write_json_file(self._run_state_path(), pause_payload)
+        self._latest_runtime_state_payload = dict(pause_payload)
+        return True

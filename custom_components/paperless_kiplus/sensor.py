@@ -146,6 +146,7 @@ class PaperlessRunnerStatusSensor(SensorEntity):
             "pause_reason": self._runner.pause_reason or None,
             "auto_resume_at": _iso(self._runner.auto_resume_at),
             "stop_requested": self._runner.stop_requested,
+            "force_stop_requested": self._runner.force_stop_requested,
             "progress_total_documents": self._runner.progress_total_documents,
             "progress_completed_documents": self._runner.progress_completed_documents,
             "progress_percent": round(self._runner.progress_percent, 2),
