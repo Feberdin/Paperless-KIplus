@@ -1,0 +1,200 @@
+# Paperless KIplus Dashboard
+#
+# Zweck:
+# - Große, sofort nutzbare Lovelace-Ansicht für Steuer-/SecondBrain-Backfills,
+#   Fortschritt, Dokument-Links und Log-Export.
+# - Nutzt bewusst nur Standard-Home-Assistant-Karten, damit kein zusätzliches
+#   Custom-Card-Ökosystem nötig ist.
+#
+# Einfügen:
+# - Einstellungen -> Dashboards -> Neues Dashboard -> YAML-Modus
+# - Inhalt dieser Datei komplett einfügen
+#
+# Hinweise:
+# - Die Entity-IDs basieren auf den Standardnamen dieser Integration.
+# - Falls deine IDs minimal anders lauten, im UI einmal neu zuordnen.
+
+title: Paperless KIplus
+views:
+  - title: Paperless KIplus
+    path: paperless-kiplus
+    icon: mdi:file-document-cog
+    badges: []
+    cards:
+      - type: markdown
+        content: |
+          # Paperless KIplus Leitstand
+
+          Hier siehst du den aktuellen Laufstatus, das aktuell bearbeitete Dokument,
+          das zuletzt fertige Dokument, Kontroll-Buttons sowie den Log-Export für Support.
+
+      - type: grid
+        title: Überblick
+        columns: 3
+        square: false
+        cards:
+          - type: tile
+            entity: binary_sensor.paperless_kiplus_lauft
+            name: Läuft gerade
+            vertical: false
+          - type: tile
+            entity: sensor.paperless_kiplus_status
+            name: Status
+            vertical: false
+          - type: tile
+            entity: sensor.paperless_kiplus_fortschritt
+            name: Fortschritt
+            vertical: false
+          - type: tile
+            entity: sensor.paperless_kiplus_aktuelles_dokument
+            name: Aktuelles Dokument
+            vertical: false
+          - type: tile
+            entity: sensor.paperless_kiplus_letztes_fertiges_dokument
+            name: Letztes fertiges Dokument
+            vertical: false
+          - type: tile
+            entity: sensor.paperless_kiplus_letzte_zusammenfassung
+            name: Letzte Zusammenfassung
+            vertical: false
+
+      - type: gauge
+        entity: sensor.paperless_kiplus_fortschritt
+        name: Lauf-Fortschritt
+        min: 0
+        max: 100
+        severity:
+          green: 70
+          yellow: 25
+          red: 0
+
+      - type: entities
+        title: Live-Status
+        show_header_toggle: false
+        entities:
+          - entity: sensor.paperless_kiplus_status
+            name: Status
+          - entity: binary_sensor.paperless_kiplus_lauft
+            name: Läuft
+          - entity: sensor.paperless_kiplus_fortschritt
+            name: Fortschritt in %
+          - entity: sensor.paperless_kiplus_aktuelles_dokument
+            name: Gerade bearbeitet
+          - entity: sensor.paperless_kiplus_letztes_fertiges_dokument
+            name: Zuletzt fertig
+          - entity: sensor.paperless_kiplus_letzter_lauf_fehler
+            name: Letzter Lauf Fehler
+          - entity: sensor.paperless_kiplus_aktive_quarantane
+            name: Aktive Quarantäne
+          - entity: sensor.paperless_kiplus_aktiver_bypass
+            name: Aktiver Bypass
+
+      - type: grid
+        title: Steuerung
+        columns: 4
+        square: false
+        cards:
+          - type: button
+            entity: button.paperless_kiplus_bestandsdaten_neu_anreichern
+            name: Backfill starten
+            icon: mdi:database-refresh-outline
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.paperless_kiplus_lauf_neu_starten
+            name: Neustart
+            icon: mdi:restart
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.paperless_kiplus_lauf_pausieren
+            name: Pause
+            icon: mdi:pause-circle-outline
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.paperless_kiplus_lauf_sofort_stoppen
+            name: Sofort-Stopp
+            icon: mdi:stop-circle-outline
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.paperless_kiplus_pausierten_lauf_fortsetzen
+            name: Fortsetzen
+            icon: mdi:play-circle-outline
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.paperless_kiplus_fehlgeschlagene_dokumente_zurucksetzen
+            name: Fehler zurücksetzen
+            icon: mdi:restore-alert
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.paperless_kiplus_aktuelles_dokument_offnen
+            name: Aktuelles Dokument öffnen
+            icon: mdi:file-eye-outline
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.paperless_kiplus_letztes_fertiges_dokument_offnen
+            name: Letztes fertiges öffnen
+            icon: mdi:file-check-outline
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.paperless_kiplus_letztes_protokoll_herunterladen
+            name: Log herunterladen
+            icon: mdi:file-download-outline
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.paperless_kiplus_letztes_protokoll_anzeigen
+            name: Log anzeigen
+            icon: mdi:text-box-search-outline
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.paperless_kiplus_statistiken_zurucksetzen
+            name: Metriken zurücksetzen
+            icon: mdi:counter
+            tap_action:
+              action: toggle
+
+      - type: history-graph
+        title: Verlauf
+        hours_to_show: 24
+        refresh_interval: 60
+        entities:
+          - entity: sensor.paperless_kiplus_fortschritt
+          - entity: sensor.paperless_kiplus_letzter_lauf_fehler
+          - entity: sensor.paperless_kiplus_letzter_lauf_gescannt
+          - entity: sensor.paperless_kiplus_letzter_lauf_aktualisiert
+
+      - type: entities
+        title: Laufmetriken
+        show_header_toggle: false
+        entities:
+          - entity: sensor.paperless_kiplus_letzter_lauf_gescannt
+            name: Letzter Lauf gescannt
+          - entity: sensor.paperless_kiplus_letzter_lauf_aktualisiert
+            name: Letzter Lauf aktualisiert
+          - entity: sensor.paperless_kiplus_letzter_lauf_ubersprungen
+            name: Letzter Lauf übersprungen
+          - entity: sensor.paperless_kiplus_letzter_lauf_tokens
+            name: Letzter Lauf Tokens
+          - entity: sensor.paperless_kiplus_letzter_lauf_kosten
+            name: Letzter Lauf Kosten
+          - entity: sensor.paperless_kiplus_gesamt_tokens
+            name: Gesamt Tokens
+          - entity: sensor.paperless_kiplus_gesamtkosten
+            name: Gesamtkosten
+
+      - type: entities
+        title: Support / Export
+        show_header_toggle: false
+        entities:
+          - entity: sensor.paperless_kiplus_letztes_protokoll
+            name: Letztes Protokoll
+          - entity: sensor.paperless_kiplus_status
+            name: Log-Export und Dokument-Links

@@ -34,6 +34,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             PaperlessRunnerBackfillButton(entry.entry_id, runner),
+            PaperlessRunnerRestartButton(entry.entry_id, runner),
             PaperlessRunnerStopButton(entry.entry_id, runner),
             PaperlessRunnerHardStopButton(entry.entry_id, runner),
             PaperlessRunnerResumeButton(entry.entry_id, runner),
@@ -96,6 +97,28 @@ class PaperlessRunnerBackfillButton(ButtonEntity):
         self.hass.async_create_task(
             self._runner.async_run(backfill_existing_documents=True)
         )
+
+
+class PaperlessRunnerRestartButton(ButtonEntity):
+    """Button to discard old resume state and start a fresh run."""
+
+    _attr_icon = "mdi:restart"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        self._entry_id = entry_id
+        self._runner = runner
+        self._attr_unique_id = f"{entry_id}_restart_run"
+        self._attr_name = "Paperless KIplus Lauf neu starten"
+        self._attr_has_entity_name = True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry_id)
+
+    async def async_press(self) -> None:
+        """Restart fresh in the background, reusing the last known run mode."""
+
+        self.hass.async_create_task(self._runner.async_restart())
 
 
 class PaperlessRunnerStopButton(ButtonEntity):

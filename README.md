@@ -455,11 +455,43 @@ Zusätzlich gibt es jetzt klickbare Hilfs-Buttons:
 - `Paperless KIplus Aktuelles Dokument öffnen`
 - `Paperless KIplus Letztes fertiges Dokument öffnen`
 - `Paperless KIplus Letztes Protokoll herunterladen`
+- `Paperless KIplus Lauf neu starten`
 
 Die Dokument-Buttons erzeugen in Home Assistant eine anklickbare
 Benachrichtigung mit direktem Paperless-Link zum jeweiligen Dokument. Der
 Log-Download-Button exportiert das letzte Protokoll nach `/config/www` und
 zeigt direkt einen anklickbaren Download-Link an.
+
+#### Frischer Neustart statt Resume
+
+Wenn du bewusst **nicht** an einem pausierten Stand weiterlaufen willst, sondern
+mit neuer Konfiguration komplett frisch neu beginnen möchtest, nutze jetzt:
+
+- Button: `Paperless KIplus Lauf neu starten`
+- Service: `paperless_kiplus.restart`
+
+Der Neustart:
+
+- stoppt einen laufenden Prozess bei Bedarf sofort,
+- verwirft den alten Resume-Stand,
+- startet den Lauf frisch von vorne,
+- übernimmt ohne explizite Angabe den zuletzt bekannten Modus, z. B.
+  `Bestandsdaten-Backfill`.
+
+#### Fertiges Dashboard zum Einfügen
+
+Es gibt jetzt eine große Lovelace-YAML-Vorlage unter:
+
+- [dashboards/paperless_kiplus_dashboard.yaml](/Users/joachim.stiegler/Paperless-KIplus/dashboards/paperless_kiplus_dashboard.yaml)
+
+Damit bekommst du auf einen Blick:
+
+- Status
+- Fortschritt
+- aktuelles Dokument
+- letztes fertiges Dokument
+- Neustart / Pause / Stop / Resume
+- Log-Download und Support-Hilfen
 
 Neuer Service zum sicheren Pausieren:
 
@@ -794,6 +826,11 @@ Anforderungen:
 ```
 
 ## Versionsverlauf (antichronologisch)
+
+- `v1.3.5` (2026-04-26)
+  - Neuer Service und Button `Lauf neu starten`: verwirft bewusst den alten Resume-Stand und startet frisch von vorne.
+  - Neustart übernimmt standardmäßig den zuletzt bekannten Modus, zum Beispiel Backfill.
+  - Großes Lovelace-Dashboard als direkt einfügbare YAML-Vorlage ergänzt.
 
 - `v1.3.4` (2026-04-26)
   - Neue Sensoren für `Aktuelles Dokument` und `Letztes fertiges Dokument` ergänzt.

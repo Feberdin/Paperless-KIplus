@@ -73,6 +73,29 @@ def build_paperless_document_url(base_url: str, document_id: int | None) -> str:
     return f"{normalized_base}/documents/{int(document_id)}/details"
 
 
+def infer_restart_backfill_mode(
+    source_payload: dict[str, Any] | None,
+    *,
+    explicit_backfill: bool | None = None,
+) -> bool:
+    """Infers whether a fresh restart should continue in backfill mode.
+
+    Why this exists:
+    - Users expect "Neustart" to begin fresh, but usually in the same run mode
+      as the currently paused or active run.
+    - A pure helper keeps this decision easy to test and avoids scattering mode
+      inference logic across the runner.
+    """
+
+    if explicit_backfill is not None:
+        return bool(explicit_backfill)
+    payload = source_payload if isinstance(source_payload, dict) else {}
+    mode = payload.get("mode") or {}
+    if not isinstance(mode, dict):
+        return False
+    return bool(mode.get("backfill_existing_documents", False))
+
+
 @dataclass
 class RunResult:
     """Result metadata for a script run."""
@@ -521,6 +544,63 @@ class PaperlessRunner:
 
         return await self.async_run(force=force, resume_run=True)
 
+    async def async_restart(
+        self,
+        *,
+        force: bool = True,
+        backfill_existing_documents: bool | None = None,
+    ) -> RunResult:
+        """Starts a fresh run and discards any old resume state.
+
+        Behavior:
+        - active runs are stopped immediately first
+        - paused resume state is explicitly deleted
+        - the new run starts from the beginning, not via `--resume-run`
+        - if no mode override is given, we reuse the last known run mode
+        """
+
+        base_payload = self._read_json_file(self._run_state_path())
+        if not base_payload:
+            base_payload = dict(self._latest_runtime_state_payload)
+        restart_backfill = infer_restart_backfill_mode(
+            base_payload,
+            explicit_backfill=backfill_existing_documents,
+        )
+
+        self.last_status = "restart_requested"
+        self.last_message = (
+            "fresh restart requested; previous resume state will be discarded"
+        )
+        self._notify()
+
+        if self.running:
+            await self.async_force_stop()
+            stopped = await self._wait_for_runner_to_stop()
+            if not stopped:
+                self.last_status = "restart_failed"
+                self.last_message = (
+                    "restart requested, but the previous process did not stop in time"
+                )
+                self._notify()
+                return RunResult(self.last_status, self.last_exit_code, self.last_message)
+
+        await self.hass.async_add_executor_job(self._clear_restart_state_files)
+        self._latest_runtime_state_payload = {}
+        self.resume_available = False
+        self.pause_reason = ""
+        self.auto_resume_at = None
+        self.progress_pending_documents = 0
+        self.progress_current_document_id = None
+        self.progress_current_document_title = ""
+        self.progress_current_document_url = ""
+        self._notify()
+
+        return await self.async_run(
+            force=force,
+            backfill_existing_documents=restart_backfill,
+            resume_run=False,
+        )
+
     async def async_shutdown(self) -> None:
         """Cleans up background resume tasks when the integration unloads."""
 
@@ -530,6 +610,16 @@ class PaperlessRunner:
         """Notify entities/sensors about runner state updates."""
 
         async_dispatcher_send(self.hass, SIGNAL_STATUS_UPDATED)
+
+    async def _wait_for_runner_to_stop(self, timeout_seconds: float = 45.0) -> bool:
+        """Waits until the active runner fully stops after a force stop request."""
+
+        deadline = asyncio.get_running_loop().time() + max(1.0, timeout_seconds)
+        while self.running or self._lock.locked():
+            if asyncio.get_running_loop().time() >= deadline:
+                return False
+            await asyncio.sleep(0.2)
+        return True
 
     async def _stream_reader(
         self,
@@ -1316,6 +1406,12 @@ class PaperlessRunner:
             return payload if isinstance(payload, dict) else {}
         except (OSError, json.JSONDecodeError):
             return {}
+
+    def _clear_restart_state_files(self) -> None:
+        """Deletes pause/resume markers so the next run starts truly fresh."""
+
+        self._delete_file(self._run_state_path())
+        self._delete_file(self._stop_request_path())
 
     def _persist_force_stop_resume_state(self) -> bool:
         """Preserves the latest known progress as resumable state before a hard stop."""

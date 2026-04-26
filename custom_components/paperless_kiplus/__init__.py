@@ -71,6 +71,7 @@ from .const import (
     DEFAULT_WORKDIR,
     DOMAIN,
     SERVICE_RESUME,
+    SERVICE_RESTART,
     SERVICE_RUN,
     SERVICE_STOP,
     SERVICE_STOP_NOW,
@@ -139,6 +140,15 @@ RESUME_SERVICE_SCHEMA = vol.Schema(
         vol.Optional(ATTR_ENTRY_ID): cv.string,
         vol.Optional(ATTR_FORCE, default=True): cv.boolean,
         vol.Optional(ATTR_WAIT, default=False): cv.boolean,
+    }
+)
+
+RESTART_SERVICE_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_ENTRY_ID): cv.string,
+        vol.Optional(ATTR_FORCE, default=True): cv.boolean,
+        vol.Optional(ATTR_WAIT, default=False): cv.boolean,
+        vol.Optional(ATTR_BACKFILL_EXISTING_DOCUMENTS): cv.boolean,
     }
 )
 
@@ -404,6 +414,52 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             schema=RUN_SERVICE_SCHEMA,
         )
 
+    if not hass.services.has_service(DOMAIN, SERVICE_RESTART):
+
+        async def _handle_restart(call: ServiceCall) -> None:
+            target_entry_id = call.data.get(ATTR_ENTRY_ID)
+            wait = call.data.get(ATTR_WAIT, False)
+            force = call.data.get(ATTR_FORCE, True)
+            backfill_existing_documents_override = call.data.get(
+                ATTR_BACKFILL_EXISTING_DOCUMENTS
+            )
+            if target_entry_id:
+                target_runners = [
+                    (target_entry_id, hass.data[DOMAIN].get(target_entry_id))
+                ]
+            else:
+                target_runners = list(hass.data[DOMAIN].items())
+
+            tasks = []
+            for entry_id, target_runner in target_runners:
+                if target_runner is None:
+                    _LOGGER.warning("Paperless KIplus entry '%s' not found", entry_id)
+                    continue
+                if wait:
+                    await target_runner.async_restart(
+                        force=force,
+                        backfill_existing_documents=backfill_existing_documents_override,
+                    )
+                else:
+                    tasks.append(
+                        hass.async_create_task(
+                            target_runner.async_restart(
+                                force=force,
+                                backfill_existing_documents=backfill_existing_documents_override,
+                            )
+                        )
+                    )
+
+            if tasks:
+                _LOGGER.info("Started %s Paperless KIplus restart task(s)", len(tasks))
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_RESTART,
+            _handle_restart,
+            schema=RESTART_SERVICE_SCHEMA,
+        )
+
     if not hass.services.has_service(DOMAIN, SERVICE_STOP):
 
         async def _handle_stop(call: ServiceCall) -> None:
@@ -505,7 +561,13 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN].pop(entry.entry_id, None)
 
     if not hass.data[DOMAIN]:
-        for service_name in (SERVICE_RUN, SERVICE_STOP, SERVICE_STOP_NOW, SERVICE_RESUME):
+        for service_name in (
+            SERVICE_RUN,
+            SERVICE_RESTART,
+            SERVICE_STOP,
+            SERVICE_STOP_NOW,
+            SERVICE_RESUME,
+        ):
             if hass.services.has_service(DOMAIN, service_name):
                 hass.services.async_remove(DOMAIN, service_name)
 

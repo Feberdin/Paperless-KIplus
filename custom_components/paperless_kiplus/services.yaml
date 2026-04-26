@@ -59,6 +59,38 @@ run:
       selector:
         boolean:
 
+restart:
+  name: Paperless KIplus Lauf neu starten
+  description: Stoppt einen laufenden oder pausierten Lauf, verwirft den alten Resume-Stand und startet frisch neu. Standardmäßig wird dabei der zuletzt bekannte Modus übernommen, zum Beispiel ein Bestandsdaten-Backfill.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Optional. Führt den Neustart nur für diese Integration-Instanz aus.
+      example: "abcd1234"
+      required: false
+      selector:
+        text:
+    force:
+      name: Force
+      description: Ignoriert Cooldown-Sperren beim frischen Neustart.
+      required: false
+      default: true
+      selector:
+        boolean:
+    wait:
+      name: Wait
+      description: Wartet synchron, bis der Neustart angestoßen wurde und der neue Lauf aktiv ist.
+      required: false
+      default: false
+      selector:
+        boolean:
+    backfill_existing_documents:
+      name: Bestandsdaten-Backfill
+      description: Optional. Erzwingt beim Neustart explizit den Backfill-Modus. Ohne Angabe wird der letzte bekannte Modus übernommen.
+      required: false
+      selector:
+        boolean:
+
 stop:
   name: Paperless KIplus Lauf pausieren
   description: Fordert einen kontrollierten Stop an. Der aktuelle Lauf pausiert nach dem aktuellen Dokument oder Batch und kann später fortgesetzt werden.

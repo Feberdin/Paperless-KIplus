@@ -208,6 +208,7 @@ class HomeAssistantRunnerHelperTests(unittest.TestCase):
 
         cls.build_force_stop_resume_payload = staticmethod(module.build_force_stop_resume_payload)
         cls.build_paperless_document_url = staticmethod(module.build_paperless_document_url)
+        cls.infer_restart_backfill_mode = staticmethod(module.infer_restart_backfill_mode)
 
     def test_force_stop_payload_marks_resume_state_cleanly(self) -> None:
         payload = self.build_force_stop_resume_payload(
@@ -249,6 +250,32 @@ class HomeAssistantRunnerHelperTests(unittest.TestCase):
         self.assertEqual(
             self.build_paperless_document_url("https://paperless.example", None),
             "",
+        )
+
+    def test_infer_restart_backfill_mode_reuses_previous_mode(self) -> None:
+        self.assertTrue(
+            self.infer_restart_backfill_mode(
+                {"mode": {"backfill_existing_documents": True}}
+            )
+        )
+        self.assertFalse(
+            self.infer_restart_backfill_mode(
+                {"mode": {"backfill_existing_documents": False}}
+            )
+        )
+
+    def test_infer_restart_backfill_mode_explicit_override_wins(self) -> None:
+        self.assertFalse(
+            self.infer_restart_backfill_mode(
+                {"mode": {"backfill_existing_documents": True}},
+                explicit_backfill=False,
+            )
+        )
+        self.assertTrue(
+            self.infer_restart_backfill_mode(
+                {"mode": {"backfill_existing_documents": False}},
+                explicit_backfill=True,
+            )
         )
 
 
