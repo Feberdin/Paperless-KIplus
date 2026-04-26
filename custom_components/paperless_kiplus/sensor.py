@@ -161,6 +161,7 @@ class PaperlessRunnerStatusSensor(SensorEntity):
             "progress_pending_documents": self._runner.progress_pending_documents,
             "progress_current_document_id": self._runner.progress_current_document_id,
             "progress_current_document_title": self._runner.progress_current_document_title or None,
+            "progress_last_event_at": _iso(self._runner.progress_last_event_at),
         }
 
 
@@ -271,6 +272,7 @@ class PaperlessRunnerProgressSensor(_BaseMetricSensor):
             "pending_documents": self._runner.progress_pending_documents,
             "current_document_id": self._runner.progress_current_document_id,
             "current_document_title": self._runner.progress_current_document_title or None,
+            "last_event_at": _iso(self._runner.progress_last_event_at),
             "resume_available": self._runner.resume_available,
             "pause_reason": self._runner.pause_reason or None,
         }

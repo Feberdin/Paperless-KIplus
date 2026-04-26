@@ -81,6 +81,23 @@ class RuntimeStateTests(unittest.TestCase):
         self.assertEqual(restored.doc_tags, {1, 5, 9})
         self.assertTrue(restored.enrichment_only)
 
+    def test_pending_document_progress_payload_stays_small(self) -> None:
+        original = PendingAiDocument(
+            document={"id": 123, "title": "Rechnung", "content": "sehr lang" * 100},
+            doc_id=123,
+            doc_key="123",
+            title="Rechnung",
+            doc_tags={1, 5, 9},
+            enrichment_only=True,
+        )
+
+        payload = original.to_progress_dict()
+
+        self.assertEqual(payload["doc_id"], 123)
+        self.assertEqual(payload["title"], "Rechnung")
+        self.assertNotIn("document", payload)
+        self.assertEqual(payload["doc_tags"], [1, 5, 9])
+
     def test_run_state_roundtrip_and_version_guard(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             state_path = Path(tmp_dir) / "run_state.json"

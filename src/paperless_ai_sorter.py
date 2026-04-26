@@ -592,6 +592,27 @@ class PendingAiDocument:
             "enrichment_only": self.enrichment_only,
         }
 
+    def to_progress_dict(self) -> Dict[str, Any]:
+        """Serialisiert nur die UI-relevanten Pending-Daten für Live-Fortschritt.
+
+        Warum diese zweite Darstellung existiert:
+        - Für Pause/Resume brauchen wir den kompletten Dokumentkontext auf Disk.
+        - Für Home-Assistant-Live-Fortschritt reichen schlanke Metadaten.
+        - Volle OCR-Inhalte in Runtime-Events blähen Logs und Sensor-States stark auf.
+
+        Beispiel:
+        - State-Datei: enthält das komplette Dokument für sauberes Resume
+        - Runtime-Event: enthält nur ID, Titel, Tags und Enrichment-Flag
+        """
+
+        return {
+            "doc_id": self.doc_id,
+            "doc_key": self.doc_key,
+            "title": self.title,
+            "doc_tags": sorted(self.doc_tags),
+            "enrichment_only": self.enrichment_only,
+        }
+
     @classmethod
     def from_state_dict(cls, payload: Dict[str, Any]) -> "PendingAiDocument":
         """Stellt einen Pending-Eintrag aus der State-Datei wieder her."""
@@ -4274,6 +4295,7 @@ def process_documents(
         status: str = "running",
         pause_reason: Optional[str] = None,
         retry_after_seconds: Optional[float] = None,
+        include_full_pending_documents: bool = False,
     ) -> Dict[str, Any]:
         """Baut einen serialisierbaren Laufzustand für Fortschritt und Resume.
 
@@ -4295,6 +4317,7 @@ def process_documents(
             "status": status,
             "pause_reason": pause_reason,
             "retry_after_seconds": retry_after_seconds,
+            "updated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
             "mode": {
                 "process_all_documents": bool(process_all_documents),
                 "backfill_existing_documents": bool(backfill_existing_documents),
@@ -4325,7 +4348,11 @@ def process_documents(
             },
             "completed_document_ids": sorted(completed_document_ids),
             "pending_documents": [
-                item.to_state_dict()
+                (
+                    item.to_state_dict()
+                    if include_full_pending_documents
+                    else item.to_progress_dict()
+                )
                 for item in pending_ai_documents
             ],
             "current_document": {
@@ -4350,6 +4377,7 @@ def process_documents(
             status=status,
             pause_reason=pause_reason,
             retry_after_seconds=retry_after_seconds,
+            include_full_pending_documents=True,
         )
         save_run_state(run_state_path, payload)
         return payload

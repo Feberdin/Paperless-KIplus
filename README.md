@@ -444,6 +444,7 @@ Sichtbar sind unter anderem:
 
 - `Paperless KIplus Fortschritt` als Prozent-Sensor
 - `progress_current_document_title` im Statussensor
+- `progress_last_event_at`, damit man sofort sieht, wann der letzte echte Fortschritt ankam
 - `progress_scanned`, `progress_updated`, `progress_skipped`, `progress_failed`
 - `resume_available`, `pause_reason` und `auto_resume_at`
 
@@ -780,6 +781,12 @@ Anforderungen:
 ```
 
 ## Versionsverlauf (antichronologisch)
+
+- `v1.3.3` (2026-04-26)
+  - Live-Fortschritts-Events deutlich verschlankt, damit Home Assistant nicht mehr komplette OCR-Inhalte als Fortschritt mitschleppen muss.
+  - Resume-State bleibt weiterhin vollständig auf Disk erhalten, während der Live-Status nur noch schlanke Pending-Metadaten überträgt.
+  - Neuer Zeitstempel `progress_last_event_at` ergänzt, damit hängende oder stille Läufe sofort erkennbar sind.
+  - Sofort-Stopp bevorzugt jetzt die vollständige Run-State-Datei für Resume, statt einen eventuell abgespeckten Live-Status zu konservieren.
 
 - `v1.3.2` (2026-04-26)
   - Backfill prüft jetzt vor dem KI-Aufruf, ob ein Dokument bereits sinnvolle `sb_`-Felder besitzt.

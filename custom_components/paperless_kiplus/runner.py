@@ -217,6 +217,7 @@ class PaperlessRunner:
         self.progress_current_document_title: str = ""
         self.progress_budget_used: int = 0
         self.progress_pending_documents: int = 0
+        self.progress_last_event_at: datetime | None = None
 
     @property
     def cooldown_until(self) -> datetime | None:
@@ -585,6 +586,12 @@ class PaperlessRunner:
         self.progress_pending_documents = len(payload.get("pending_documents") or [])
         self.progress_current_document_id = self._safe_int(current_document.get("id"))
         self.progress_current_document_title = str(current_document.get("title") or "")
+        updated_at_raw = payload.get("updated_at")
+        if isinstance(updated_at_raw, str) and updated_at_raw.strip():
+            with contextlib.suppress(ValueError):
+                self.progress_last_event_at = datetime.fromisoformat(updated_at_raw)
+        if self.progress_last_event_at is None:
+            self.progress_last_event_at = datetime.now(UTC)
         self.last_scanned = self.progress_scanned
         self.last_updated = self.progress_updated
         self.last_skipped = self.progress_skipped
@@ -1134,9 +1141,9 @@ class PaperlessRunner:
     def _persist_force_stop_resume_state(self) -> bool:
         """Preserves the latest known progress as resumable state before a hard stop."""
 
-        base_payload = dict(self._latest_runtime_state_payload)
+        base_payload = self._read_json_file(self._run_state_path())
         if not base_payload:
-            base_payload = self._read_json_file(self._run_state_path())
+            base_payload = dict(self._latest_runtime_state_payload)
         pause_payload = build_force_stop_resume_payload(base_payload)
         if not pause_payload:
             return False
