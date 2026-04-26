@@ -560,6 +560,9 @@ class AppConfig:
     tax_export_years: List[int]
     tax_personal_context: str
     tax_process_ki_tagged_documents: bool
+    tax_ai_api_key: str
+    tax_ai_model: str
+    tax_ai_base_url: str
     enable_custom_field_enrichment: bool
     create_missing_custom_fields: bool
     enable_secondbrain_custom_fields: bool
@@ -751,6 +754,14 @@ def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | No
             raw.get("tax_process_ki_tagged_documents", False),
             False,
         ),
+        tax_ai_api_key=str(raw.get("tax_ai_api_key", raw["ai_api_key"])),
+        tax_ai_model=str(raw.get("tax_ai_model", raw["ai_model"])),
+        tax_ai_base_url=str(
+            raw.get(
+                "tax_ai_base_url",
+                raw.get("ai_base_url", "https://api.openai.com/v1"),
+            )
+        ).rstrip("/"),
         enable_custom_field_enrichment=parse_bool(
             raw.get("enable_custom_field_enrichment", False),
             False,
@@ -4010,9 +4021,9 @@ def process_documents(
     )
     if config.enable_tax_enrichment:
         tax_service = TaxEnrichmentService(
-            ai_model=config.ai_model,
-            ai_api_key=config.ai_api_key,
-            ai_base_url=config.ai_base_url,
+            ai_model=config.tax_ai_model,
+            ai_api_key=config.tax_ai_api_key,
+            ai_base_url=config.tax_ai_base_url,
             request_timeout_seconds=config.request_timeout_seconds,
             basis_config=config.basis_config,
             personal_context=config.tax_personal_context,
@@ -4022,9 +4033,11 @@ def process_documents(
             export_years=config.tax_export_years,
         )
         LOGGER.info(
-            "Tax Enrichment aktiv: Export-Verzeichnis=%s | Steuerjahre=%s",
+            "Tax Enrichment aktiv: Export-Verzeichnis=%s | Steuerjahre=%s | Modell=%s | Base-URL=%s",
             config.tax_export_dir,
             ", ".join(str(year) for year in config.tax_export_years) if config.tax_export_years else "alle",
+            config.tax_ai_model,
+            config.tax_ai_base_url,
         )
     if generic_custom_field_sync_enabled:
         LOGGER.info(

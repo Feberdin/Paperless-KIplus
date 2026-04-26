@@ -143,6 +143,18 @@ views:
             tap_action:
               action: toggle
           - type: button
+            entity: button.paperless_kiplus_worker_weboberflache_offnen
+            name: Worker UI öffnen
+            icon: mdi:web
+            tap_action:
+              action: toggle
+          - type: button
+            entity: button.paperless_kiplus_worker_konfiguration_exportieren
+            name: Worker-Config exportieren
+            icon: mdi:file-export-outline
+            tap_action:
+              action: toggle
+          - type: button
             entity: button.paperless_kiplus_letztes_protokoll_herunterladen
             name: Log herunterladen
             icon: mdi:file-download-outline

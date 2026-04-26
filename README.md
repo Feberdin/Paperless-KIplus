@@ -13,6 +13,13 @@ arbeitbare JSON-/CSV-Exporte für die manuelle Übernahme nach WISO Steuer.
 Wenn du diese Funktion nicht möchtest, bleibt sie mit `enable_tax_enrichment: false`
 komplett ausgeschaltet.
 
+Neu dazugekommen:
+
+- eigenständiger Docker-/Unraid-Worker mit Weboberfläche und JSON-API
+- Remote-Ausführungsmodus in Home Assistant (`local` oder `remote_worker`)
+- Konfig-Export aus Home Assistant direkt zum Worker
+- optionaler eigener Tax-KI-Provider, z. B. lokales Ollama/vLLM für kleinere Aufgaben
+
 ### Bilder
 
 #### Geräteansicht in Home Assistant
@@ -759,6 +766,9 @@ tax_export_dir: "tax_exports"
 tax_export_years:
   - 2025
 tax_process_ki_tagged_documents: false
+tax_ai_api_key: dummy
+tax_ai_model: qwen2.5:7b
+tax_ai_base_url: http://ollama:11434/v1
 tax_personal_context: |
   Steuerpflichtiger: Max Mustermann
   Familienstand:
@@ -825,7 +835,82 @@ Anforderungen:
 - Optimiere den Text fuer spaeteres maschinelles Mitlesen.
 ```
 
+## Standalone Worker für Docker / Unraid
+
+Wenn du die Rechenlast von Home Assistant auf deinen Server ziehen willst,
+gibt es jetzt einen voll lauffähigen Worker mit eigener Weboberfläche.
+
+Was der Worker mitbringt:
+
+- vollständige Ausführung ohne Home Assistant
+- eingebaute Weboberfläche unter `/`
+- JSON-API für Run / Stop / Resume / Restart / Backfill
+- Log-Download, Status und Konfigurationsverwaltung
+- persistente Dateien für Config, Metriken und Resume-State unter `/data`
+
+Dokumentation:
+
+- [Docker- und Unraid-Betrieb](./docs/docker-unraid.md)
+- [Migration von Home Assistant zum Remote-Worker](./docs/migration-ha-to-worker.md)
+- [Lokale LLMs für kleinere Aufgaben](./docs/local-llm-routing.md)
+
+### Schnellstart Standalone
+
+```bash
+docker compose -f docker/docker-compose.example.yml up -d --build
+```
+
+Danach:
+
+- Weboberfläche: `http://<server>:8787/`
+- Status-API: `http://<server>:8787/api/status`
+
+### Remote-Steuerung aus Home Assistant
+
+In den Integrationsoptionen kannst du jetzt wählen:
+
+- `execution_mode: local`
+- `execution_mode: remote_worker`
+
+Für den Remote-Modus brauchst du typischerweise:
+
+- `remote_worker_url`, zum Beispiel `http://unraid-server:8787`
+- optional `remote_worker_token`
+- optional `remote_worker_sync_config: true`
+
+Zusätzliche HA-Hilfen:
+
+- Button `Paperless KIplus Worker-Konfiguration exportieren`
+- Button `Paperless KIplus Worker-Weboberfläche öffnen`
+- Service `paperless_kiplus.export_config`
+
+### Optionale lokale LLMs für kleinere Aufgaben
+
+Tax Enrichment kann jetzt auf einen eigenen OpenAI-kompatiblen Endpoint zeigen.
+Damit kannst du die Hauptklassifikation weiter in der Cloud lassen und die
+kleinere steuerliche Extraktion lokal ausführen.
+
+Beispiel:
+
+```yaml
+ai_api_key: <OPENAI_KEY>
+ai_model: gpt-4.1-mini
+ai_base_url: https://api.openai.com/v1
+
+enable_tax_enrichment: true
+tax_ai_api_key: dummy
+tax_ai_model: qwen2.5:7b
+tax_ai_base_url: http://ollama:11434/v1
+```
+
 ## Versionsverlauf (antichronologisch)
+
+- `v1.4.0` (2026-04-26)
+  - Eigenständigen Docker-/Unraid-Worker mit Weboberfläche und JSON-API ergänzt.
+  - Remote-Ausführungsmodus in Home Assistant ergänzt, inklusive `execution_mode`, `remote_worker_url` und automatischem Config-Sync.
+  - Neuer Config-Export-Service und neue Buttons für Worker-UI sowie Worker-Konfiguration ergänzt.
+  - Optionalen eigenen Tax-KI-Provider (`tax_ai_*`) ergänzt, damit kleinere Steuer-Aufgaben auf lokalen OpenAI-kompatiblen LLMs laufen können.
+  - Dockerfile, Compose-Beispiel, Unraid-Template, GHCR-Build-Workflow und Betriebsdoku ergänzt.
 
 - `v1.3.5` (2026-04-26)
   - Neuer Service und Button `Lauf neu starten`: verwirft bewusst den alten Resume-Stand und startet frisch von vorne.

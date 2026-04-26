@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Paperless-KIplus-Worker</Name>
+  <Repository>ghcr.io/feberdin/paperless-kiplus-worker:latest</Repository>
+  <Registry>https://github.com/Feberdin/Paperless-KIplus/pkgs/container/paperless-kiplus-worker</Registry>
+  <Network>bridge</Network>
+  <MyIP/>
+  <Shell>sh</Shell>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/Feberdin/Paperless-KIplus</Support>
+  <Project>https://github.com/Feberdin/Paperless-KIplus</Project>
+  <Overview>Standalone Worker fuer Paperless KIplus. Bietet Weboberflaeche, Status-API, Log-Export, Pause/Resume und optionale Remote-Steuerung aus Home Assistant.</Overview>
+  <Category>Productivity: Tools:</Category>
+  <WebUI>http://[IP]:[PORT:8787]/</WebUI>
+  <TemplateURL>https://raw.githubusercontent.com/Feberdin/Paperless-KIplus/main/docker/unraid-template.xml</TemplateURL>
+  <Icon>https://raw.githubusercontent.com/Feberdin/Paperless-KIplus/main/brand/icon.png</Icon>
+  <ExtraParams/>
+  <PostArgs/>
+  <CPUset/>
+  <DateInstalled/>
+  <DonateText/>
+  <DonateLink/>
+  <Requires/>
+  <Config Name="Web UI Port" Target="8787" Default="8787" Mode="tcp" Description="Port fuer Weboberflaeche und API" Type="Port" Display="always" Required="true" Mask="false">8787</Config>
+  <Config Name="Datenverzeichnis" Target="/data" Default="/mnt/user/appdata/paperless-kiplus-worker" Mode="rw" Description="Persistente Daten fuer Config, Logs, Resume-State und Exporte" Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/paperless-kiplus-worker</Config>
+  <Config Name="API Token" Target="PAPERLESS_KIPLUS_TOKEN" Default="" Mode="" Description="Optionaler Bearer-Token fuer Home-Assistant-Remote-Steuerung" Type="Variable" Display="advanced" Required="false" Mask="true"></Config>
+  <Config Name="Bind Host" Target="PAPERLESS_KIPLUS_HOST" Default="0.0.0.0" Mode="" Description="Bind-Adresse des eingebauten Webservers" Type="Variable" Display="advanced" Required="false" Mask="false">0.0.0.0</Config>
+  <Config Name="Worker Port" Target="PAPERLESS_KIPLUS_PORT" Default="8787" Mode="" Description="Port des eingebauten Webservers innerhalb des Containers" Type="Variable" Display="advanced" Required="false" Mask="false">8787</Config>
+</Container>

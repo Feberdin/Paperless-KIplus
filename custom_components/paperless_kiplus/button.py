@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Protocol
+
 from homeassistant.components.button import ButtonEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -9,7 +11,36 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
-from .runner import PaperlessRunner
+
+
+class RunnerLike(Protocol):
+    """Minimales Runner-Protokoll für lokale und Remote-Ausführung."""
+
+    async def async_run(self, **kwargs): ...
+
+    async def async_restart(self, **kwargs): ...
+
+    async def async_request_stop(self): ...
+
+    async def async_force_stop(self): ...
+
+    async def async_resume(self, **kwargs): ...
+
+    async def async_open_current_document(self): ...
+
+    async def async_open_last_completed_document(self): ...
+
+    async def async_open_worker_ui(self): ...
+
+    async def async_export_worker_config(self, **kwargs): ...
+
+    async def async_reset_metrics(self): ...
+
+    async def async_reset_failed_documents(self): ...
+
+    async def async_show_last_log(self): ...
+
+    async def async_export_last_log(self): ...
 
 
 def _device_info(entry_id: str) -> DeviceInfo:
@@ -30,7 +61,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up button entities from config entry."""
 
-    runner: PaperlessRunner = hass.data[DOMAIN][entry.entry_id]
+    runner: RunnerLike = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [
             PaperlessRunnerBackfillButton(entry.entry_id, runner),
@@ -40,6 +71,8 @@ async def async_setup_entry(
             PaperlessRunnerResumeButton(entry.entry_id, runner),
             PaperlessRunnerOpenCurrentDocumentButton(entry.entry_id, runner),
             PaperlessRunnerOpenLastCompletedDocumentButton(entry.entry_id, runner),
+            PaperlessRunnerOpenWorkerUIButton(entry.entry_id, runner),
+            PaperlessRunnerExportWorkerConfigButton(entry.entry_id, runner),
             PaperlessRunnerResetMetricsButton(entry.entry_id, runner),
             PaperlessRunnerResetFailedDocumentsButton(entry.entry_id, runner),
             PaperlessRunnerShowLogButton(entry.entry_id, runner),
@@ -54,7 +87,7 @@ class PaperlessRunnerResetMetricsButton(ButtonEntity):
 
     _attr_icon = "mdi:counter"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         self._entry_id = entry_id
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_reset_metrics"
@@ -78,7 +111,7 @@ class PaperlessRunnerBackfillButton(ButtonEntity):
 
     _attr_icon = "mdi:database-refresh-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         self._entry_id = entry_id
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_start_backfill"
@@ -104,7 +137,7 @@ class PaperlessRunnerRestartButton(ButtonEntity):
 
     _attr_icon = "mdi:restart"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         self._entry_id = entry_id
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_restart_run"
@@ -126,7 +159,7 @@ class PaperlessRunnerStopButton(ButtonEntity):
 
     _attr_icon = "mdi:pause-circle-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         self._entry_id = entry_id
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_request_stop"
@@ -148,7 +181,7 @@ class PaperlessRunnerHardStopButton(ButtonEntity):
 
     _attr_icon = "mdi:stop-circle-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         self._entry_id = entry_id
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_force_stop"
@@ -170,7 +203,7 @@ class PaperlessRunnerResumeButton(ButtonEntity):
 
     _attr_icon = "mdi:play-circle-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         self._entry_id = entry_id
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_resume_run"
@@ -192,7 +225,7 @@ class PaperlessRunnerOpenCurrentDocumentButton(ButtonEntity):
 
     _attr_icon = "mdi:file-eye-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         self._entry_id = entry_id
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_open_current_document"
@@ -214,7 +247,7 @@ class PaperlessRunnerOpenLastCompletedDocumentButton(ButtonEntity):
 
     _attr_icon = "mdi:file-check-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         self._entry_id = entry_id
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_open_last_completed_document"
@@ -231,12 +264,56 @@ class PaperlessRunnerOpenLastCompletedDocumentButton(ButtonEntity):
         await self._runner.async_open_last_completed_document()
 
 
+class PaperlessRunnerOpenWorkerUIButton(ButtonEntity):
+    """Button to show the standalone worker web interface link."""
+
+    _attr_icon = "mdi:web"
+
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
+        self._entry_id = entry_id
+        self._runner = runner
+        self._attr_unique_id = f"{entry_id}_open_worker_ui"
+        self._attr_name = "Paperless KIplus Worker-Weboberfläche öffnen"
+        self._attr_has_entity_name = True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry_id)
+
+    async def async_press(self) -> None:
+        """Show a clickable worker UI link when remote execution is enabled."""
+
+        await self._runner.async_open_worker_ui()
+
+
+class PaperlessRunnerExportWorkerConfigButton(ButtonEntity):
+    """Button to export the effective HA config for the worker."""
+
+    _attr_icon = "mdi:file-export-outline"
+
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
+        self._entry_id = entry_id
+        self._runner = runner
+        self._attr_unique_id = f"{entry_id}_export_worker_config"
+        self._attr_name = "Paperless KIplus Worker-Konfiguration exportieren"
+        self._attr_has_entity_name = True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry_id)
+
+    async def async_press(self) -> None:
+        """Export the effective config and, if configured, sync it to the worker."""
+
+        await self._runner.async_export_worker_config(remote_upload=True)
+
+
 class PaperlessRunnerExportLogButton(ButtonEntity):
     """Button to export last log for easy support sharing."""
 
     _attr_icon = "mdi:file-download-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         self._entry_id = entry_id
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_export_log"
@@ -260,7 +337,7 @@ class PaperlessRunnerShowLogButton(ButtonEntity):
 
     _attr_icon = "mdi:text-box-search-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         self._entry_id = entry_id
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_show_log"
@@ -284,7 +361,7 @@ class PaperlessRunnerResetFailedDocumentsButton(ButtonEntity):
 
     _attr_icon = "mdi:restore-alert"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         self._entry_id = entry_id
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_reset_failed_documents"

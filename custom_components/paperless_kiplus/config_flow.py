@@ -13,6 +13,9 @@ from homeassistant.helpers.selector import (
     BooleanSelector,
     NumberSelector,
     NumberSelectorConfig,
+    SelectSelector,
+    SelectSelectorConfig,
+    SelectSelectorMode,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
@@ -26,6 +29,7 @@ from .const import (
     CONF_DRY_RUN,
     CONF_ENABLE_PARALLEL_AI,
     CONF_ENABLE_TAX_ENRICHMENT,
+    CONF_EXECUTION_MODE,
     CONF_INPUT_COST_PER_1K_TOKENS_EUR,
     CONF_MANAGED_CONFIG_YAML,
     CONF_MAX_DOCUMENTS,
@@ -35,6 +39,10 @@ from .const import (
     CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
     CONF_PRECHECK_DUPLICATE_HASH_GATE,
     CONF_REPROCESS_KI_TAGGED_DOCUMENTS,
+    CONF_REMOTE_WORKER_SYNC_CONFIG,
+    CONF_REMOTE_WORKER_TOKEN,
+    CONF_REMOTE_WORKER_URL,
+    CONF_REMOTE_WORKER_VERIFY_SSL,
     CONF_PRECHECK_IMAGE_ONLY_GATE,
     CONF_PRECHECK_MIN_ALNUM_RATIO,
     CONF_PRECHECK_MIN_CONTENT_CHARS,
@@ -48,6 +56,7 @@ from .const import (
     DEFAULT_DRY_RUN,
     DEFAULT_ENABLE_PARALLEL_AI,
     DEFAULT_ENABLE_TAX_ENRICHMENT,
+    DEFAULT_EXECUTION_MODE,
     DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR,
     DEFAULT_MANAGED_CONFIG_YAML,
     DEFAULT_MAX_DOCUMENTS,
@@ -57,6 +66,10 @@ from .const import (
     DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
     DEFAULT_PRECHECK_DUPLICATE_HASH_GATE,
     DEFAULT_REPROCESS_KI_TAGGED_DOCUMENTS,
+    DEFAULT_REMOTE_WORKER_SYNC_CONFIG,
+    DEFAULT_REMOTE_WORKER_TOKEN,
+    DEFAULT_REMOTE_WORKER_URL,
+    DEFAULT_REMOTE_WORKER_VERIFY_SSL,
     DEFAULT_PRECHECK_IMAGE_ONLY_GATE,
     DEFAULT_PRECHECK_MIN_ALNUM_RATIO,
     DEFAULT_PRECHECK_MIN_CONTENT_CHARS,
@@ -64,6 +77,8 @@ from .const import (
     DEFAULT_TAX_PERSONAL_CONTEXT,
     DEFAULT_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
     DOMAIN,
+    EXECUTION_MODE_LOCAL,
+    EXECUTION_MODE_REMOTE_WORKER,
 )
 
 
@@ -91,6 +106,10 @@ def _description_placeholders() -> dict[str, str]:
             "Bitte den kompletten YAML-Text immer hier einfügen. "
             "Kein externes YAML nutzen. "
             "Hilfe/Prompt: https://github.com/Feberdin/Paperless-KIplus?tab=readme-ov-file#-chatgpt-prompt-f%C3%BCr-eigene-yaml-konfig"
+        ),
+        "execution_help": (
+            "Lokal = Ausführung direkt in Home Assistant. "
+            "Remote Worker = Home Assistant steuert einen Docker-Worker auf Unraid oder einem anderen Server."
         ),
     }
 
@@ -124,6 +143,31 @@ class PaperlessKIplusConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 vol.Required(CONF_MAX_DOCUMENTS, default=DEFAULT_MAX_DOCUMENTS): NumberSelector(
                     NumberSelectorConfig(min=0, max=5000, step=1, mode="box")
                 ),
+                vol.Required(
+                    CONF_EXECUTION_MODE,
+                    default=DEFAULT_EXECUTION_MODE,
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[EXECUTION_MODE_LOCAL, EXECUTION_MODE_REMOTE_WORKER],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Optional(
+                    CONF_REMOTE_WORKER_URL,
+                    default=DEFAULT_REMOTE_WORKER_URL,
+                ): TextSelector(),
+                vol.Optional(
+                    CONF_REMOTE_WORKER_TOKEN,
+                    default=DEFAULT_REMOTE_WORKER_TOKEN,
+                ): TextSelector(),
+                vol.Required(
+                    CONF_REMOTE_WORKER_VERIFY_SSL,
+                    default=DEFAULT_REMOTE_WORKER_VERIFY_SSL,
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_REMOTE_WORKER_SYNC_CONFIG,
+                    default=DEFAULT_REMOTE_WORKER_SYNC_CONFIG,
+                ): BooleanSelector(),
                 vol.Required(
                     CONF_ALREADY_CLASSIFIED_SKIP,
                     default=DEFAULT_ALREADY_CLASSIFIED_SKIP,
@@ -272,6 +316,46 @@ class PaperlessKIplusOptionsFlow(config_entries.OptionsFlow):
                         data.get(CONF_MAX_DOCUMENTS, DEFAULT_MAX_DOCUMENTS),
                     ),
                 ): NumberSelector(NumberSelectorConfig(min=0, max=5000, step=1, mode="box")),
+                vol.Required(
+                    CONF_EXECUTION_MODE,
+                    default=options.get(
+                        CONF_EXECUTION_MODE,
+                        data.get(CONF_EXECUTION_MODE, DEFAULT_EXECUTION_MODE),
+                    ),
+                ): SelectSelector(
+                    SelectSelectorConfig(
+                        options=[EXECUTION_MODE_LOCAL, EXECUTION_MODE_REMOTE_WORKER],
+                        mode=SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+                vol.Optional(
+                    CONF_REMOTE_WORKER_URL,
+                    default=options.get(
+                        CONF_REMOTE_WORKER_URL,
+                        data.get(CONF_REMOTE_WORKER_URL, DEFAULT_REMOTE_WORKER_URL),
+                    ),
+                ): TextSelector(),
+                vol.Optional(
+                    CONF_REMOTE_WORKER_TOKEN,
+                    default=options.get(
+                        CONF_REMOTE_WORKER_TOKEN,
+                        data.get(CONF_REMOTE_WORKER_TOKEN, DEFAULT_REMOTE_WORKER_TOKEN),
+                    ),
+                ): TextSelector(),
+                vol.Required(
+                    CONF_REMOTE_WORKER_VERIFY_SSL,
+                    default=options.get(
+                        CONF_REMOTE_WORKER_VERIFY_SSL,
+                        data.get(CONF_REMOTE_WORKER_VERIFY_SSL, DEFAULT_REMOTE_WORKER_VERIFY_SSL),
+                    ),
+                ): BooleanSelector(),
+                vol.Required(
+                    CONF_REMOTE_WORKER_SYNC_CONFIG,
+                    default=options.get(
+                        CONF_REMOTE_WORKER_SYNC_CONFIG,
+                        data.get(CONF_REMOTE_WORKER_SYNC_CONFIG, DEFAULT_REMOTE_WORKER_SYNC_CONFIG),
+                    ),
+                ): BooleanSelector(),
                 vol.Required(
                     CONF_ALREADY_CLASSIFIED_SKIP,
                     default=options.get(
@@ -437,6 +521,12 @@ def _validate_managed_yaml_input(user_input: dict[str, Any]) -> dict[str, str]:
     """
 
     raw_yaml = str(user_input.get(CONF_MANAGED_CONFIG_YAML, "")).strip()
+    execution_mode = str(user_input.get(CONF_EXECUTION_MODE, DEFAULT_EXECUTION_MODE) or "").strip()
+    remote_worker_url = str(user_input.get(CONF_REMOTE_WORKER_URL, "") or "").strip()
+
+    if execution_mode == EXECUTION_MODE_REMOTE_WORKER and not remote_worker_url:
+        return {"base": "remote_worker_url_required"}
+
     if not raw_yaml:
         return {"base": "managed_yaml_required"}
 

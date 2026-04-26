@@ -31,6 +31,14 @@ CONF_MAX_PARALLEL_AI_JOBS = "max_parallel_ai_jobs"
 CONF_ENABLE_TAX_ENRICHMENT = "enable_tax_enrichment"
 CONF_TAX_PROCESS_KI_TAGGED_DOCUMENTS = "tax_process_ki_tagged_documents"
 CONF_TAX_PERSONAL_CONTEXT = "tax_personal_context"
+CONF_EXECUTION_MODE = "execution_mode"
+CONF_REMOTE_WORKER_URL = "remote_worker_url"
+CONF_REMOTE_WORKER_TOKEN = "remote_worker_token"
+CONF_REMOTE_WORKER_VERIFY_SSL = "remote_worker_verify_ssl"
+CONF_REMOTE_WORKER_SYNC_CONFIG = "remote_worker_sync_config"
+
+EXECUTION_MODE_LOCAL = "local"
+EXECUTION_MODE_REMOTE_WORKER = "remote_worker"
 
 DEFAULT_COMMAND = "python3 /config/custom_components/paperless_kiplus/paperless_ai_sorter.py"
 DEFAULT_WORKDIR = "/config"
@@ -59,12 +67,18 @@ DEFAULT_MAX_PARALLEL_AI_JOBS = 5
 DEFAULT_ENABLE_TAX_ENRICHMENT = False
 DEFAULT_TAX_PROCESS_KI_TAGGED_DOCUMENTS = False
 DEFAULT_TAX_PERSONAL_CONTEXT = ""
+DEFAULT_EXECUTION_MODE = EXECUTION_MODE_LOCAL
+DEFAULT_REMOTE_WORKER_URL = ""
+DEFAULT_REMOTE_WORKER_TOKEN = ""
+DEFAULT_REMOTE_WORKER_VERIFY_SSL = True
+DEFAULT_REMOTE_WORKER_SYNC_CONFIG = True
 
 SERVICE_RUN = "run"
 SERVICE_RESTART = "restart"
 SERVICE_STOP = "stop"
 SERVICE_STOP_NOW = "stop_now"
 SERVICE_RESUME = "resume"
+SERVICE_EXPORT_CONFIG = "export_config"
 
 ATTR_FORCE = "force"
 ATTR_WAIT = "wait"
@@ -74,5 +88,7 @@ ATTR_DRY_RUN = "dry_run"
 ATTR_ALL_DOCUMENTS = "all_documents"
 ATTR_MAX_DOCUMENTS = "max_documents"
 ATTR_BACKFILL_EXISTING_DOCUMENTS = "backfill_existing_documents"
+ATTR_REMOTE_UPLOAD = "remote_upload"
+ATTR_INCLUDE_SECRETS = "include_secrets"
 
 SIGNAL_STATUS_UPDATED = f"{DOMAIN}_status_updated"

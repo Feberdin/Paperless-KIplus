@@ -47,6 +47,7 @@ import yaml
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
+from .config_export import build_effective_managed_config_yaml
 from .const import SIGNAL_STATUS_UPDATED
 
 _LOGGER = logging.getLogger(__name__)
@@ -202,6 +203,14 @@ class PaperlessRunner:
         self.enable_tax_enrichment = enable_tax_enrichment
         self.tax_process_ki_tagged_documents = tax_process_ki_tagged_documents
         self.tax_personal_context = tax_personal_context
+        self.execution_mode = "local"
+        self.remote_worker_url = ""
+        self.remote_worker_token = ""
+        self.remote_worker_verify_ssl = True
+        self.remote_worker_sync_config = False
+        self.worker_ui_url = ""
+        self.last_config_sync_at: datetime | None = None
+        self.last_config_sync_status = "not_applicable"
 
         self._lock = asyncio.Lock()
         self._process: asyncio.subprocess.Process | None = None
@@ -1080,6 +1089,36 @@ class PaperlessRunner:
             notification_id="paperless_kiplus_last_completed_document_link",
         )
 
+    async def async_open_worker_ui(self) -> str:
+        """Zeigt bei Bedarf einen klickbaren Link zur externen Worker-Oberfläche."""
+
+        if not self.worker_ui_url:
+            self.last_status = "worker_ui_unavailable"
+            self.last_message = (
+                "keine externe Worker-Weboberfläche konfiguriert; "
+                "lokaler Home-Assistant-Modus ist aktiv"
+            )
+            self._notify()
+            return ""
+
+        await self.hass.services.async_call(
+            "persistent_notification",
+            "create",
+            {
+                "title": "Paperless KIplus Worker-Weboberfläche",
+                "message": (
+                    f"[Worker-Weboberfläche öffnen]({self.worker_ui_url})\n\n"
+                    f"URL: `{self.worker_ui_url}`"
+                ),
+                "notification_id": "paperless_kiplus_worker_ui_link",
+            },
+            blocking=True,
+        )
+        self.last_status = "worker_ui_link_ready"
+        self.last_message = "worker web interface link prepared"
+        self._notify()
+        return self.worker_ui_url
+
     async def async_show_last_log(self) -> None:
         """Zeigt den Inhalt des letzten Protokolls direkt als HA-Benachrichtigung an."""
 
@@ -1150,6 +1189,68 @@ class PaperlessRunner:
         await self._refresh_failed_state_counts()
         self._notify()
 
+    async def async_export_worker_config(
+        self,
+        *,
+        remote_upload: bool = False,
+        announce: bool = True,
+    ) -> str:
+        """Exportiert die effektive YAML für einen externen Worker als Datei.
+
+        Im lokalen Modus existiert kein Remote-Ziel. Wir erzeugen deshalb nur
+        eine herunterladbare Exportdatei, damit dieselbe Button-/Service-API wie
+        im Remote-Modus genutzt werden kann.
+        """
+
+        del remote_upload
+        export_path = Path("/config/www/paperless_kiplus_worker_config.yaml")
+        yaml_text = build_effective_managed_config_yaml(
+            self.managed_config_yaml,
+            input_cost_per_1k_tokens_eur=self.input_cost_per_1k_tokens_eur,
+            output_cost_per_1k_tokens_eur=self.output_cost_per_1k_tokens_eur,
+            already_classified_skip=self.already_classified_skip,
+            already_classified_require_ki_tag=self.already_classified_require_ki_tag,
+            precheck_min_content_chars=self.precheck_min_content_chars,
+            precheck_min_word_count=self.precheck_min_word_count,
+            precheck_min_alnum_ratio=self.precheck_min_alnum_ratio,
+            precheck_blocked_filename_patterns=self.precheck_blocked_filename_patterns,
+            precheck_image_only_gate=self.precheck_image_only_gate,
+            precheck_duplicate_hash_gate=self.precheck_duplicate_hash_gate,
+            precheck_duplicate_apply_metadata=self.precheck_duplicate_apply_metadata,
+            reprocess_ki_tagged_documents=self.reprocess_ki_tagged_documents,
+            enable_parallel_ai=self.enable_parallel_ai,
+            max_parallel_ai_jobs=self.max_parallel_ai_jobs,
+            enable_tax_enrichment=self.enable_tax_enrichment,
+            tax_process_ki_tagged_documents=self.tax_process_ki_tagged_documents,
+            tax_personal_context=self.tax_personal_context,
+        )
+        await self.hass.async_add_executor_job(
+            lambda: export_path.parent.mkdir(parents=True, exist_ok=True)
+        )
+        await self.hass.async_add_executor_job(
+            lambda: export_path.write_text(yaml_text, encoding="utf-8")
+        )
+        self.last_config_sync_at = datetime.now(UTC)
+        self.last_config_sync_status = "local_export_only"
+        self.last_status = "config_exported"
+        self.last_message = "worker configuration exported locally"
+        if announce:
+            await self.hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": "Paperless KIplus Worker-Konfiguration",
+                    "message": (
+                        "Die effektive Worker-Konfiguration wurde exportiert.\n\n"
+                        "[Exportdatei herunterladen](/local/paperless_kiplus_worker_config.yaml)"
+                    ),
+                    "notification_id": "paperless_kiplus_worker_config_export",
+                },
+                blocking=True,
+            )
+        self._notify()
+        return yaml_text
+
     @staticmethod
     def _extract_last_line(text: str, marker: str) -> str:
         """Extract the most recent line containing a marker from a log text."""
@@ -1188,45 +1289,28 @@ class PaperlessRunner:
         path = Path(config_file)
         if not path.is_absolute():
             path = Path(self.workdir) / path
-        raw_yaml = self.managed_config_yaml
-
         def _write() -> None:
             path.parent.mkdir(parents=True, exist_ok=True)
-            parsed = yaml.safe_load(raw_yaml) or {}
-            if isinstance(parsed, dict):
-                parsed["input_cost_per_1k_tokens_eur"] = float(self.input_cost_per_1k_tokens_eur)
-                parsed["output_cost_per_1k_tokens_eur"] = float(self.output_cost_per_1k_tokens_eur)
-                parsed["already_classified_skip"] = bool(self.already_classified_skip)
-                parsed["already_classified_require_ki_tag"] = bool(
-                    self.already_classified_require_ki_tag
-                )
-                parsed["precheck_min_content_chars"] = int(self.precheck_min_content_chars)
-                parsed["precheck_min_word_count"] = int(self.precheck_min_word_count)
-                parsed["precheck_min_alnum_ratio"] = float(self.precheck_min_alnum_ratio)
-                patterns = [
-                    part.strip()
-                    for part in str(self.precheck_blocked_filename_patterns).split(",")
-                    if part.strip()
-                ]
-                parsed["precheck_blocked_filename_patterns"] = patterns
-                parsed["precheck_image_only_gate"] = bool(self.precheck_image_only_gate)
-                parsed["precheck_duplicate_hash_gate"] = bool(self.precheck_duplicate_hash_gate)
-                parsed["precheck_duplicate_apply_metadata"] = bool(
-                    self.precheck_duplicate_apply_metadata
-                )
-                parsed["reprocess_ki_tagged_documents"] = bool(
-                    self.reprocess_ki_tagged_documents
-                )
-                parsed["enable_parallel_ai"] = bool(self.enable_parallel_ai)
-                parsed["max_parallel_ai_jobs"] = max(1, int(self.max_parallel_ai_jobs))
-                parsed["enable_tax_enrichment"] = bool(self.enable_tax_enrichment)
-                parsed["tax_process_ki_tagged_documents"] = bool(
-                    self.tax_process_ki_tagged_documents
-                )
-                parsed["tax_personal_context"] = str(self.tax_personal_context or "")
-                content = yaml.safe_dump(parsed, allow_unicode=True, sort_keys=False)
-            else:
-                content = raw_yaml
+            content = build_effective_managed_config_yaml(
+                self.managed_config_yaml,
+                input_cost_per_1k_tokens_eur=self.input_cost_per_1k_tokens_eur,
+                output_cost_per_1k_tokens_eur=self.output_cost_per_1k_tokens_eur,
+                already_classified_skip=self.already_classified_skip,
+                already_classified_require_ki_tag=self.already_classified_require_ki_tag,
+                precheck_min_content_chars=self.precheck_min_content_chars,
+                precheck_min_word_count=self.precheck_min_word_count,
+                precheck_min_alnum_ratio=self.precheck_min_alnum_ratio,
+                precheck_blocked_filename_patterns=self.precheck_blocked_filename_patterns,
+                precheck_image_only_gate=self.precheck_image_only_gate,
+                precheck_duplicate_hash_gate=self.precheck_duplicate_hash_gate,
+                precheck_duplicate_apply_metadata=self.precheck_duplicate_apply_metadata,
+                reprocess_ki_tagged_documents=self.reprocess_ki_tagged_documents,
+                enable_parallel_ai=self.enable_parallel_ai,
+                max_parallel_ai_jobs=self.max_parallel_ai_jobs,
+                enable_tax_enrichment=self.enable_tax_enrichment,
+                tax_process_ki_tagged_documents=self.tax_process_ki_tagged_documents,
+                tax_personal_context=self.tax_personal_context,
+            )
             path.write_text(content, encoding="utf-8")
 
         await self.hass.async_add_executor_job(_write)

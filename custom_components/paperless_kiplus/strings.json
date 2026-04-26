@@ -3,18 +3,24 @@
     "error": {
       "managed_yaml_required": "Managed YAML is empty. Please paste your full YAML config.",
       "managed_yaml_invalid": "Managed YAML is invalid. Please check syntax.",
-      "managed_yaml_missing_required": "Managed YAML is missing required keys: paperless_url, paperless_token, ai_api_key, ai_model."
+      "managed_yaml_missing_required": "Managed YAML is missing required keys: paperless_url, paperless_token, ai_api_key, ai_model.",
+      "remote_worker_url_required": "Please configure remote_worker_url when execution_mode is set to remote_worker."
     },
     "step": {
       "user": {
         "title": "Paperless KIplus Runner",
-        "description": "Quick-Setup in dieser Ansicht:\n1) Dry-Run aktivieren und zuerst testen.\n2) Bei Bedarf Alle Dokumente aktivieren (sonst nur YAML-Filter, z. B. #NEU).\n3) Token-Kosten prüfen/anpassen.\n4) Kompletten YAML-Text unten einfügen.\n\n{dry_run_help}\n\n{all_documents_help}\n\n{pricing_source}\n\n{yaml_help}",
+        "description": "Quick-Setup in dieser Ansicht:\n1) Dry-Run aktivieren und zuerst testen.\n2) Bei Bedarf Alle Dokumente aktivieren (sonst nur YAML-Filter, z. B. #NEU).\n3) Ausführungsmodus lokal oder Remote-Worker wählen.\n4) Token-Kosten prüfen/anpassen.\n5) Kompletten YAML-Text unten einfügen.\n\n{dry_run_help}\n\n{all_documents_help}\n\n{execution_help}\n\n{pricing_source}\n\n{yaml_help}",
         "data": {
           "dry_run": "Dry-Run: Testmodus (speichert nichts in Paperless, zeigt nur Vorschläge)",
           "all_documents": "Alle Dokumente: Einmaliger Vollscan (ignoriert YAML-Filter wie #NEU)",
           "input_cost_per_1k_tokens_eur": "Input-Kosten pro 1.000 Tokens (EUR) - Standard 0.0004",
           "output_cost_per_1k_tokens_eur": "Output-Kosten pro 1.000 Tokens (EUR) - Standard 0.0016",
           "max_documents": "Max. Dokumente pro Lauf (0 = Wert aus YAML verwenden)",
+          "execution_mode": "Ausführungsmodus (local oder remote_worker)",
+          "remote_worker_url": "Remote-Worker URL",
+          "remote_worker_token": "Remote-Worker Bearer-Token",
+          "remote_worker_verify_ssl": "Remote-Worker SSL-Zertifikat prüfen",
+          "remote_worker_sync_config": "Vor jedem Remote-Lauf Konfiguration automatisch zum Worker synchronisieren",
           "already_classified_skip": "Precheck: Bereits klassifizierte Dokumente überspringen",
           "already_classified_require_ki_tag": "Nur mit KI-Tag als bereits klassifiziert zählen",
           "precheck_min_content_chars": "Precheck: Min. OCR-Zeichen (Standard 120)",
@@ -39,6 +45,11 @@
           "input_cost_per_1k_tokens_eur": "Preis für Prompt-/Eingabe-Tokens pro 1.000 Tokens in EUR.",
           "output_cost_per_1k_tokens_eur": "Preis für Antwort-/Ausgabe-Tokens pro 1.000 Tokens in EUR.",
           "max_documents": "Sicherheitslimit pro Lauf. 0 bedeutet: verwende den Wert aus deiner YAML.",
+          "execution_mode": "local = Ausführung in Home Assistant. remote_worker = Ausführung auf einem externen Docker-/Unraid-Worker.",
+          "remote_worker_url": "HTTP- oder HTTPS-Adresse des eigenständigen Workers, z. B. http://unraid:8787.",
+          "remote_worker_token": "Optionaler Bearer-Token, wenn der Worker per Token geschützt ist.",
+          "remote_worker_verify_ssl": "Bei HTTPS aktiv lassen. Für interne Testsysteme mit Self-Signed-Zertifikat nur bewusst deaktivieren.",
+          "remote_worker_sync_config": "Überträgt die effektive YAML vor Remote-Läufen automatisch an den Worker.",
           "already_classified_skip": "Wenn Dokumenttyp und Tags bereits gesetzt sind, wird die KI nicht erneut aufgerufen.",
           "already_classified_require_ki_tag": "Optional: Überspringen nur, wenn zusätzlich ein KI-Tag vorhanden ist.",
           "precheck_min_content_chars": "Unter diesem OCR-Textumfang wird per Precheck übersprungen (KI_SKIP_PRECHECK).",
@@ -64,18 +75,24 @@
     "error": {
       "managed_yaml_required": "Managed YAML is empty. Please paste your full YAML config.",
       "managed_yaml_invalid": "Managed YAML is invalid. Please check syntax.",
-      "managed_yaml_missing_required": "Managed YAML is missing required keys: paperless_url, paperless_token, ai_api_key, ai_model."
+      "managed_yaml_missing_required": "Managed YAML is missing required keys: paperless_url, paperless_token, ai_api_key, ai_model.",
+      "remote_worker_url_required": "Please configure remote_worker_url when execution_mode is set to remote_worker."
     },
     "step": {
       "init": {
         "title": "Paperless KIplus Runner Optionen",
-        "description": "So nutzt du diese Optionen direkt hier im UI:\n1) Dry-Run EIN zum sicheren Testen.\n2) Alle Dokumente nur für Vollscan aktivieren.\n3) Token-Kosten passend zum Modell setzen.\n4) YAML immer komplett im YAML-Feld pflegen.\n\n{dry_run_help}\n\n{all_documents_help}\n\n{pricing_source}\n\n{yaml_help}",
+        "description": "So nutzt du diese Optionen direkt hier im UI:\n1) Dry-Run EIN zum sicheren Testen.\n2) Alle Dokumente nur für Vollscan aktivieren.\n3) Ausführungsmodus lokal oder Remote-Worker wählen.\n4) Token-Kosten passend zum Modell setzen.\n5) YAML immer komplett im YAML-Feld pflegen.\n\n{dry_run_help}\n\n{all_documents_help}\n\n{execution_help}\n\n{pricing_source}\n\n{yaml_help}",
         "data": {
           "dry_run": "Dry-Run: Testmodus (speichert nichts in Paperless, zeigt nur Vorschläge)",
           "all_documents": "Alle Dokumente: Einmaliger Vollscan (ignoriert YAML-Filter wie #NEU)",
           "input_cost_per_1k_tokens_eur": "Input-Kosten pro 1.000 Tokens (EUR) - Standard 0.0004",
           "output_cost_per_1k_tokens_eur": "Output-Kosten pro 1.000 Tokens (EUR) - Standard 0.0016",
           "max_documents": "Max. Dokumente pro Lauf (0 = Wert aus YAML verwenden)",
+          "execution_mode": "Ausführungsmodus (local oder remote_worker)",
+          "remote_worker_url": "Remote-Worker URL",
+          "remote_worker_token": "Remote-Worker Bearer-Token",
+          "remote_worker_verify_ssl": "Remote-Worker SSL-Zertifikat prüfen",
+          "remote_worker_sync_config": "Vor jedem Remote-Lauf Konfiguration automatisch zum Worker synchronisieren",
           "already_classified_skip": "Precheck: Bereits klassifizierte Dokumente überspringen",
           "already_classified_require_ki_tag": "Nur mit KI-Tag als bereits klassifiziert zählen",
           "precheck_min_content_chars": "Precheck: Min. OCR-Zeichen (Standard 120)",
@@ -100,6 +117,11 @@
           "input_cost_per_1k_tokens_eur": "Preis für Prompt-/Eingabe-Tokens pro 1.000 Tokens in EUR.",
           "output_cost_per_1k_tokens_eur": "Preis für Antwort-/Ausgabe-Tokens pro 1.000 Tokens in EUR.",
           "max_documents": "Sicherheitslimit pro Lauf. 0 bedeutet: verwende den Wert aus deiner YAML.",
+          "execution_mode": "local = Ausführung in Home Assistant. remote_worker = Ausführung auf einem externen Docker-/Unraid-Worker.",
+          "remote_worker_url": "HTTP- oder HTTPS-Adresse des eigenständigen Workers, z. B. http://unraid:8787.",
+          "remote_worker_token": "Optionaler Bearer-Token, wenn der Worker per Token geschützt ist.",
+          "remote_worker_verify_ssl": "Bei HTTPS aktiv lassen. Für interne Testsysteme mit Self-Signed-Zertifikat nur bewusst deaktivieren.",
+          "remote_worker_sync_config": "Überträgt die effektive YAML vor Remote-Läufen automatisch an den Worker.",
           "already_classified_skip": "Wenn Dokumenttyp und Tags bereits gesetzt sind, wird die KI nicht erneut aufgerufen.",
           "already_classified_require_ki_tag": "Optional: Überspringen nur, wenn zusätzlich ein KI-Tag vorhanden ist.",
           "precheck_min_content_chars": "Unter diesem OCR-Textumfang wird per Precheck übersprungen (KI_SKIP_PRECHECK).",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Protocol
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
@@ -12,7 +13,83 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN, SIGNAL_STATUS_UPDATED
-from .runner import PaperlessRunner
+
+
+class RunnerLike(Protocol):
+    """Gemeinsames Lese-Protokoll für lokale und Remote-Runner."""
+
+    execution_mode: str
+    remote_worker_url: str
+    remote_worker_verify_ssl: bool
+    remote_worker_sync_config: bool
+    worker_ui_url: str
+    last_config_sync_status: str
+    last_config_sync_at: datetime | None
+    last_status: str
+    last_message: str
+    running: bool
+    last_exit_code: int | None
+    last_started: datetime | None
+    last_finished: datetime | None
+    cooldown_until: datetime | None
+    command: str
+    last_command_executed: str
+    workdir: str
+    config_file: str
+    default_dry_run: bool
+    default_all_documents: bool
+    default_max_documents: int
+    managed_config_enabled: bool
+    managed_config_yaml: str
+    input_cost_per_1k_tokens_eur: float
+    output_cost_per_1k_tokens_eur: float
+    metrics_file: str
+    last_stdout_tail: str
+    last_stderr_tail: str
+    last_summary_line: str
+    last_cost_line: str
+    last_scanned: int
+    last_updated: int
+    last_skipped: int
+    last_failed: int
+    last_run_total_tokens: int
+    last_run_cost_eur: float
+    last_run_bypass_skipped: int
+    total_tokens: int
+    total_cost_eur: float
+    total_bypass_skipped: int
+    last_log_export_path: str
+    last_log_export_url: str
+    active_quarantine_count: int
+    active_bypass_count: int
+    run_state_path: str
+    stop_request_path: str
+    resume_available: bool
+    pause_reason: str
+    auto_resume_at: datetime | None
+    stop_requested: bool
+    force_stop_requested: bool
+    progress_total_documents: int
+    progress_completed_documents: int
+    progress_percent: float
+    progress_scanned: int
+    progress_updated: int
+    progress_skipped: int
+    progress_failed: int
+    progress_bypassed: int
+    progress_bypass_skipped: int
+    progress_prefiltered_ki_tagged: int
+    progress_budget_used: int
+    progress_pending_documents: int
+    progress_current_document_id: int | None
+    progress_current_document_title: str
+    progress_current_document_url: str
+    last_completed_document_id: int | None
+    last_completed_document_title: str
+    last_completed_document_url: str
+    last_completed_document_at: datetime | None
+    progress_last_event_at: datetime | None
+    last_log_combined: str
 
 
 def _iso(ts: datetime | None) -> str | None:
@@ -43,7 +120,7 @@ async def async_setup_entry(
 ) -> None:
     """Set up sensors from config entry."""
 
-    runner: PaperlessRunner = hass.data[DOMAIN][entry.entry_id]
+    runner: RunnerLike = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [
             PaperlessRunnerStatusSensor(entry.entry_id, runner),
@@ -74,7 +151,7 @@ class PaperlessRunnerStatusSensor(SensorEntity):
 
     _attr_icon = "mdi:file-document-cog"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         self._entry_id = entry_id
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_status"
@@ -111,6 +188,13 @@ class PaperlessRunnerStatusSensor(SensorEntity):
         return {
             "message": self._runner.last_message,
             "running": self._runner.running,
+            "execution_mode": self._runner.execution_mode,
+            "remote_worker_url": self._runner.remote_worker_url or None,
+            "remote_worker_verify_ssl": self._runner.remote_worker_verify_ssl,
+            "remote_worker_sync_config": self._runner.remote_worker_sync_config,
+            "worker_ui_url": self._runner.worker_ui_url or None,
+            "last_config_sync_status": self._runner.last_config_sync_status,
+            "last_config_sync_at": _iso(self._runner.last_config_sync_at),
             "last_exit_code": self._runner.last_exit_code,
             "last_started": _iso(self._runner.last_started),
             "last_finished": _iso(self._runner.last_finished),
@@ -180,7 +264,7 @@ class PaperlessRunnerRunLogSensor(SensorEntity):
 
     _attr_icon = "mdi:text-box-search-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         self._entry_id = entry_id
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_run_log"
@@ -225,7 +309,7 @@ class PaperlessRunnerRunLogSensor(SensorEntity):
 class _BaseMetricSensor(SensorEntity):
     """Shared base sensor for runner metrics."""
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner, *, suffix: str, name: str) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike, *, suffix: str, name: str) -> None:
         self._entry_id = entry_id
         self._runner = runner
         self._attr_unique_id = f"{entry_id}_{suffix}"
@@ -254,7 +338,7 @@ class PaperlessRunnerProgressSensor(_BaseMetricSensor):
     _attr_icon = "mdi:progress-clock"
     _attr_native_unit_of_measurement = "%"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         super().__init__(
             entry_id,
             runner,
@@ -289,6 +373,7 @@ class PaperlessRunnerProgressSensor(_BaseMetricSensor):
             "last_event_at": _iso(self._runner.progress_last_event_at),
             "resume_available": self._runner.resume_available,
             "pause_reason": self._runner.pause_reason or None,
+            "execution_mode": self._runner.execution_mode,
         }
 
 
@@ -297,7 +382,7 @@ class PaperlessRunnerCurrentDocumentSensor(_BaseMetricSensor):
 
     _attr_icon = "mdi:file-clock-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         super().__init__(
             entry_id,
             runner,
@@ -324,7 +409,7 @@ class PaperlessRunnerLastCompletedDocumentSensor(_BaseMetricSensor):
 
     _attr_icon = "mdi:file-check-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         super().__init__(
             entry_id,
             runner,
@@ -351,7 +436,7 @@ class PaperlessRunnerSummarySensor(_BaseMetricSensor):
 
     _attr_icon = "mdi:clipboard-text-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         super().__init__(
             entry_id,
             runner,
@@ -388,7 +473,7 @@ class PaperlessRunnerErrorsSensor(_BaseMetricSensor):
 
     _attr_icon = "mdi:alert-circle-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         super().__init__(
             entry_id,
             runner,
@@ -406,7 +491,7 @@ class PaperlessRunnerUpdatedSensor(_BaseMetricSensor):
 
     _attr_icon = "mdi:file-check-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         super().__init__(
             entry_id,
             runner,
@@ -424,7 +509,7 @@ class PaperlessRunnerScannedSensor(_BaseMetricSensor):
 
     _attr_icon = "mdi:file-search-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         super().__init__(
             entry_id,
             runner,
@@ -442,7 +527,7 @@ class PaperlessRunnerSkippedSensor(_BaseMetricSensor):
 
     _attr_icon = "mdi:file-cancel-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         super().__init__(
             entry_id,
             runner,
@@ -461,7 +546,7 @@ class PaperlessRunnerLastTokensSensor(_BaseMetricSensor):
     _attr_icon = "mdi:counter"
     _attr_native_unit_of_measurement = "tokens"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         super().__init__(
             entry_id,
             runner,
@@ -480,7 +565,7 @@ class PaperlessRunnerLastCostSensor(_BaseMetricSensor):
     _attr_icon = "mdi:currency-eur"
     _attr_native_unit_of_measurement = "EUR"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         super().__init__(
             entry_id,
             runner,
@@ -498,7 +583,7 @@ class PaperlessRunnerQuarantineCountSensor(_BaseMetricSensor):
 
     _attr_icon = "mdi:timer-sand"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         super().__init__(
             entry_id,
             runner,
@@ -516,7 +601,7 @@ class PaperlessRunnerBypassCountSensor(_BaseMetricSensor):
 
     _attr_icon = "mdi:skip-next-circle-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         super().__init__(
             entry_id,
             runner,
@@ -534,7 +619,7 @@ class PaperlessRunnerLastBypassSkippedSensor(_BaseMetricSensor):
 
     _attr_icon = "mdi:skip-next-circle-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         super().__init__(
             entry_id,
             runner,
@@ -553,7 +638,7 @@ class PaperlessRunnerTotalTokensSensor(_BaseMetricSensor):
     _attr_icon = "mdi:counter"
     _attr_native_unit_of_measurement = "tokens"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         super().__init__(
             entry_id,
             runner,
@@ -572,7 +657,7 @@ class PaperlessRunnerTotalCostSensor(_BaseMetricSensor):
     _attr_icon = "mdi:currency-eur"
     _attr_native_unit_of_measurement = "EUR"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         super().__init__(
             entry_id,
             runner,
@@ -590,7 +675,7 @@ class PaperlessRunnerTotalBypassSkippedSensor(_BaseMetricSensor):
 
     _attr_icon = "mdi:skip-forward-circle-outline"
 
-    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+    def __init__(self, entry_id: str, runner: RunnerLike) -> None:
         super().__init__(
             entry_id,
             runner,

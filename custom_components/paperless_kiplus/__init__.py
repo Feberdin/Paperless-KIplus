@@ -19,6 +19,7 @@ from .const import (
     ATTR_CONFIG_FILE,
     ATTR_ENTRY_ID,
     ATTR_FORCE,
+    ATTR_REMOTE_UPLOAD,
     ATTR_MAX_DOCUMENTS,
     ATTR_WAIT,
     ATTR_DRY_RUN,
@@ -42,6 +43,11 @@ from .const import (
     CONF_PRECHECK_MIN_WORD_COUNT,
     CONF_TAX_PERSONAL_CONTEXT,
     CONF_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
+    CONF_EXECUTION_MODE,
+    CONF_REMOTE_WORKER_URL,
+    CONF_REMOTE_WORKER_TOKEN,
+    CONF_REMOTE_WORKER_VERIFY_SSL,
+    CONF_REMOTE_WORKER_SYNC_CONFIG,
     DEFAULT_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
     DEFAULT_ALREADY_CLASSIFIED_SKIP,
     DEFAULT_ALL_DOCUMENTS,
@@ -69,13 +75,21 @@ from .const import (
     DEFAULT_TAX_PERSONAL_CONTEXT,
     DEFAULT_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
     DEFAULT_WORKDIR,
+    DEFAULT_EXECUTION_MODE,
+    DEFAULT_REMOTE_WORKER_URL,
+    DEFAULT_REMOTE_WORKER_TOKEN,
+    DEFAULT_REMOTE_WORKER_VERIFY_SSL,
+    DEFAULT_REMOTE_WORKER_SYNC_CONFIG,
     DOMAIN,
+    EXECUTION_MODE_REMOTE_WORKER,
+    SERVICE_EXPORT_CONFIG,
     SERVICE_RESUME,
     SERVICE_RESTART,
     SERVICE_RUN,
     SERVICE_STOP,
     SERVICE_STOP_NOW,
 )
+from .remote_runner import RemotePaperlessRunner
 from .runner import PaperlessRunner
 
 _LOGGER = logging.getLogger(__name__)
@@ -149,6 +163,13 @@ RESTART_SERVICE_SCHEMA = vol.Schema(
         vol.Optional(ATTR_FORCE, default=True): cv.boolean,
         vol.Optional(ATTR_WAIT, default=False): cv.boolean,
         vol.Optional(ATTR_BACKFILL_EXISTING_DOCUMENTS): cv.boolean,
+    }
+)
+
+EXPORT_CONFIG_SERVICE_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_ENTRY_ID): cv.string,
+        vol.Optional(ATTR_REMOTE_UPLOAD, default=False): cv.boolean,
     }
 )
 
@@ -320,38 +341,87 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             data.get(CONF_TAX_PERSONAL_CONTEXT, DEFAULT_TAX_PERSONAL_CONTEXT),
         )
     )
-
-    runner = PaperlessRunner(
-        hass,
-        entry_id=entry.entry_id,
-        command=command,
-        workdir=workdir,
-        cooldown_seconds=cooldown_seconds,
-        metrics_file=str(metrics_file),
-        config_file=config_file,
-        dry_run=dry_run,
-        all_documents=all_documents,
-        max_documents=max_documents,
-        managed_config_enabled=managed_config_enabled,
-        managed_config_yaml=managed_config_yaml,
-        input_cost_per_1k_tokens_eur=input_cost_per_1k_tokens_eur,
-        output_cost_per_1k_tokens_eur=output_cost_per_1k_tokens_eur,
-        already_classified_skip=already_classified_skip,
-        already_classified_require_ki_tag=already_classified_require_ki_tag,
-        precheck_min_content_chars=precheck_min_content_chars,
-        precheck_min_word_count=precheck_min_word_count,
-        precheck_min_alnum_ratio=precheck_min_alnum_ratio,
-        precheck_blocked_filename_patterns=precheck_blocked_filename_patterns,
-        precheck_image_only_gate=precheck_image_only_gate,
-        precheck_duplicate_hash_gate=precheck_duplicate_hash_gate,
-        precheck_duplicate_apply_metadata=precheck_duplicate_apply_metadata,
-        reprocess_ki_tagged_documents=reprocess_ki_tagged_documents,
-        enable_parallel_ai=enable_parallel_ai,
-        max_parallel_ai_jobs=max_parallel_ai_jobs,
-        enable_tax_enrichment=enable_tax_enrichment,
-        tax_process_ki_tagged_documents=tax_process_ki_tagged_documents,
-        tax_personal_context=tax_personal_context,
+    execution_mode = str(
+        options.get(
+            CONF_EXECUTION_MODE,
+            data.get(CONF_EXECUTION_MODE, DEFAULT_EXECUTION_MODE),
+        )
+        or DEFAULT_EXECUTION_MODE
+    ).strip()
+    remote_worker_url = str(
+        options.get(
+            CONF_REMOTE_WORKER_URL,
+            data.get(CONF_REMOTE_WORKER_URL, DEFAULT_REMOTE_WORKER_URL),
+        )
+        or ""
+    ).strip()
+    remote_worker_token = str(
+        options.get(
+            CONF_REMOTE_WORKER_TOKEN,
+            data.get(CONF_REMOTE_WORKER_TOKEN, DEFAULT_REMOTE_WORKER_TOKEN),
+        )
+        or ""
+    ).strip()
+    remote_worker_verify_ssl = _as_bool(
+        options.get(
+            CONF_REMOTE_WORKER_VERIFY_SSL,
+            data.get(CONF_REMOTE_WORKER_VERIFY_SSL, DEFAULT_REMOTE_WORKER_VERIFY_SSL),
+        ),
+        DEFAULT_REMOTE_WORKER_VERIFY_SSL,
     )
+    remote_worker_sync_config = _as_bool(
+        options.get(
+            CONF_REMOTE_WORKER_SYNC_CONFIG,
+            data.get(CONF_REMOTE_WORKER_SYNC_CONFIG, DEFAULT_REMOTE_WORKER_SYNC_CONFIG),
+        ),
+        DEFAULT_REMOTE_WORKER_SYNC_CONFIG,
+    )
+
+    common_runner_kwargs = {
+        "entry_id": entry.entry_id,
+        "command": command,
+        "workdir": workdir,
+        "cooldown_seconds": cooldown_seconds,
+        "metrics_file": str(metrics_file),
+        "config_file": config_file,
+        "dry_run": dry_run,
+        "all_documents": all_documents,
+        "max_documents": max_documents,
+        "managed_config_enabled": managed_config_enabled,
+        "managed_config_yaml": managed_config_yaml,
+        "input_cost_per_1k_tokens_eur": input_cost_per_1k_tokens_eur,
+        "output_cost_per_1k_tokens_eur": output_cost_per_1k_tokens_eur,
+        "already_classified_skip": already_classified_skip,
+        "already_classified_require_ki_tag": already_classified_require_ki_tag,
+        "precheck_min_content_chars": precheck_min_content_chars,
+        "precheck_min_word_count": precheck_min_word_count,
+        "precheck_min_alnum_ratio": precheck_min_alnum_ratio,
+        "precheck_blocked_filename_patterns": precheck_blocked_filename_patterns,
+        "precheck_image_only_gate": precheck_image_only_gate,
+        "precheck_duplicate_hash_gate": precheck_duplicate_hash_gate,
+        "precheck_duplicate_apply_metadata": precheck_duplicate_apply_metadata,
+        "reprocess_ki_tagged_documents": reprocess_ki_tagged_documents,
+        "enable_parallel_ai": enable_parallel_ai,
+        "max_parallel_ai_jobs": max_parallel_ai_jobs,
+        "enable_tax_enrichment": enable_tax_enrichment,
+        "tax_process_ki_tagged_documents": tax_process_ki_tagged_documents,
+        "tax_personal_context": tax_personal_context,
+    }
+
+    if execution_mode == EXECUTION_MODE_REMOTE_WORKER:
+        runner = RemotePaperlessRunner(
+            hass,
+            **common_runner_kwargs,
+            remote_worker_url=remote_worker_url,
+            remote_worker_token=remote_worker_token,
+            remote_worker_verify_ssl=remote_worker_verify_ssl,
+            remote_worker_sync_config=remote_worker_sync_config,
+        )
+    else:
+        runner = PaperlessRunner(
+            hass,
+            **common_runner_kwargs,
+        )
     hass.data[DOMAIN][entry.entry_id] = runner
     await runner.async_load_initial_metrics()
 
@@ -543,6 +613,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             schema=RESUME_SERVICE_SCHEMA,
         )
 
+    if not hass.services.has_service(DOMAIN, SERVICE_EXPORT_CONFIG):
+
+        async def _handle_export_config(call: ServiceCall) -> None:
+            target_entry_id = call.data.get(ATTR_ENTRY_ID)
+            remote_upload = call.data.get(ATTR_REMOTE_UPLOAD, False)
+            if target_entry_id:
+                target_runners = [
+                    (target_entry_id, hass.data[DOMAIN].get(target_entry_id))
+                ]
+            else:
+                target_runners = list(hass.data[DOMAIN].items())
+
+            for entry_id, target_runner in target_runners:
+                if target_runner is None:
+                    _LOGGER.warning("Paperless KIplus entry '%s' not found", entry_id)
+                    continue
+                await target_runner.async_export_worker_config(remote_upload=remote_upload)
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_EXPORT_CONFIG,
+            _handle_export_config,
+            schema=EXPORT_CONFIG_SERVICE_SCHEMA,
+        )
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
@@ -567,6 +662,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             SERVICE_STOP,
             SERVICE_STOP_NOW,
             SERVICE_RESUME,
+            SERVICE_EXPORT_CONFIG,
         ):
             if hass.services.has_service(DOMAIN, service_name):
                 hass.services.async_remove(DOMAIN, service_name)

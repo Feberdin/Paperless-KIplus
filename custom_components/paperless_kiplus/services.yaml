@@ -140,3 +140,22 @@ resume:
       default: false
       selector:
         boolean:
+
+export_config:
+  name: Paperless KIplus Worker-Konfiguration exportieren
+  description: Exportiert die effektive Home-Assistant-Konfiguration als lauffähige Worker-YAML und kann sie optional direkt an einen Remote-Worker übertragen.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Optional. Exportiert nur für diese Integration-Instanz.
+      example: "abcd1234"
+      required: false
+      selector:
+        text:
+    remote_upload:
+      name: Direkt zum Worker übertragen
+      description: Wenn aktiv, wird die exportierte YAML nach dem lokalen Export direkt per API an den Remote-Worker hochgeladen.
+      required: false
+      default: false
+      selector:
+        boolean:

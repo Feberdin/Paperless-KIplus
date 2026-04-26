@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  paperless-kiplus-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: paperless-kiplus-worker
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      PAPERLESS_KIPLUS_DATA_DIR: /data
+      PAPERLESS_KIPLUS_HOST: 0.0.0.0
+      PAPERLESS_KIPLUS_PORT: 8787
+      PAPERLESS_KIPLUS_TOKEN: change-me
+      # Optional: override the executed sorter command when you debug locally.
+      # PAPERLESS_KIPLUS_SORTER_COMMAND: python3 /app/src/paperless_ai_sorter.py
+    volumes:
+      - ./worker-data:/data
+
+  # Optional helper for a local OpenAI-compatible endpoint.
+  # Use it by pointing tax_ai_base_url or ai_base_url in config.yaml to
+  # http://ollama:11434/v1 and using a model name that exists in Ollama.
+  ollama:
+    image: ollama/ollama:latest
+    container_name: paperless-kiplus-ollama
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama-data:/root/.ollama

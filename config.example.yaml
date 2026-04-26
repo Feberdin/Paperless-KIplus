@@ -200,6 +200,16 @@ tax_export_years:
 # auszufuehren. Nützlich fuer Altbestände.
 tax_process_ki_tagged_documents: false
 
+# Optional: Eigener KI-Provider nur fuer Tax Enrichment.
+# So kann die Hauptklassifikation weiter auf einem Cloud-Modell laufen,
+# waehrend die steuerliche Extraktion auf einem lokalen OpenAI-kompatiblen
+# Endpoint wie Ollama/vLLM auf dem Unraid-Server ausgefuehrt wird.
+# Wenn diese Felder leer bleiben, werden automatisch ai_api_key, ai_model und
+# ai_base_url des Hauptpfads verwendet.
+tax_ai_api_key: "<AI_API_KEY_ODER_DUMMY>"
+tax_ai_model: "gpt-4.1-mini"
+tax_ai_base_url: "https://api.openai.com/v1"
+
 # Optional: Freitext mit privatem Steuerkontext fuer die Steuer-KI.
 # Beispiel: verheiratet/getrennt, Kinder mit Alter, Betreuungsmodell,
 # Haushaltszuordnung, Pflege-/Unterhaltskonstellationen.
