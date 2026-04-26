@@ -905,7 +905,7 @@ tax_ai_base_url: http://ollama:11434/v1
 
 ## Versionsverlauf (antichronologisch)
 
-- `v1.4.0` (2026-04-26)
+- `v1.4.1` (2026-04-26)
   - Eigenständigen Docker-/Unraid-Worker mit Weboberfläche und JSON-API ergänzt.
   - Remote-Ausführungsmodus in Home Assistant ergänzt, inklusive `execution_mode`, `remote_worker_url` und automatischem Config-Sync.
   - Neuer Config-Export-Service und neue Buttons für Worker-UI sowie Worker-Konfiguration ergänzt.
