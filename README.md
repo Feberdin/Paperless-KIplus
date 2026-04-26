@@ -90,6 +90,13 @@ Die YAML muss diese Felder enthalten:
 - ai_notes_max_chars
 - enable_ai_note_summary
 - ai_note_summary_max_chars
+- enable_custom_field_enrichment
+- create_missing_custom_fields
+- enable_secondbrain_custom_fields
+- secondbrain_custom_fields_overwrite_existing
+- secondbrain_custom_fields_attach_empty_when_unknown
+- secondbrain_custom_fields_confidence_threshold
+- secondbrain_custom_fields_log_missing_fields
 - metrics_file
 - input_cost_per_1k_tokens_eur
 - output_cost_per_1k_tokens_eur
@@ -193,9 +200,11 @@ Erzeuge jetzt die vollständige YAML.
 - Doppelte Dokumente per Checksum erkennen (optional Metadatenübernahme)
 - Fehler-Quarantäne und Tag-Bypass für robuste Dauerläufe
 - KI-Notizen inkl. Begründung/Kurz-Zusammenfassung
+- Optionales Custom-Field-Enrichment für strukturierte Vertrags- und Lohnfelder
 - Token-/Kosten-Tracking (letzter Lauf + Gesamtwerte)
-- Service `paperless_kiplus.run` mit Overrides (`force`, `wait`, `dry_run`, `all_documents`, `max_documents`)
+- Service `paperless_kiplus.run` mit Overrides (`force`, `wait`, `dry_run`, `all_documents`, `max_documents`, `backfill_existing_documents`)
 - Geräte-Buttons für:
+  - Bestandsdaten neu anreichern
   - Letztes Protokoll anzeigen
   - Letztes Protokoll exportieren
   - Statistiken zurücksetzen
@@ -210,6 +219,268 @@ Erzeuge jetzt die vollständige YAML.
   - Exporte als `tax_export.json` und `tax_review.csv`
   - steuerliche Ergebnis-Tags in Paperless
   - eigene UI-Optionen für Steuer-Kontext und Tax-only-Nachlauf
+
+## Custom Field Enrichment
+
+### Ziel
+
+Zusätzlich zur normalen Klassifikation kann die Integration strukturierte
+Paperless-Custom-Fields befüllen. Es gibt dafür jetzt zwei getrennte Wege:
+
+- `enable_custom_field_enrichment` für den kleinen festen Standard-Katalog
+  (Vertrag / Lohnabrechnung)
+- `enable_secondbrain_custom_fields` für bereits in Paperless angelegte
+  `sb_`-Felder, die von `SecondBrain` später strukturiert ausgelesen werden
+
+### SecondBrain `sb_`-Felder
+
+#### Aktivierung
+
+```yaml
+enable_secondbrain_custom_fields: true
+secondbrain_custom_fields_overwrite_existing: false
+secondbrain_custom_fields_attach_empty_when_unknown: false
+secondbrain_custom_fields_confidence_threshold: 0.70
+secondbrain_custom_fields_log_missing_fields: true
+```
+
+Alternativ gruppiert:
+
+```yaml
+secondbrain_custom_fields:
+  enabled: true
+  overwrite_existing: false
+  attach_empty_when_unknown: false
+  confidence_threshold: 0.70
+  log_missing_fields: true
+```
+
+#### Voraussetzungen
+
+- Paperless-ngx mit Custom-Field-Support
+- die `sb_`-Felder müssen bereits in Paperless existieren
+- ein API-Benutzer mit Rechten auf `CustomField` und `Document`
+
+Wichtig:
+
+- Fehlende `sb_`-Felder brechen den Lauf nicht ab. Sie werden geloggt und
+  übersprungen.
+- Select-Felder werden nicht über hart codierte IDs beschrieben. Die
+  sichtbaren Labels aus der KI-Ausgabe werden zur Laufzeit gegen die in
+  Paperless hinterlegten Select-Optionen aufgelöst.
+- Bestehende Werte werden standardmäßig nicht überschrieben.
+- Im Dry-Run wird nur angezeigt, was geschrieben würde.
+
+#### Unterstützte `sb_`-Felder
+
+Klassifizierung:
+
+- `sb_document_category`
+- `sb_life_area`
+
+Referenzen:
+
+- `sb_case_reference`
+- `sb_contract_number`
+- `sb_customer_number`
+- `sb_invoice_number`
+- `sb_policy_number`
+- `sb_meter_number`
+- `sb_provider_name`
+- `sb_person_involved`
+- `sb_object_reference`
+- `sb_bank_account_hint`
+
+Beträge:
+
+- `sb_amount_total`
+- `sb_amount_net`
+- `sb_amount_tax`
+
+Datumsfelder:
+
+- `sb_due_date`
+- `sb_document_date`
+- `sb_period_start`
+- `sb_period_end`
+- `sb_effective_from`
+- `sb_effective_until`
+
+Aufgaben / Status:
+
+- `sb_requires_action`
+- `sb_action_status`
+- `sb_action_owner`
+- `sb_next_action`
+
+Recht / Finanzen / Steuer:
+
+- `sb_legal_relevance`
+- `sb_financial_relevance`
+- `sb_tax_year`
+- `sb_tax_type`
+
+Energie / Fahrzeug:
+
+- `sb_energy_type`
+- `sb_vehicle`
+
+Qualität / SecondBrain-Steuerung:
+
+- `sb_confidence`
+- `sb_source_quality`
+- `sb_sensitive`
+- `sb_export_to_secondbrain`
+- `sb_ignore_by_secondbrain`
+
+Verknüpfungen:
+
+- `sb_related_documents`
+- `sb_external_url`
+
+#### Verhalten
+
+- Die KI kann optional ein strukturiertes Objekt `secondbrain_custom_fields`
+  liefern. Jeder Feldvorschlag besteht aus `value`, `confidence` und `reason`.
+- Werte unterhalb `secondbrain_custom_fields_confidence_threshold` werden nicht
+  nach Paperless geschrieben.
+- Datumswerte werden auf `YYYY-MM-DD` normalisiert.
+- Monetäre Werte werden intern tolerant gelesen und für Paperless auf das
+  dokumentierte Format `EUR12.34` gebracht.
+- Wenn `enable_tax_enrichment` aktiv ist, werden vorhandene Steuerdaten wie
+  `tax_year`, `document_date`, `service_period_from`, `service_period_to`,
+  `issuer` und `total_amount` als `sb_`-Fallbacks wiederverwendet.
+- In der KI-Notiz erscheint ein eigener Abschnitt `SecondBrain-Felder`, sobald
+  tatsächlich `sb_`-Werte erkannt oder gesetzt wurden.
+
+#### Bestandsdaten-Backfill
+
+Für bereits eingelesene Paperless-Datenbanken gibt es einen eigenen
+Backfill-Durchlauf. Er ist für genau den Fall gedacht, dass neue Funktionen wie
+Tax Enrichment, `sb_`-Custom-Fields oder weitere Zusatzfelder nachträglich auf
+alte Dokumente angewendet werden sollen.
+
+Wichtig dabei:
+
+- Der Backfill ignoriert den normalen `#NEU`-Tag-Filter.
+- Bereits KI-getaggte Dokumente werden noch einmal analysiert, aber nur
+  anreichernd aktualisiert.
+- Standard-Metadaten wie Dokumenttyp, Korrespondent, Speicherpfad, Tags und
+  Dokumentdatum werden bei bereits KI-getaggten Dokumenten dabei nicht
+  überschrieben.
+- Wenn du bestehende KI-Dokumente absichtlich komplett neu klassifizieren
+  möchtest, nutze weiterhin den normalen Reprocess-Weg über
+  `reprocess_ki_tagged_documents: true` und nicht den Backfill-Modus.
+- Die kostenoptimierenden Standard-Prechecks werden im Backfill bewusst
+  ausgesetzt, damit die Bestandsdaten wirklich vollständig erneut geprüft
+  werden können.
+
+CLI-Beispiel für den kompletten Backfill:
+
+```bash
+python3 /config/custom_components/paperless_kiplus/paperless_ai_sorter.py \
+  --config config.yaml \
+  --backfill-existing-documents
+```
+
+Wenn du den Gesamtdurchlauf in Chargen aufteilen möchtest:
+
+```bash
+python3 /config/custom_components/paperless_kiplus/paperless_ai_sorter.py \
+  --config config.yaml \
+  --backfill-existing-documents \
+  --max-documents 200
+```
+
+In Home Assistant kannst du den Backfill auf zwei Wegen starten:
+
+- Button `Paperless KIplus Bestandsdaten neu anreichern`
+- Service `paperless_kiplus.run` mit `backfill_existing_documents: true`
+
+Beispiel-Service-Call:
+
+```yaml
+service: paperless_kiplus.run
+data:
+  backfill_existing_documents: true
+```
+
+#### Beispiel
+
+Beispiel einer KI-Antwort mit zusätzlichen SecondBrain-Feldern:
+
+```json
+{
+  "document_type": "Rechnung",
+  "correspondent": "Muster GmbH",
+  "storage_path": "Privat",
+  "tags": ["Finanzen"],
+  "document_date": "2026-05-01",
+  "summary": "Rechnung über Speichererweiterung.",
+  "confidence": 0.91,
+  "rationale": "Rechnungsnummer, Betrag und Zahlungsziel klar erkannt.",
+  "secondbrain_custom_fields": {
+    "sb_document_category": {
+      "value": "Rechnung",
+      "confidence": 0.95,
+      "reason": "Rechnungsnummer und Gesamtbetrag klar erkennbar."
+    },
+    "sb_amount_total": {
+      "value": "123.45",
+      "confidence": 0.88,
+      "reason": "Gesamtbetrag inkl. MwSt. erkannt."
+    },
+    "sb_due_date": {
+      "value": "2026-05-15",
+      "confidence": 0.84,
+      "reason": "Zahlungsziel im Dokument erkannt."
+    }
+  }
+}
+```
+
+Nach der Auflösung gegen Paperless können daraus zum Beispiel diese Werte
+entstehen:
+
+- `sb_document_category` -> Select-Option-ID aus Paperless
+- `sb_amount_total` -> `EUR123.45`
+- `sb_due_date` -> `2026-05-15`
+
+### Standard-Katalog (Vertrag / Lohnabrechnung)
+
+Zusätzlich gibt es weiterhin den kleineren festen Katalog:
+
+```yaml
+enable_custom_field_enrichment: true
+create_missing_custom_fields: true
+```
+
+Verträge:
+
+- `Vertragsnummer`
+- `Kundennummer`
+- `Vertragsbeginn`
+- `Vertragsende`
+- `Kündigen bis`
+- `Monatliche Aufwendungen`
+
+Lohnabrechnungen:
+
+- `Brutto`
+- `Netto`
+- `Boni`
+- `Sonstige Bezüge`
+- `Steuern/Sozialabgaben`
+- `Sonstige Abzüge`
+- `Abgaben gesamt`
+
+### Grenzen
+
+- Die Extraktion bleibt KI-gestützt und ist daher ein Vorschlagssystem.
+- Das Feature ist bewusst auf einen festen Feldkatalog begrenzt, damit keine
+  unkontrollierte Feldflut in Paperless entsteht.
+- Wenn `SecondBrain` diese Felder als First-Class-Datenmodell nutzen soll,
+  muss dessen Importpfad die Paperless-Custom-Fields ebenfalls aktiv auslesen.
 
 ## Tax Enrichment
 
@@ -425,6 +696,14 @@ Anforderungen:
 ```
 
 ## Versionsverlauf (antichronologisch)
+
+- `v1.2.0` (2026-04-26)
+  - SecondBrain-Custom-Field-Sync für bestehende `sb_`-Felder in Paperless ergänzt.
+  - Strukturierte KI-Ausgabe für `sb_`-Felder mit Confidence und Begründung hinzugefügt.
+  - Bestehende Paperless-Custom-Fields werden dynamisch per Name und Select-Option-ID aufgelöst.
+  - Neuer Bestandsdaten-Backfill für bereits eingelesene Paperless-Datenbanken ergänzt.
+  - KI-getaggte Dokumente können im Backfill gezielt nur für neue Zusatzfunktionen erneut angereichert werden.
+  - Home-Assistant-Service und Geräte-Button für den Backfill ergänzt.
 
 - `v1.1.1` (2026-03-29)
   - UI-Optionen für Steuerfunktion ergänzt.

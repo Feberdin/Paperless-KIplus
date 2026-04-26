@@ -140,6 +140,7 @@ class PaperlessRunner:
         dry_run: bool | None = None,
         all_documents: bool | None = None,
         max_documents: int | None = None,
+        backfill_existing_documents: bool = False,
     ) -> RunResult:
         """Run the command unless already running or in cooldown."""
 
@@ -182,6 +183,7 @@ class PaperlessRunner:
                     dry_run=effective_dry_run,
                     all_documents=effective_all_documents,
                     max_documents=effective_max_documents,
+                    backfill_existing_documents=backfill_existing_documents,
                 )
                 if not args:
                     raise ValueError("configured command is empty")
@@ -581,6 +583,7 @@ class PaperlessRunner:
         dry_run: bool,
         all_documents: bool,
         max_documents: int,
+        backfill_existing_documents: bool,
     ) -> list[str]:
         """Build a robust CLI command based on HA options and per-run overrides.
 
@@ -601,6 +604,8 @@ class PaperlessRunner:
             args.append("--dry-run")
         if all_documents and not _has_flag(["--all-documents"]):
             args.append("--all-documents")
+        if backfill_existing_documents and not _has_flag(["--backfill-existing-documents"]):
+            args.append("--backfill-existing-documents")
         if max_documents > 0 and not _has_flag(["--max-documents"]):
             args.extend(["--max-documents", str(max_documents)])
 

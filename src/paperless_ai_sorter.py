@@ -13,6 +13,7 @@ import datetime as dt
 import json
 import logging
 import re
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 import sys
 import time
@@ -34,6 +35,18 @@ LOGGER = logging.getLogger("paperless_ai_sorter")
 UUID_TAG_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
+MONETARY_SANITIZE_PATTERN = re.compile(r"[^0-9,.\-]")
+SUPPORTED_CUSTOM_FIELD_TYPES = {
+    "string",
+    "date",
+    "monetary",
+    "integer",
+    "float",
+    "boolean",
+    "url",
+    "select",
+    "documentlink",
+}
 
 
 class ConfigError(Exception):
@@ -46,6 +59,344 @@ class PaperlessApiError(Exception):
 
 class AiClassificationError(Exception):
     """Fehler bei KI-Klassifizierung oder Antwortformat."""
+
+
+@dataclass(frozen=True)
+class CustomFieldDefinition:
+    """Beschreibt ein unterstütztes Paperless-Custom-Field.
+
+    Warum das als feste Struktur existiert:
+    - SecondBrain braucht stabile, wiedererkennbare Felder statt freier Ad-hoc-
+      Schlüssel pro Dokument.
+    - Paperless verlangt je Feld einen festen Datentyp. Diesen wollen wir
+      zentral pflegen und nicht verstreut im Code nachbauen.
+    """
+
+    key: str
+    paperless_name: str
+    data_type: str
+    note_label: str
+    description: str
+    allowed_labels: tuple[str, ...] = ()
+
+
+DEFAULT_CUSTOM_FIELD_DEFINITIONS: Dict[str, CustomFieldDefinition] = {
+    # Vertragsbezogene Felder helfen SecondBrain beim Aufbau von Vertrags- und
+    # Fristenübersichten.
+    "contract_number": CustomFieldDefinition(
+        key="contract_number",
+        paperless_name="Vertragsnummer",
+        data_type="string",
+        note_label="Vertragsnummer",
+        description="Eindeutige Vertragsnummer oder Vertragskonto.",
+    ),
+    "customer_number": CustomFieldDefinition(
+        key="customer_number",
+        paperless_name="Kundennummer",
+        data_type="string",
+        note_label="Kundennummer",
+        description="Kunden- oder Debitorennummer.",
+    ),
+    "contract_start_date": CustomFieldDefinition(
+        key="contract_start_date",
+        paperless_name="Vertragsbeginn",
+        data_type="date",
+        note_label="Vertragsbeginn",
+        description="Startdatum des Vertrags.",
+    ),
+    "contract_end_date": CustomFieldDefinition(
+        key="contract_end_date",
+        paperless_name="Vertragsende",
+        data_type="date",
+        note_label="Vertragsende",
+        description="Enddatum oder reguläres Laufzeitende des Vertrags.",
+    ),
+    "cancellation_deadline": CustomFieldDefinition(
+        key="cancellation_deadline",
+        paperless_name="Kündigen bis",
+        data_type="date",
+        note_label="Kündigen bis",
+        description="Spätester Kündigungstermin laut Dokument.",
+    ),
+    "monthly_cost": CustomFieldDefinition(
+        key="monthly_cost",
+        paperless_name="Monatliche Aufwendungen",
+        data_type="monetary",
+        note_label="Monatliche Aufwendungen",
+        description="Monatlich wiederkehrender Betrag.",
+    ),
+    # Lohnabrechnungen: Diese Felder helfen bei Finance- und Einkommens-
+    # Auswertungen in SecondBrain.
+    "payroll_gross": CustomFieldDefinition(
+        key="payroll_gross",
+        paperless_name="Brutto",
+        data_type="monetary",
+        note_label="Brutto",
+        description="Bruttolohn oder Bruttogehalt.",
+    ),
+    "payroll_net": CustomFieldDefinition(
+        key="payroll_net",
+        paperless_name="Netto",
+        data_type="monetary",
+        note_label="Netto",
+        description="Auszahlungsbetrag netto.",
+    ),
+    "payroll_bonus": CustomFieldDefinition(
+        key="payroll_bonus",
+        paperless_name="Boni",
+        data_type="monetary",
+        note_label="Boni",
+        description="Boni, Prämien oder Sonderzahlungen.",
+    ),
+    "payroll_other_benefits": CustomFieldDefinition(
+        key="payroll_other_benefits",
+        paperless_name="Sonstige Bezüge",
+        data_type="monetary",
+        note_label="Sonstige Bezüge",
+        description="Weitere Bezüge außerhalb des Grundlohns.",
+    ),
+    "payroll_taxes_social_security": CustomFieldDefinition(
+        key="payroll_taxes_social_security",
+        paperless_name="Steuern/Sozialabgaben",
+        data_type="monetary",
+        note_label="Steuern/Sozialabgaben",
+        description="Summierte Steuern und Sozialabgaben.",
+    ),
+    "payroll_other_deductions": CustomFieldDefinition(
+        key="payroll_other_deductions",
+        paperless_name="Sonstige Abzüge",
+        data_type="monetary",
+        note_label="Sonstige Abzüge",
+        description="Weitere Abzüge, z. B. Vorschüsse oder Pfändungen.",
+    ),
+    "payroll_total_deductions": CustomFieldDefinition(
+        key="payroll_total_deductions",
+        paperless_name="Abgaben gesamt",
+        data_type="monetary",
+        note_label="Abgaben gesamt",
+        description="Gesamtsumme aller Abzüge.",
+    ),
+}
+
+
+SECOND_BRAIN_SELECT_FIELD_LABELS: Dict[str, tuple[str, ...]] = {
+    "sb_document_category": (
+        "Rechnung",
+        "Vertrag",
+        "Bescheid",
+        "Steuer",
+        "Versicherung",
+        "Recht",
+        "Bank",
+        "Gehalt",
+        "Energie",
+        "Fahrzeug",
+        "Gesundheit",
+        "Immobilie",
+        "Garantie",
+        "Kommunikation",
+        "Sonstiges",
+    ),
+    "sb_life_area": (
+        "Privat",
+        "Arbeit",
+        "Haus",
+        "Auto",
+        "Finanzen",
+        "Steuer",
+        "Recht",
+        "Gesundheit",
+        "Versicherung",
+        "Energie",
+        "Familie",
+        "Technik",
+    ),
+    "sb_action_status": (
+        "Offen",
+        "In Prüfung",
+        "Wartet auf Rückmeldung",
+        "Erledigt",
+        "Bezahlt",
+        "Widersprochen",
+        "Weitergeleitet",
+        "Archiviert",
+    ),
+    "sb_action_owner": (
+        "Ich",
+        "Steuerberater",
+        "Anwalt",
+        "Arbeitgeber",
+        "Versicherung",
+        "Behörde",
+        "Bank",
+        "Sonstige",
+    ),
+    "sb_legal_relevance": (
+        "Keine",
+        "Niedrig",
+        "Mittel",
+        "Hoch",
+        "Fristkritisch",
+    ),
+    "sb_financial_relevance": (
+        "Keine",
+        "Einnahme",
+        "Ausgabe",
+        "Erstattung",
+        "Nachzahlung",
+        "Forderung",
+    ),
+    "sb_tax_type": (
+        "Einkommensteuer",
+        "Gewerbesteuer",
+        "Umsatzsteuer",
+        "Lohnsteuer",
+        "Grundsteuer",
+        "Kapitalertragsteuer",
+        "Kfz-Steuer",
+        "Sonstige Steuer",
+    ),
+    "sb_energy_type": (
+        "Strom",
+        "Gas",
+        "Wasser",
+        "PV",
+        "Einspeisung",
+        "Wallbox",
+        "Sonstige",
+    ),
+    "sb_vehicle": (
+        "Tesla Model 3",
+        "Anderes Fahrzeug",
+        "Nicht fahrzeugbezogen",
+    ),
+    "sb_confidence": (
+        "Manuell geprüft",
+        "KI sicher",
+        "KI unsicher",
+        "OCR unsicher",
+        "Ungeprüft",
+    ),
+    "sb_source_quality": (
+        "Original-PDF",
+        "Scan gut",
+        "Scan schlecht",
+        "Foto",
+        "E-Mail",
+        "Import",
+    ),
+}
+
+
+def _make_secondbrain_definition(
+    key: str,
+    data_type: str,
+    description: str,
+) -> CustomFieldDefinition:
+    """Erzeugt eine zentrale Felddefinition für bestehende `sb_`-Felder.
+
+    Warum diese Hilfsfunktion existiert:
+    - Alle SecondBrain-Felder folgen demselben Namensmuster `sb_*`.
+    - Der sichtbare Paperless-Name ist identisch mit dem technischen Schlüssel.
+      Dadurch vermeiden wir doppelte Listen mit potenziell abweichenden Namen.
+    """
+
+    return CustomFieldDefinition(
+        key=key,
+        paperless_name=key,
+        data_type=data_type,
+        note_label=key,
+        description=description,
+        allowed_labels=SECOND_BRAIN_SELECT_FIELD_LABELS.get(key, ()),
+    )
+
+
+SECOND_BRAIN_CUSTOM_FIELD_DEFINITIONS: Dict[str, CustomFieldDefinition] = {
+    # Klassifizierung
+    "sb_document_category": _make_secondbrain_definition(
+        "sb_document_category",
+        "select",
+        "Übergeordnete Dokumentklasse für SecondBrain.",
+    ),
+    "sb_life_area": _make_secondbrain_definition(
+        "sb_life_area",
+        "select",
+        "Lebensbereich, in den das Dokument hauptsächlich gehört.",
+    ),
+    # Referenzen
+    "sb_case_reference": _make_secondbrain_definition("sb_case_reference", "string", "Aktenzeichen oder Vorgangsnummer."),
+    "sb_contract_number": _make_secondbrain_definition("sb_contract_number", "string", "Vertragsnummer."),
+    "sb_customer_number": _make_secondbrain_definition("sb_customer_number", "string", "Kundennummer oder Debitorennummer."),
+    "sb_invoice_number": _make_secondbrain_definition("sb_invoice_number", "string", "Rechnungsnummer."),
+    "sb_policy_number": _make_secondbrain_definition("sb_policy_number", "string", "Versicherungsnummer oder Policennummer."),
+    "sb_meter_number": _make_secondbrain_definition("sb_meter_number", "string", "Zählernummer."),
+    "sb_provider_name": _make_secondbrain_definition("sb_provider_name", "string", "Leistungserbringer oder Anbieter."),
+    "sb_person_involved": _make_secondbrain_definition("sb_person_involved", "string", "Beteiligte Person."),
+    "sb_object_reference": _make_secondbrain_definition("sb_object_reference", "string", "Objektbezug, z. B. Immobilie oder Vertragseinheit."),
+    "sb_bank_account_hint": _make_secondbrain_definition("sb_bank_account_hint", "string", "IBAN-/Kontohinweis oder Kontoalias."),
+    # Beträge
+    "sb_amount_total": _make_secondbrain_definition("sb_amount_total", "monetary", "Gesamtbetrag."),
+    "sb_amount_net": _make_secondbrain_definition("sb_amount_net", "monetary", "Nettobetrag."),
+    "sb_amount_tax": _make_secondbrain_definition("sb_amount_tax", "monetary", "Steuer- oder Mehrwertsteuerbetrag."),
+    # Datumsfelder
+    "sb_due_date": _make_secondbrain_definition("sb_due_date", "date", "Fälligkeits- oder Fristdatum."),
+    "sb_document_date": _make_secondbrain_definition("sb_document_date", "date", "Dokumentdatum."),
+    "sb_period_start": _make_secondbrain_definition("sb_period_start", "date", "Beginn eines Leistungs- oder Abrechnungszeitraums."),
+    "sb_period_end": _make_secondbrain_definition("sb_period_end", "date", "Ende eines Leistungs- oder Abrechnungszeitraums."),
+    "sb_effective_from": _make_secondbrain_definition("sb_effective_from", "date", "Wirksam ab."),
+    "sb_effective_until": _make_secondbrain_definition("sb_effective_until", "date", "Wirksam bis."),
+    # Aufgaben / Status
+    "sb_requires_action": _make_secondbrain_definition("sb_requires_action", "boolean", "Ob das Dokument eine konkrete Folgeaktion verlangt."),
+    "sb_action_status": _make_secondbrain_definition("sb_action_status", "select", "Bearbeitungsstatus."),
+    "sb_action_owner": _make_secondbrain_definition("sb_action_owner", "select", "Zuständige Person oder Stelle."),
+    "sb_next_action": _make_secondbrain_definition("sb_next_action", "string", "Nächster sinnvoller Arbeitsschritt."),
+    # Recht / Finanzen / Steuer
+    "sb_legal_relevance": _make_secondbrain_definition("sb_legal_relevance", "select", "Rechtliche Relevanz."),
+    "sb_financial_relevance": _make_secondbrain_definition("sb_financial_relevance", "select", "Finanzielle Wirkung."),
+    "sb_tax_year": _make_secondbrain_definition("sb_tax_year", "integer", "Zugeordnetes Steuerjahr."),
+    "sb_tax_type": _make_secondbrain_definition("sb_tax_type", "select", "Steuerart."),
+    # Energie / Fahrzeug
+    "sb_energy_type": _make_secondbrain_definition("sb_energy_type", "select", "Energieart."),
+    "sb_vehicle": _make_secondbrain_definition("sb_vehicle", "select", "Fahrzeugbezug."),
+    # Qualität / Steuerung
+    "sb_confidence": _make_secondbrain_definition("sb_confidence", "select", "Vertrauensniveau der strukturierten Klassifikation."),
+    "sb_source_quality": _make_secondbrain_definition("sb_source_quality", "select", "Qualität bzw. Herkunft der Quelle."),
+    "sb_sensitive": _make_secondbrain_definition("sb_sensitive", "boolean", "Dokument enthält sensible Daten."),
+    "sb_export_to_secondbrain": _make_secondbrain_definition("sb_export_to_secondbrain", "boolean", "Dokument für SecondBrain exportieren."),
+    "sb_ignore_by_secondbrain": _make_secondbrain_definition("sb_ignore_by_secondbrain", "boolean", "Dokument für SecondBrain ignorieren."),
+    # Verknüpfungen
+    "sb_related_documents": _make_secondbrain_definition("sb_related_documents", "documentlink", "Verknüpfte Dokument-IDs."),
+    "sb_external_url": _make_secondbrain_definition("sb_external_url", "url", "Externe Referenz-URL."),
+}
+
+
+SECOND_BRAIN_NOTE_KEYS = (
+    "sb_document_category",
+    "sb_life_area",
+    "sb_case_reference",
+    "sb_amount_total",
+    "sb_due_date",
+    "sb_requires_action",
+    "sb_action_status",
+    "sb_confidence",
+)
+
+
+@dataclass
+class SecondBrainFieldSuggestion:
+    """Normierte Feldempfehlung für einen einzelnen `sb_`-Wert.
+
+    Diese Zwischenstruktur trennt bewusst:
+    - Rohwerte aus der KI
+    - regelbasierte Ergänzungen (z. B. Tax Enrichment)
+    - spätere Auflösung gegen echte Paperless-Custom-Field-Metadaten
+    """
+
+    key: str
+    value: Any
+    confidence: float
+    reason: str
+    source: str
 
 
 def validate_new_tag_name(tag_name: str) -> tuple[bool, str]:
@@ -96,6 +447,16 @@ def parse_bool(value: Any, default: bool = False) -> bool:
         if normalized in {"0", "false", "no", "off", "nein", ""}:
             return False
     return default
+
+
+def normalize_confidence(value: Any, default: float = 0.0) -> float:
+    """Klemmt Confidence-Werte robust auf den Bereich 0.0 bis 1.0."""
+
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        confidence = default
+    return max(0.0, min(1.0, confidence))
 
 
 @dataclass
@@ -150,6 +511,13 @@ class AppConfig:
     tax_export_years: List[int]
     tax_personal_context: str
     tax_process_ki_tagged_documents: bool
+    enable_custom_field_enrichment: bool
+    create_missing_custom_fields: bool
+    enable_secondbrain_custom_fields: bool
+    secondbrain_custom_fields_overwrite_existing: bool
+    secondbrain_custom_fields_attach_empty_when_unknown: bool
+    secondbrain_custom_fields_confidence_threshold: float
+    secondbrain_custom_fields_log_missing_fields: bool
 
 
 @dataclass
@@ -161,6 +529,7 @@ class PendingAiDocument:
     doc_key: Optional[str]
     title: str
     doc_tags: set[int]
+    enrichment_only: bool = False
 
 
 def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | None = None) -> AppConfig:
@@ -217,6 +586,10 @@ def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | No
             tax_export_years = [int(tax_export_years_raw)]
         except (TypeError, ValueError):
             tax_export_years = [2025]
+
+    secondbrain_raw = raw.get("secondbrain_custom_fields", {})
+    if not isinstance(secondbrain_raw, dict):
+        secondbrain_raw = {}
 
     return AppConfig(
         paperless_url=str(raw["paperless_url"]).rstrip("/"),
@@ -278,6 +651,48 @@ def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | No
         tax_process_ki_tagged_documents=parse_bool(
             raw.get("tax_process_ki_tagged_documents", False),
             False,
+        ),
+        enable_custom_field_enrichment=parse_bool(
+            raw.get("enable_custom_field_enrichment", False),
+            False,
+        ),
+        create_missing_custom_fields=parse_bool(
+            raw.get("create_missing_custom_fields", True),
+            True,
+        ),
+        enable_secondbrain_custom_fields=parse_bool(
+            secondbrain_raw.get(
+                "enabled",
+                raw.get("enable_secondbrain_custom_fields", False),
+            ),
+            False,
+        ),
+        secondbrain_custom_fields_overwrite_existing=parse_bool(
+            secondbrain_raw.get(
+                "overwrite_existing",
+                raw.get("secondbrain_custom_fields_overwrite_existing", False),
+            ),
+            False,
+        ),
+        secondbrain_custom_fields_attach_empty_when_unknown=parse_bool(
+            secondbrain_raw.get(
+                "attach_empty_when_unknown",
+                raw.get("secondbrain_custom_fields_attach_empty_when_unknown", False),
+            ),
+            False,
+        ),
+        secondbrain_custom_fields_confidence_threshold=float(
+            secondbrain_raw.get(
+                "confidence_threshold",
+                raw.get("secondbrain_custom_fields_confidence_threshold", 0.70),
+            )
+        ),
+        secondbrain_custom_fields_log_missing_fields=parse_bool(
+            secondbrain_raw.get(
+                "log_missing_fields",
+                raw.get("secondbrain_custom_fields_log_missing_fields", True),
+            ),
+            True,
         ),
     )
 
@@ -371,7 +786,7 @@ class PaperlessClient:
 
     def iter_documents(
         self,
-        limit: int,
+        limit: Optional[int],
         extra_params: Optional[Dict[str, Any]] = None,
     ) -> Iterable[Dict[str, Any]]:
         """Lädt Dokumente seitenweise.
@@ -381,22 +796,23 @@ class PaperlessClient:
         """
 
         next_url = "/api/documents/"
+        page_size = 100 if limit is None else min(limit, 100)
         params: Optional[Dict[str, Any]] = {
             "ordering": "-created",
-            "page_size": min(limit, 100),
+            "page_size": page_size,
         }
         if extra_params:
             params.update(extra_params)
         loaded = 0
 
-        while next_url and loaded < limit:
+        while next_url and (limit is None or loaded < limit):
             page = self._request("GET", next_url, params=params)
             params = None
 
             for doc in page.get("results", []):
                 yield doc
                 loaded += 1
-                if loaded >= limit:
+                if limit is not None and loaded >= limit:
                     break
 
             next_url = str(page.get("next") or "")
@@ -430,6 +846,45 @@ class PaperlessClient:
             next_url = str(page.get("next") or "")
 
         return mapping
+
+    def list_custom_fields(self) -> Dict[str, Dict[str, Any]]:
+        """Lädt bestehende Paperless-Custom-Fields inkl. Datentypen und Optionen.
+
+        Rückgabe:
+        - Key: normalisierter Feldname (`lower()`)
+        - Value: `{id, name, data_type, extra_data, select_options_by_label}`
+        """
+
+        mapping: Dict[str, Dict[str, Any]] = {}
+        next_url: str = "/api/custom_fields/"
+        params: Optional[Dict[str, Any]] = {"page_size": 100}
+
+        while next_url:
+            page = self._request("GET", next_url, params=params)
+            params = None
+            for item in page.get("results", []):
+                field_name = str(item.get("name") or "").strip()
+                if not field_name:
+                    continue
+                extra_data = item.get("extra_data")
+                if not isinstance(extra_data, dict):
+                    extra_data = {}
+                mapping[field_name.lower()] = {
+                    "id": int(item["id"]),
+                    "name": field_name,
+                    "data_type": str(item.get("data_type") or "").strip().lower(),
+                    "extra_data": extra_data,
+                    "select_options_by_label": build_select_option_lookup(extra_data),
+                }
+
+            next_url = str(page.get("next") or "")
+
+        return mapping
+
+    def get_custom_fields_by_name(self) -> Dict[str, Dict[str, Any]]:
+        """Alias mit sprechenderem Namen für die Aufrufer-Logik."""
+
+        return self.list_custom_fields()
 
     def find_classified_duplicate(
         self,
@@ -498,10 +953,161 @@ class PaperlessClient:
             )
         return int(created_id)
 
+    def create_custom_field(self, definition: CustomFieldDefinition) -> Dict[str, Any]:
+        """Legt ein neues Paperless-Custom-Field mit festem Datentyp an."""
+
+        if definition.data_type not in SUPPORTED_CUSTOM_FIELD_TYPES:
+            raise PaperlessApiError(
+                f"Nicht unterstützter Custom-Field-Datentyp: {definition.data_type}"
+            )
+        created = self._request(
+            "POST",
+            "/api/custom_fields/",
+            payload={
+                "name": definition.paperless_name,
+                "data_type": definition.data_type,
+            },
+        )
+        created_id = created.get("id")
+        if created_id is None:
+            raise PaperlessApiError(
+                f"Custom Field wurde erstellt, aber ohne ID zurückgegeben: {definition.paperless_name}"
+            )
+        return {
+            "id": int(created_id),
+            "name": definition.paperless_name,
+            "data_type": definition.data_type,
+        }
+
+    def patch_document_custom_fields(
+        self,
+        document_id: int,
+        values: Dict[int, Any],
+        *,
+        empty_custom_field_ids: Optional[List[int]] = None,
+        remove_custom_field_ids: Optional[List[int]] = None,
+    ) -> None:
+        """Schreibt Custom-Field-Werte auf ein Dokument.
+
+        Primär versuchen wir ein normales Dokument-PATCH. Falls die lokale
+        Paperless-Version das nicht akzeptiert, fällt die Methode auf den
+        dokumentierten Bulk-Edit-Weg `modify_custom_fields` für genau ein
+        Dokument zurück.
+        """
+
+        empty_ids = sorted(
+            {
+                int(custom_field_id)
+                for custom_field_id in (empty_custom_field_ids or [])
+            }
+        )
+        remove_ids = sorted(
+            {
+                int(custom_field_id)
+                for custom_field_id in (remove_custom_field_ids or [])
+            }
+        )
+        if not values and not empty_ids and not remove_ids:
+            return
+
+        if not empty_ids and not remove_ids:
+            try:
+                self._request(
+                    "PATCH",
+                    f"/api/documents/{document_id}/",
+                    payload={"custom_fields": values},
+                    retries=2,
+                )
+                return
+            except PaperlessApiError as exc:
+                LOGGER.warning(
+                    "Direktes PATCH für Custom Fields fehlgeschlagen, nutze Bulk-Edit-Fallback: %s",
+                    exc,
+                )
+
+        if values or remove_ids:
+            self._request(
+                "POST",
+                "/api/documents/bulk_edit/",
+                payload={
+                    "documents": [int(document_id)],
+                    "method": "modify_custom_fields",
+                    "parameters": {
+                        "add_custom_fields": values,
+                        "remove_custom_fields": remove_ids,
+                    },
+                },
+                retries=2,
+            )
+        if empty_ids:
+            self._request(
+                "POST",
+                "/api/documents/bulk_edit/",
+                payload={
+                    "documents": [int(document_id)],
+                    "method": "modify_custom_fields",
+                    "parameters": {
+                        "add_custom_fields": empty_ids,
+                        "remove_custom_fields": [],
+                    },
+                },
+                retries=2,
+            )
+
+    def update_document_custom_fields(
+        self,
+        document_id: int,
+        custom_fields_payload: Dict[int, Any],
+        *,
+        empty_custom_field_ids: Optional[List[int]] = None,
+        remove_custom_field_ids: Optional[List[int]] = None,
+    ) -> None:
+        """Abwärtskompatibler Wrapper für bestehende Aufrufer."""
+
+        self.patch_document_custom_fields(
+            document_id,
+            custom_fields_payload,
+            empty_custom_field_ids=empty_custom_field_ids,
+            remove_custom_field_ids=remove_custom_field_ids,
+        )
+
     def update_document(self, document_id: int, patch_payload: Dict[str, Any]) -> None:
         """Schreibt klassifizierte Felder zurück auf das Dokument."""
+        metadata_payload = {
+            key: value
+            for key, value in patch_payload.items()
+            if key not in {"custom_fields", "custom_fields_empty", "custom_fields_remove"}
+        }
+        custom_fields_payload = patch_payload.get("custom_fields")
+        empty_custom_fields_payload = patch_payload.get("custom_fields_empty")
+        remove_custom_fields_payload = patch_payload.get("custom_fields_remove")
         try:
-            self._request("PATCH", f"/api/documents/{document_id}/", payload=patch_payload)
+            if metadata_payload:
+                self._request("PATCH", f"/api/documents/{document_id}/", payload=metadata_payload)
+            if (
+                isinstance(custom_fields_payload, dict)
+                and custom_fields_payload
+            ) or (
+                isinstance(empty_custom_fields_payload, list)
+                and empty_custom_fields_payload
+            ) or (
+                isinstance(remove_custom_fields_payload, list)
+                and remove_custom_fields_payload
+            ):
+                self.update_document_custom_fields(
+                    document_id,
+                    custom_fields_payload if isinstance(custom_fields_payload, dict) else {},
+                    empty_custom_field_ids=(
+                        empty_custom_fields_payload
+                        if isinstance(empty_custom_fields_payload, list)
+                        else []
+                    ),
+                    remove_custom_field_ids=(
+                        remove_custom_fields_payload
+                        if isinstance(remove_custom_fields_payload, list)
+                        else []
+                    ),
+                )
             return
         except PaperlessApiError as exc:
             # Einige Paperless-Installationen liefern sporadisch 500 bei bestimmten
@@ -510,16 +1116,16 @@ class PaperlessClient:
                 raise
 
             fallback_candidates: List[tuple[str, Dict[str, Any]]] = []
-            if "created" in patch_payload:
-                p = dict(patch_payload)
+            if "created" in metadata_payload:
+                p = dict(metadata_payload)
                 p.pop("created", None)
                 fallback_candidates.append(("ohne created", p))
-            if "tags" in patch_payload:
-                p = dict(patch_payload)
+            if "tags" in metadata_payload:
+                p = dict(metadata_payload)
                 p.pop("tags", None)
                 fallback_candidates.append(("ohne tags", p))
-            if "created" in patch_payload and "tags" in patch_payload:
-                p = dict(patch_payload)
+            if "created" in metadata_payload and "tags" in metadata_payload:
+                p = dict(metadata_payload)
                 p.pop("created", None)
                 p.pop("tags", None)
                 fallback_candidates.append(("ohne created+tags", p))
@@ -555,9 +1161,9 @@ class PaperlessClient:
             partial_success = False
             field_failures: List[str] = []
             for key in field_order:
-                if key not in patch_payload:
+                if key not in metadata_payload:
                     continue
-                single_payload = {key: patch_payload[key]}
+                single_payload = {key: metadata_payload[key]}
                 try:
                     self._request(
                         "PATCH",
@@ -570,6 +1176,30 @@ class PaperlessClient:
                     field_failures.append(f"{key}: {field_exc}")
 
             if partial_success:
+                if (
+                    isinstance(custom_fields_payload, dict)
+                    and custom_fields_payload
+                ) or (
+                    isinstance(empty_custom_fields_payload, list)
+                    and empty_custom_fields_payload
+                ) or (
+                    isinstance(remove_custom_fields_payload, list)
+                    and remove_custom_fields_payload
+                ):
+                    self.update_document_custom_fields(
+                        document_id,
+                        custom_fields_payload if isinstance(custom_fields_payload, dict) else {},
+                        empty_custom_field_ids=(
+                            empty_custom_fields_payload
+                            if isinstance(empty_custom_fields_payload, list)
+                            else []
+                        ),
+                        remove_custom_field_ids=(
+                            remove_custom_fields_payload
+                            if isinstance(remove_custom_fields_payload, list)
+                            else []
+                        ),
+                    )
                 LOGGER.warning(
                     "PATCH nur teilweise erfolgreich für Dokument %s. Fehlgeschlagene Felder: %s",
                     document_id,
@@ -658,6 +1288,8 @@ class AiClassifier:
         self.custom_prompt_instructions = config.custom_prompt_instructions
         self.basis_config = config.basis_config
         self.include_existing_entities_in_prompt = config.include_existing_entities_in_prompt
+        self.enable_custom_field_enrichment = config.enable_custom_field_enrichment
+        self.enable_secondbrain_custom_fields = config.enable_secondbrain_custom_fields
         self.known_document_types: List[str] = []
         self.known_correspondents: List[str] = []
         self.known_storage_paths: List[str] = []
@@ -745,6 +1377,49 @@ class AiClassifier:
             "document_date (YYYY-MM-DD oder null), summary, confidence (0-1), rationale. "
             "Keine zusätzlichen Schlüssel, keine Markdown-Ausgabe."
         )
+        if self.enable_custom_field_enrichment:
+            custom_field_specs = [
+                {
+                    "key": definition.key,
+                    "field_name": definition.paperless_name,
+                    "type": definition.data_type,
+                    "description": definition.description,
+                }
+                for definition in DEFAULT_CUSTOM_FIELD_DEFINITIONS.values()
+            ]
+            prompt += (
+                "\n\nOptional darfst du zusätzlich das Feld `custom_fields` liefern. "
+                "Das muss ein JSON-Objekt sein. Nutze nur die unten aufgeführten "
+                "Schlüssel, nur wenn der Wert im Dokument klar erkennbar ist. "
+                "Lasse irrelevante Schlüssel weg. Datumswerte immer als YYYY-MM-DD. "
+                "Monetäre Werte als String im Format EUR12.34."
+                "\nUnterstützte benutzerdefinierte Felder:\n"
+                + json.dumps(custom_field_specs, ensure_ascii=False)
+            )
+        if self.enable_secondbrain_custom_fields:
+            secondbrain_specs = [
+                {
+                    "key": definition.key,
+                    "field_name": definition.paperless_name,
+                    "type": definition.data_type,
+                    "description": definition.description,
+                    "allowed_labels": list(definition.allowed_labels),
+                }
+                for definition in SECOND_BRAIN_CUSTOM_FIELD_DEFINITIONS.values()
+            ]
+            prompt += (
+                "\n\nOptional darfst du zusätzlich das Feld `secondbrain_custom_fields` liefern. "
+                "Das muss ein JSON-Objekt sein. Jeder Schlüssel muss einem bekannten `sb_`-Feld "
+                "entsprechen und als Wert ein Objekt mit `value`, `confidence` und `reason` haben. "
+                "Nutze nur Felder, die durch das Dokument klar begründet sind. "
+                "Lasse unsichere Felder lieber ganz weg. "
+                "Datumswerte immer als YYYY-MM-DD. "
+                "Monetäre Werte als Dezimalzahl mit Punkt, z. B. 123.45. "
+                "Boolean-Werte nur true/false. Integer-Werte als ganze Zahl. "
+                "Bei Select-Feldern bitte das sichtbare Label verwenden, nicht eine ID."
+                "\nUnterstützte SecondBrain-Felder:\n"
+                + json.dumps(secondbrain_specs, ensure_ascii=False)
+            )
         if self.custom_prompt_instructions:
             prompt += (
                 "\n\nZusätzliche projektspezifische Regeln (hoch priorisiert):\n"
@@ -872,6 +1547,852 @@ class AiClassifier:
         summary = payload.get("summary")
         if summary is not None and not isinstance(summary, str):
             raise AiClassificationError("KI-Ausgabe: 'summary' muss ein String oder null sein.")
+        custom_fields = payload.get("custom_fields")
+        if custom_fields is not None and not isinstance(custom_fields, dict):
+            raise AiClassificationError("KI-Ausgabe: 'custom_fields' muss ein Objekt oder null sein.")
+        secondbrain_custom_fields = payload.get("secondbrain_custom_fields")
+        if secondbrain_custom_fields is not None and not isinstance(secondbrain_custom_fields, dict):
+            raise AiClassificationError(
+                "KI-Ausgabe: 'secondbrain_custom_fields' muss ein Objekt oder null sein."
+            )
+
+
+def normalize_monetary_value(value: Any, *, output_format: str = "paperless") -> Optional[str]:
+    """Normalisiert Geldbeträge entweder für Paperless oder als Dezimalzahl.
+
+    Beispiel:
+    - `12,34 €` -> `EUR12.34` (Paperless)
+    - `12,34 €` -> `12.34` (decimal)
+    - `EUR 49.9` -> `EUR49.90`
+    - `{"currency": "EUR", "amount": "12,34"}` -> `EUR12.34`
+    """
+
+    if value in (None, ""):
+        return None
+
+    currency = "EUR"
+    raw_amount: Any = value
+    if isinstance(value, dict):
+        raw_currency = str(value.get("currency") or "").strip().upper()
+        if len(raw_currency) == 3:
+            currency = raw_currency
+        raw_amount = value.get("amount")
+    elif isinstance(value, str):
+        normalized = value.strip()
+        if "€" in normalized or "eur" in normalized.lower():
+            currency = "EUR"
+        currency_match = re.search(r"\b([A-Z]{3})\b", normalized.upper())
+        if currency_match:
+            currency = currency_match.group(1)
+        raw_amount = normalized
+
+    if raw_amount in (None, ""):
+        return None
+
+    amount_text = MONETARY_SANITIZE_PATTERN.sub("", str(raw_amount).strip())
+    if not amount_text:
+        return None
+    if "," in amount_text and "." in amount_text:
+        if amount_text.rfind(",") > amount_text.rfind("."):
+            amount_text = amount_text.replace(".", "").replace(",", ".")
+        else:
+            amount_text = amount_text.replace(",", "")
+    elif "," in amount_text:
+        amount_text = amount_text.replace(".", "").replace(",", ".")
+    try:
+        normalized_amount = Decimal(amount_text).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError):
+        return None
+    if output_format == "decimal":
+        return f"{normalized_amount}"
+    return f"{currency}{normalized_amount}"
+
+
+def normalize_optional_bool(value: Any) -> Optional[bool]:
+    """Parst boolesche Werte ohne stillen Fallback auf False.
+
+    Warum eine eigene Funktion:
+    - Für Custom-Field-Werte bedeutet `False` fachlich etwas anderes als
+      "unbekannt".
+    - `parse_bool(..., False)` wäre hier zu aggressiv und würde invalide Werte
+      versehentlich zu `False` machen.
+    """
+
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "ja"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "nein"}:
+            return False
+    return None
+
+
+def normalize_document_link_value(value: Any) -> Optional[List[int]]:
+    """Normalisiert Document-Link-Werte auf eine stabile ID-Liste."""
+
+    if value in (None, "", []):
+        return None
+
+    raw_items: List[Any]
+    if isinstance(value, list):
+        raw_items = value
+    elif isinstance(value, str):
+        raw_items = [part.strip() for part in value.split(",") if part.strip()]
+    else:
+        raw_items = [value]
+
+    normalized: List[int] = []
+    seen: set[int] = set()
+    for item in raw_items:
+        try:
+            doc_id = int(str(item).strip())
+        except (TypeError, ValueError):
+            return None
+        if doc_id not in seen:
+            normalized.append(doc_id)
+            seen.add(doc_id)
+    return normalized or None
+
+
+def build_select_option_lookup(extra_data: Dict[str, Any]) -> Dict[str, int]:
+    """Indexiert Select-Optionen tolerant nach sichtbarem Label.
+
+    Paperless API v7 liefert laut offizieller Doku `select_options` als Liste
+    von Objekten mit `id` und `label`. Für Robustheit akzeptieren wir zusätzlich
+    Varianten wie `value` oder `name`, falls ältere oder angepasste Payloads
+    auftauchen.
+    """
+
+    options = extra_data.get("select_options")
+    if not isinstance(options, list):
+        return {}
+
+    by_label: Dict[str, int] = {}
+    for option in options:
+        if not isinstance(option, dict):
+            continue
+        try:
+            option_id = int(option.get("id"))
+        except (TypeError, ValueError):
+            continue
+        label = str(
+            option.get("label")
+            or option.get("value")
+            or option.get("name")
+            or ""
+        ).strip()
+        if not label:
+            continue
+        by_label[label.lower()] = option_id
+    return by_label
+
+
+def normalize_custom_field_value(definition: CustomFieldDefinition, value: Any) -> Any:
+    """Normalisiert einen KI-Wert gemäß dem erwarteten Paperless-Datentyp."""
+
+    if value in (None, "", []):
+        return None
+
+    if definition.data_type == "string":
+        normalized = str(value).strip()
+        return normalized or None
+    if definition.data_type == "date":
+        return normalize_iso_date(value)
+    if definition.data_type == "monetary":
+        return normalize_monetary_value(value)
+    if definition.data_type == "integer":
+        try:
+            return int(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+    if definition.data_type == "float":
+        try:
+            return float(str(value).strip().replace(",", "."))
+        except (TypeError, ValueError):
+            return None
+    if definition.data_type == "boolean":
+        return normalize_optional_bool(value)
+    if definition.data_type == "url":
+        normalized = str(value).strip()
+        return normalized or None
+    if definition.data_type == "select":
+        if isinstance(value, (int, float)):
+            return int(value)
+        normalized = str(value).strip()
+        return normalized or None
+    if definition.data_type == "documentlink":
+        return normalize_document_link_value(value)
+    return None
+
+
+def normalize_prediction_custom_fields(
+    prediction: Dict[str, Any],
+    definitions: Dict[str, CustomFieldDefinition],
+) -> Dict[str, Any]:
+    """Filtert und normalisiert die von der KI gelieferten Custom-Field-Werte.
+
+    Warum das wichtig ist:
+    - Das Modell darf nur bekannte Schlüssel zurückgeben.
+    - Paperless akzeptiert Datentypen streng; fehlerhafte Rohwerte würden sonst
+      erst spät beim PATCH scheitern.
+    """
+
+    raw_custom_fields = prediction.get("custom_fields")
+    if not isinstance(raw_custom_fields, dict):
+        return {}
+
+    normalized_payload: Dict[str, Any] = {}
+    for raw_key, raw_value in raw_custom_fields.items():
+        definition = definitions.get(str(raw_key).strip())
+        if definition is None:
+            LOGGER.warning(
+                "Unbekanntes Custom-Field aus KI-Antwort ignoriert: %s",
+                raw_key,
+            )
+            continue
+        normalized_value = normalize_custom_field_value(definition, raw_value)
+        if normalized_value is None:
+            continue
+        normalized_payload[definition.key] = normalized_value
+    return normalized_payload
+
+
+def normalize_secondbrain_prediction_fields(
+    prediction: Dict[str, Any],
+    definitions: Dict[str, CustomFieldDefinition],
+) -> Dict[str, SecondBrainFieldSuggestion]:
+    """Normalisiert KI-Vorschläge für `sb_`-Custom-Fields.
+
+    Erwartetes Format:
+    {
+      "sb_field": {"value": ..., "confidence": 0.91, "reason": "..."}
+    }
+
+    Für Robustheit akzeptieren wir zusätzlich nackte Rohwerte; dann wird die
+    Haupt-Confidence der Dokumentklassifikation als Fallback verwendet.
+    """
+
+    raw_fields = prediction.get("secondbrain_custom_fields")
+    if not isinstance(raw_fields, dict):
+        return {}
+
+    default_confidence = normalize_confidence(prediction.get("confidence"), 0.0)
+    suggestions: Dict[str, SecondBrainFieldSuggestion] = {}
+    for raw_key, raw_entry in raw_fields.items():
+        key = str(raw_key).strip()
+        definition = definitions.get(key)
+        if definition is None:
+            LOGGER.warning(
+                "Unbekanntes SecondBrain-Custom-Field aus KI-Antwort ignoriert: %s",
+                raw_key,
+            )
+            continue
+
+        if isinstance(raw_entry, dict):
+            raw_value = raw_entry.get("value")
+            confidence = normalize_confidence(raw_entry.get("confidence"), default_confidence)
+            reason = str(raw_entry.get("reason") or "").strip()
+        else:
+            raw_value = raw_entry
+            confidence = default_confidence
+            reason = "KI lieferte einen Rohwert ohne Detailobjekt."
+
+        if raw_value in (None, "", []):
+            suggestions[key] = SecondBrainFieldSuggestion(
+                key=key,
+                value=None,
+                confidence=confidence,
+                reason=reason or "Kein belastbarer Wert erkennbar.",
+                source="ai",
+            )
+            continue
+
+        if definition.data_type == "monetary":
+            normalized_value = normalize_monetary_value(raw_value, output_format="decimal")
+        else:
+            normalized_value = normalize_custom_field_value(definition, raw_value)
+        if normalized_value is None:
+            LOGGER.warning(
+                "SecondBrain-KI-Wert konnte nicht normalisiert werden: %s=%r",
+                key,
+                raw_value,
+            )
+            continue
+
+        suggestions[key] = SecondBrainFieldSuggestion(
+            key=key,
+            value=normalized_value,
+            confidence=confidence,
+            reason=reason or "Aus Dokumentinhalt abgeleitet.",
+            source="ai",
+        )
+    return suggestions
+
+
+def has_meaningful_custom_field_value(value: Any) -> bool:
+    """Prüft, ob ein bestehender Custom-Field-Wert fachlich als gesetzt gilt."""
+
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, list):
+        return bool(value)
+    if isinstance(value, dict):
+        return bool(value)
+    return True
+
+
+def resolve_custom_field_value(
+    field: Dict[str, Any],
+    raw_value: Any,
+) -> tuple[Any, Optional[str]]:
+    """Übersetzt einen normierten Rohwert in einen Paperless-kompatiblen API-Wert.
+
+    Rückgabe:
+    - `(resolved_value, None)` bei Erfolg
+    - `(None, reason)` bei ungültigem oder nicht auflösbarem Wert
+    """
+
+    data_type = str(field.get("data_type") or "").strip().lower()
+    field_name = str(field.get("name") or field.get("id") or "<unbekannt>")
+
+    if raw_value is None:
+        return None, None
+    if data_type == "string":
+        normalized = str(raw_value).strip()
+        return (normalized or None), ("leerer String" if not normalized else None)
+    if data_type == "date":
+        normalized = normalize_iso_date(raw_value)
+        return normalized, None if normalized is not None else "ungueltiges Datum"
+    if data_type == "monetary":
+        normalized = normalize_monetary_value(raw_value, output_format="paperless")
+        return normalized, None if normalized is not None else "ungueltiger Geldbetrag"
+    if data_type == "integer":
+        try:
+            return int(str(raw_value).strip()), None
+        except (TypeError, ValueError):
+            return None, "ungueltige Ganzzahl"
+    if data_type == "float":
+        try:
+            return float(str(raw_value).strip().replace(",", ".")), None
+        except (TypeError, ValueError):
+            return None, "ungueltige Fließkommazahl"
+    if data_type == "boolean":
+        normalized_bool = normalize_optional_bool(raw_value)
+        return normalized_bool, None if normalized_bool is not None else "ungueltiger Boolean"
+    if data_type == "url":
+        normalized = str(raw_value).strip()
+        if normalized.startswith(("http://", "https://")):
+            return normalized, None
+        return None, "ungueltige URL"
+    if data_type == "documentlink":
+        normalized_links = normalize_document_link_value(raw_value)
+        return normalized_links, None if normalized_links is not None else "ungueltige Dokumentverknüpfung"
+    if data_type == "select":
+        if isinstance(raw_value, (int, float)):
+            return int(raw_value), None
+        select_lookup = field.get("select_options_by_label") or {}
+        if not isinstance(select_lookup, dict):
+            select_lookup = {}
+        label = str(raw_value).strip()
+        if not label:
+            return None, "leerer Select-Wert"
+        option_id = select_lookup.get(label.lower())
+        if option_id is None:
+            return None, f"Select-Option nicht gefunden fuer '{label}' in Feld '{field_name}'"
+        return int(option_id), None
+    return None, f"nicht unterstützter Datentyp '{data_type}'"
+
+
+def build_secondbrain_sync_report() -> Dict[str, Any]:
+    """Erzeugt die Sammelstruktur für Debug-Informationen zum `sb_`-Sync."""
+
+    return {
+        "enabled": False,
+        "prepared": {},
+        "written": {},
+        "cleared": [],
+        "below_threshold": {},
+        "preserved_existing": {},
+        "missing_fields": [],
+        "unresolved_selects": {},
+        "invalid_values": {},
+        "api_errors": [],
+    }
+
+
+def set_secondbrain_suggestion_if_missing(
+    suggestions: Dict[str, SecondBrainFieldSuggestion],
+    *,
+    key: str,
+    value: Any,
+    confidence: float,
+    reason: str,
+    source: str,
+) -> None:
+    """Ergänzt nur fehlende `sb_`-Werte, um KI-Vorschläge nicht blind zu verdrängen."""
+
+    if key in suggestions or value in (None, "", []):
+        return
+    suggestions[key] = SecondBrainFieldSuggestion(
+        key=key,
+        value=value,
+        confidence=confidence,
+        reason=reason,
+        source=source,
+    )
+
+
+def _collect_document_context_text(document: Dict[str, Any], prediction: Dict[str, Any]) -> str:
+    """Baut einen robusten Volltext für regelbasierte SecondBrain-Heuristiken."""
+
+    parts = [
+        str(document.get("title") or ""),
+        str(document.get("content") or "")[:4000],
+        str(prediction.get("document_type") or ""),
+        str(prediction.get("correspondent") or ""),
+        str(prediction.get("summary") or ""),
+        str(prediction.get("rationale") or ""),
+    ]
+    return " \n ".join(part for part in parts if part).lower()
+
+
+def infer_secondbrain_document_category(context_text: str) -> Optional[str]:
+    """Leitet eine grobe SecondBrain-Dokumentklasse aus klaren Keywords ab."""
+
+    keyword_map = (
+        ("Steuer", ("steuer", "finanzamt", "elster", "steuerbescheid", "lohnsteuer", "umsatzsteuer")),
+        ("Versicherung", ("versicherung", "police", "schaden", "leistungsabrechnung")),
+        ("Recht", ("gericht", "anwalt", "klage", "einspruch", "anhörung", "bußgeld", "aktenzeichen")),
+        ("Gehalt", ("lohnabrechnung", "gehaltsabrechnung", "entgeltabrechnung", "brutto", "netto")),
+        ("Energie", ("strom", "gas", "wasser", "einspeisung", "pv", "wallbox", "zaehler", "zähler")),
+        ("Fahrzeug", ("tesla", "fahrzeug", "kfz", "autohaus", "führerschein", "fuehrerschein")),
+        ("Gesundheit", ("arzt", "zahnarzt", "apotheke", "kranken", "medizin", "rezept")),
+        ("Immobilie", ("immobilie", "miete", "hausverwaltung", "grundsteuer", "nebenkosten")),
+        ("Garantie", ("garantie", "gewährleistung", "gewaehrleistung", "widerruf")),
+        ("Kommunikation", ("telekom", "vodafone", "mail", "e-mail", "anschreiben", "mitteilung")),
+        ("Bank", ("bank", "kontoauszug", "iban", "kredit", "darlehen")),
+        ("Vertrag", ("vertrag", "vertragsbeginn", "vertragsende", "kündigung", "kuendigung")),
+        ("Bescheid", ("bescheid", "bewilligung", "ablehnung", "mahnung")),
+        ("Rechnung", ("rechnung", "rechnungsnummer", "gesamtbetrag", "fällig", "faellig")),
+    )
+    for label, keywords in keyword_map:
+        if any(keyword in context_text for keyword in keywords):
+            return label
+    return None
+
+
+def infer_secondbrain_life_area(context_text: str, document_category: Optional[str]) -> Optional[str]:
+    """Ordnet das Dokument vorsichtig einem Lebensbereich zu."""
+
+    if document_category == "Steuer":
+        return "Steuer"
+    if document_category == "Recht":
+        return "Recht"
+    if document_category == "Versicherung":
+        return "Versicherung"
+    if document_category == "Energie":
+        return "Energie"
+    if document_category == "Fahrzeug":
+        return "Auto"
+    if document_category == "Gesundheit":
+        return "Gesundheit"
+    if document_category == "Gehalt":
+        return "Arbeit"
+    if document_category == "Bank":
+        return "Finanzen"
+    if "familie" in context_text or "kind" in context_text or "kita" in context_text:
+        return "Familie"
+    if "haus" in context_text or "wohnung" in context_text or "miete" in context_text:
+        return "Haus"
+    if "computer" in context_text or "technik" in context_text or "software" in context_text:
+        return "Technik"
+    return "Privat"
+
+
+def infer_secondbrain_source_quality(document: Dict[str, Any]) -> str:
+    """Schätzt die Dokumentherkunft für SecondBrain grob ein.
+
+    Die Heuristik ist bewusst einfach und transparent:
+    - Bildformate gelten als Foto
+    - Mail-/EML-Hinweise gelten als E-Mail
+    - Längerer OCR-Text spricht eher für brauchbare Original-PDFs oder gute Scans
+    """
+
+    title_lower = str(document.get("title") or "").strip().lower()
+    content_length = len(str(document.get("content") or "").strip())
+
+    if title_lower.endswith((".jpg", ".jpeg", ".png", ".heic")):
+        return "Foto"
+    if title_lower.endswith((".eml", ".msg")) or "mail" in title_lower:
+        return "E-Mail"
+    if content_length >= 1200:
+        return "Original-PDF"
+    if content_length >= 250:
+        return "Scan gut"
+    if content_length > 0:
+        return "Scan schlecht"
+    return "Import"
+
+
+def infer_secondbrain_confidence_label(
+    prediction: Dict[str, Any],
+    secondbrain_suggestions: Dict[str, SecondBrainFieldSuggestion],
+) -> str:
+    """Verdichtet technische Confidence-Werte in ein Select-Label."""
+
+    main_confidence = normalize_confidence(prediction.get("confidence"), 0.0)
+    lowest_field_confidence = min(
+        (suggestion.confidence for suggestion in secondbrain_suggestions.values()),
+        default=main_confidence,
+    )
+    summary = str(prediction.get("summary") or "").lower()
+    if "ocr" in summary and lowest_field_confidence < 0.70:
+        return "OCR unsicher"
+    if main_confidence >= 0.85 and lowest_field_confidence >= 0.80:
+        return "KI sicher"
+    if main_confidence > 0:
+        return "KI unsicher"
+    return "Ungeprüft"
+
+
+def build_secondbrain_rule_based_suggestions(
+    *,
+    document: Dict[str, Any],
+    prediction: Dict[str, Any],
+    tax_enrichment: Optional[Any],
+) -> Dict[str, SecondBrainFieldSuggestion]:
+    """Erzeugt vorsichtige, nachvollziehbare `sb_`-Fallbacks.
+
+    Wichtig:
+    - Diese Regeln ersetzen keine KI-Auswertung, sondern stabilisieren Felder,
+      die wir deterministisch aus vorhandenem Kontext ableiten können.
+    - Sie greifen nur ergänzend, damit die bestehende Hauptklassifikation
+      unverändert bleibt.
+    """
+
+    context_text = _collect_document_context_text(document, prediction)
+    suggestions: Dict[str, SecondBrainFieldSuggestion] = {}
+    category = infer_secondbrain_document_category(context_text)
+    life_area = infer_secondbrain_life_area(context_text, category)
+    source_quality = infer_secondbrain_source_quality(document)
+    main_confidence = normalize_confidence(prediction.get("confidence"), 0.0)
+
+    if category:
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_document_category",
+            value=category,
+            confidence=max(main_confidence, 0.78),
+            reason="Aus Titel, OCR-Text und Standardklassifikation abgeleitet.",
+            source="rules",
+        )
+    if life_area:
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_life_area",
+            value=life_area,
+            confidence=max(main_confidence, 0.72),
+            reason="Lebensbereich aus Dokumentklasse und Kontext abgeleitet.",
+            source="rules",
+        )
+
+    set_secondbrain_suggestion_if_missing(
+        suggestions,
+        key="sb_source_quality",
+        value=source_quality,
+        confidence=0.90,
+        reason="Aus Dokumenttitel und OCR-Textlänge abgeleitet.",
+        source="rules",
+    )
+    set_secondbrain_suggestion_if_missing(
+        suggestions,
+        key="sb_document_date",
+        value=normalize_iso_date(prediction.get("document_date") or document.get("created")),
+        confidence=0.95,
+        reason="Aus vorhandenem Dokumentdatum übernommen.",
+        source="rules",
+    )
+
+    requires_action = False
+    if any(keyword in context_text for keyword in ("frist", "fällig", "faellig", "mah", "kuendigung", "kündigung")):
+        requires_action = True
+    set_secondbrain_suggestion_if_missing(
+        suggestions,
+        key="sb_requires_action",
+        value=requires_action,
+        confidence=0.80,
+        reason="Auf Fristen-, Fälligkeits- oder Eskalationshinweise geprüft.",
+        source="rules",
+    )
+    if requires_action:
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_action_status",
+            value="Offen",
+            confidence=0.78,
+            reason="Dokument verlangt voraussichtlich eine Folgeaktion.",
+            source="rules",
+        )
+
+    if category == "Rechnung":
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_financial_relevance",
+            value="Ausgabe",
+            confidence=0.76,
+            reason="Rechnungen sind im Regelfall Ausgaben, sofern keine Erstattung erkennbar ist.",
+            source="rules",
+        )
+    elif category == "Gehalt":
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_financial_relevance",
+            value="Einnahme",
+            confidence=0.88,
+            reason="Gehaltsdokumente stehen im Regelfall für Einnahmen.",
+            source="rules",
+        )
+    elif any(keyword in context_text for keyword in ("erstattung", "rückzahlung", "rueckzahlung")):
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_financial_relevance",
+            value="Erstattung",
+            confidence=0.80,
+            reason="Erstattungs- oder Rückzahlungsbezug erkannt.",
+            source="rules",
+        )
+
+    if category == "Recht" or any(keyword in context_text for keyword in ("anwalt", "gericht", "einspruch", "aktenzeichen")):
+        legal_label = "Fristkritisch" if requires_action else "Hoch"
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_legal_relevance",
+            value=legal_label,
+            confidence=0.84,
+            reason="Rechtliche Schlagworte und mögliche Fristen erkannt.",
+            source="rules",
+        )
+    elif any(keyword in context_text for keyword in ("bescheid", "behörde", "behoerde", "finanzamt")):
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_legal_relevance",
+            value="Mittel",
+            confidence=0.74,
+            reason="Behördlichen oder bescheidbezogenen Kontext erkannt.",
+            source="rules",
+        )
+
+    if any(keyword in context_text for keyword in ("tesla model 3", "tesla")):
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_vehicle",
+            value="Tesla Model 3",
+            confidence=0.92,
+            reason="Tesla-Bezug im Dokument erkannt.",
+            source="rules",
+        )
+    elif category == "Fahrzeug":
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_vehicle",
+            value="Anderes Fahrzeug",
+            confidence=0.75,
+            reason="Fahrzeugbezug erkannt, aber kein Tesla Model 3 eindeutig genannt.",
+            source="rules",
+        )
+
+    if category == "Energie":
+        energy_label = "Sonstige"
+        for label, keywords in (
+            ("Strom", ("strom", "kwh")),
+            ("Gas", ("gas",)),
+            ("Wasser", ("wasser",)),
+            ("PV", ("pv", "photovoltaik", "powerocean")),
+            ("Einspeisung", ("einspeisung",)),
+            ("Wallbox", ("wallbox",)),
+        ):
+            if any(keyword in context_text for keyword in keywords):
+                energy_label = label
+                break
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_energy_type",
+            value=energy_label,
+            confidence=0.82,
+            reason="Energieart aus erkannten Fachbegriffen abgeleitet.",
+            source="rules",
+        )
+
+    if category == "Gesundheit":
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_sensitive",
+            value=True,
+            confidence=0.96,
+            reason="Gesundheitsbezug erkannt; Dokument wird vorsorglich als sensibel markiert.",
+            source="rules",
+        )
+
+    ignore_document = any(keyword in context_text for keyword in ("spam", "newsletter", "testdokument"))
+    set_secondbrain_suggestion_if_missing(
+        suggestions,
+        key="sb_ignore_by_secondbrain",
+        value=ignore_document,
+        confidence=0.95,
+        reason="Nur offensichtliche Test-/Spam-Muster werden automatisch ignoriert.",
+        source="rules",
+    )
+    set_secondbrain_suggestion_if_missing(
+        suggestions,
+        key="sb_export_to_secondbrain",
+        value=not ignore_document,
+        confidence=0.95,
+        reason="Klassifizierte Dokumente werden standardmäßig an SecondBrain weitergereicht.",
+        source="rules",
+    )
+
+    return suggestions
+
+
+def apply_tax_enrichment_to_secondbrain_suggestions(
+    suggestions: Dict[str, SecondBrainFieldSuggestion],
+    tax_enrichment: Any,
+) -> None:
+    """Überträgt vorhandene Tax-Enrichment-Daten in passende `sb_`-Felder."""
+
+    if tax_enrichment is None:
+        return
+
+    set_secondbrain_suggestion_if_missing(
+        suggestions,
+        key="sb_tax_year",
+        value=getattr(tax_enrichment, "tax_year", None),
+        confidence=0.95,
+        reason="Aus Tax Enrichment übernommen.",
+        source="tax",
+    )
+    set_secondbrain_suggestion_if_missing(
+        suggestions,
+        key="sb_document_date",
+        value=getattr(tax_enrichment, "document_date", None),
+        confidence=0.95,
+        reason="Aus Tax Enrichment übernommen.",
+        source="tax",
+    )
+    set_secondbrain_suggestion_if_missing(
+        suggestions,
+        key="sb_period_start",
+        value=getattr(tax_enrichment, "service_period_from", None),
+        confidence=0.92,
+        reason="Aus Tax Enrichment übernommen.",
+        source="tax",
+    )
+    set_secondbrain_suggestion_if_missing(
+        suggestions,
+        key="sb_period_end",
+        value=getattr(tax_enrichment, "service_period_to", None),
+        confidence=0.92,
+        reason="Aus Tax Enrichment übernommen.",
+        source="tax",
+    )
+    set_secondbrain_suggestion_if_missing(
+        suggestions,
+        key="sb_provider_name",
+        value=getattr(tax_enrichment, "issuer", None),
+        confidence=0.90,
+        reason="Leistungserbringer aus Tax Enrichment übernommen.",
+        source="tax",
+    )
+    tax_amount = getattr(tax_enrichment, "total_amount", None)
+    if tax_amount is not None:
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_amount_total",
+            value=f"{float(tax_amount):.2f}",
+            confidence=0.90,
+            reason="Gesamtbetrag aus Tax Enrichment übernommen.",
+            source="tax",
+        )
+
+    tax_category = str(getattr(tax_enrichment, "tax_category", "") or "").strip().lower()
+    if tax_category and tax_category not in {"nicht_steuerrelevant", "unklar"}:
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_document_category",
+            value="Steuer" if tax_category in {"sonderausgaben", "werbungskosten", "kinderbetreuungskosten"} else None,
+            confidence=0.74,
+            reason="Steuerlich relevantes Dokument wurde im Tax Enrichment erkannt.",
+            source="tax",
+        )
+    flags = set(getattr(tax_enrichment, "flags", []) or [])
+    if flags.intersection({"needs_review", "needs_payment_proof", "possible_finanzamt_query"}):
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_requires_action",
+            value=True,
+            confidence=0.82,
+            reason="Tax Enrichment verlangt Nachprüfung oder Folgeaktion.",
+            source="tax",
+        )
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_action_status",
+            value="In Prüfung",
+            confidence=0.78,
+            reason="Tax Enrichment markiert das Dokument als prüfbedürftig.",
+            source="tax",
+        )
+
+
+def build_secondbrain_suggestions(
+    *,
+    document: Dict[str, Any],
+    prediction: Dict[str, Any],
+    tax_enrichment: Optional[Any],
+) -> Dict[str, SecondBrainFieldSuggestion]:
+    """Kombiniert KI-, Tax- und Regelquellen zu einer finalen Vorschlagsmenge."""
+
+    suggestions = normalize_secondbrain_prediction_fields(
+        prediction,
+        SECOND_BRAIN_CUSTOM_FIELD_DEFINITIONS,
+    )
+
+    rule_based = build_secondbrain_rule_based_suggestions(
+        document=document,
+        prediction=prediction,
+        tax_enrichment=tax_enrichment,
+    )
+    for key, suggestion in rule_based.items():
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key=key,
+            value=suggestion.value,
+            confidence=suggestion.confidence,
+            reason=suggestion.reason,
+            source=suggestion.source,
+        )
+
+    apply_tax_enrichment_to_secondbrain_suggestions(suggestions, tax_enrichment)
+
+    # Steuerungsfelder setzen wir bewusst zuletzt, weil sie keine freien
+    # Dokumentinterpretationen sind, sondern Lauf-/Qualitätsmetadaten.
+    suggestions["sb_confidence"] = SecondBrainFieldSuggestion(
+        key="sb_confidence",
+        value=infer_secondbrain_confidence_label(prediction, suggestions),
+        confidence=0.95,
+        reason="Aus Hauptklassifikation und Feldsicherheit verdichtet.",
+        source="rules",
+    )
+
+    return suggestions
 
 
 def normalize_iso_date(value: Optional[str]) -> Optional[str]:
@@ -899,6 +2420,7 @@ def normalize_iso_date(value: Optional[str]) -> Optional[str]:
 def sanitize_prediction(
     prediction: Dict[str, Any],
     storage_paths_map: Dict[str, int],
+    custom_field_definitions: Optional[Dict[str, CustomFieldDefinition]] = None,
 ) -> Dict[str, Any]:
     """Bereinigt offensichtliche Fehlwerte aus der KI-Antwort.
 
@@ -914,6 +2436,11 @@ def sanitize_prediction(
             correspondent,
         )
         sanitized["correspondent"] = None
+    if custom_field_definitions:
+        sanitized["custom_fields"] = normalize_prediction_custom_fields(
+            sanitized,
+            custom_field_definitions,
+        )
     return sanitized
 
 
@@ -1078,6 +2605,64 @@ def save_metrics(metrics_path: Path, payload: Dict[str, Any]) -> None:
         LOGGER.error("Metrics-Datei konnte nicht geschrieben werden: %s | %s", metrics_path, exc)
 
 
+def extract_document_custom_field_values(document: Dict[str, Any]) -> Dict[str, Any]:
+    """Liest bereits gesetzte Custom Fields tolerant aus einem Dokumentpayload.
+
+    Paperless-ngx hat über Versionen und Endpunkte hinweg leicht unterschiedliche
+    Strukturen für Custom Fields. Diese Funktion akzeptiert bewusst mehrere
+    Varianten, damit Diff-Checks und Dry-Runs nicht von einem genauen
+    Payload-Format abhängen.
+    """
+
+    raw_custom_fields = document.get("custom_fields")
+    extracted: Dict[str, Any] = {}
+
+    if isinstance(raw_custom_fields, dict):
+        for raw_key, raw_value in raw_custom_fields.items():
+            normalized_key = str(raw_key).strip()
+            if not normalized_key:
+                continue
+            if isinstance(raw_value, dict) and "value" in raw_value:
+                extracted[normalized_key] = raw_value.get("value")
+            else:
+                extracted[normalized_key] = raw_value
+        return extracted
+
+    if not isinstance(raw_custom_fields, list):
+        return extracted
+
+    for item in raw_custom_fields:
+        if not isinstance(item, dict):
+            continue
+        field_name = str(
+            item.get("name")
+            or item.get("field_name")
+            or item.get("custom_field")
+            or item.get("field")
+            or item.get("id")
+            or ""
+        ).strip()
+        if not field_name:
+            continue
+        if "value" in item:
+            extracted[field_name] = item.get("value")
+            continue
+        for value_key in (
+            "value_text",
+            "value_date",
+            "value_bool",
+            "value_int",
+            "value_float",
+            "value_monetary",
+            "value_url",
+            "value_document_ids",
+        ):
+            if value_key in item and item.get(value_key) not in (None, "", []):
+                extracted[field_name] = item.get(value_key)
+                break
+    return extracted
+
+
 def ensure_entity_id(
     client: PaperlessClient,
     mapping: Dict[str, int],
@@ -1123,70 +2708,338 @@ def ensure_entity_id(
     return created_id
 
 
+def ensure_custom_field_id(
+    client: PaperlessClient,
+    custom_fields_map: Dict[str, Dict[str, Any]],
+    definition: CustomFieldDefinition,
+    create_missing_custom_fields: bool,
+    created_entities: Optional[Dict[str, List[str]]] = None,
+    custom_field_id_to_definition: Optional[Dict[int, CustomFieldDefinition]] = None,
+) -> Optional[int]:
+    """Löst ein Paperless-Custom-Field auf oder legt es bei Bedarf an."""
+
+    key = definition.paperless_name.strip().lower()
+    existing = custom_fields_map.get(key)
+    if existing is not None:
+        try:
+            existing_id = int(existing.get("id"))
+        except (TypeError, ValueError):
+            existing_id = None
+        existing_type = str(existing.get("data_type") or "").strip().lower()
+        if existing_type and existing_type != definition.data_type:
+            LOGGER.warning(
+                "Custom Field '%s' existiert bereits mit Datentyp '%s' statt '%s'. "
+                "Wert wird nicht automatisch gesetzt.",
+                definition.paperless_name,
+                existing_type,
+                definition.data_type,
+            )
+            return None
+        if existing_id is not None and custom_field_id_to_definition is not None:
+            custom_field_id_to_definition[existing_id] = definition
+        return existing_id
+
+    if not create_missing_custom_fields:
+        LOGGER.info(
+            "Custom Field nicht vorhanden und Auto-Create deaktiviert: %s",
+            definition.paperless_name,
+        )
+        return None
+
+    created = client.create_custom_field(definition)
+    custom_fields_map[key] = created
+    created_id = int(created["id"])
+    if custom_field_id_to_definition is not None:
+        custom_field_id_to_definition[created_id] = definition
+    LOGGER.info(
+        "Neues Custom Field angelegt: %s -> ID %s (%s)",
+        definition.paperless_name,
+        created_id,
+        definition.data_type,
+    )
+    if created_entities is not None:
+        created_entities.setdefault("/api/custom_fields/", []).append(definition.paperless_name)
+    return created_id
+
+
+def get_existing_custom_field_value(
+    document: Dict[str, Any],
+    field: Dict[str, Any],
+    definition: Optional[CustomFieldDefinition] = None,
+) -> Any:
+    """Liest einen bestehenden Custom-Field-Wert möglichst tolerant aus.
+
+    Warum diese Hilfsfunktion wichtig ist:
+    - Paperless liefert Custom Fields je nach Endpoint/Version leicht anders.
+    - Für den Überschreibschutz wollen wir nicht an einem einzelnen Payload-
+      Format hängen.
+    """
+
+    current_custom_fields = extract_document_custom_field_values(document)
+    candidate_keys = [
+        str(field.get("id") or ""),
+        str(field.get("name") or ""),
+        str(field.get("name") or "").lower(),
+    ]
+    if definition is not None:
+        candidate_keys.extend(
+            [
+                definition.paperless_name,
+                definition.paperless_name.lower(),
+                definition.key,
+            ]
+        )
+    for candidate_key in candidate_keys:
+        if candidate_key and candidate_key in current_custom_fields:
+            return current_custom_fields[candidate_key]
+    return None
+
+
+def build_secondbrain_custom_fields_payload(
+    *,
+    document: Dict[str, Any],
+    prediction: Dict[str, Any],
+    tax_enrichment: Optional[Any],
+    custom_fields_map: Dict[str, Dict[str, Any]],
+    overwrite_existing: bool,
+    attach_empty_when_unknown: bool,
+    confidence_threshold: float,
+    log_missing_fields: bool,
+    custom_field_id_to_definition: Optional[Dict[int, CustomFieldDefinition]] = None,
+    sync_report: Optional[Dict[str, Any]] = None,
+) -> tuple[Dict[int, Any], List[int], List[int]]:
+    """Baut den Patch-Teil für `sb_`-Felder inklusive Schutzlogik.
+
+    Rückgabe:
+    - dict mit zu schreibenden Feldwerten
+    - Liste von Feld-IDs, die leer angehängt werden sollen
+    - Liste von Feld-IDs, die entfernt/geleert werden sollen
+    """
+
+    suggestions = build_secondbrain_suggestions(
+        document=document,
+        prediction=prediction,
+        tax_enrichment=tax_enrichment,
+    )
+    if sync_report is not None:
+        sync_report["enabled"] = True
+        sync_report["prepared"] = {
+            key: {
+                "value": suggestion.value,
+                "confidence": round(float(suggestion.confidence), 3),
+                "source": suggestion.source,
+                "reason": suggestion.reason,
+            }
+            for key, suggestion in suggestions.items()
+        }
+
+    values: Dict[int, Any] = {}
+    empty_field_ids: List[int] = []
+    remove_field_ids: List[int] = []
+
+    for key, suggestion in suggestions.items():
+        definition = SECOND_BRAIN_CUSTOM_FIELD_DEFINITIONS.get(key)
+        if definition is None:
+            continue
+
+        if suggestion.confidence < confidence_threshold:
+            if sync_report is not None:
+                sync_report["below_threshold"][key] = {
+                    "confidence": round(float(suggestion.confidence), 3),
+                    "value": suggestion.value,
+                }
+            continue
+
+        field = custom_fields_map.get(definition.paperless_name.lower())
+        if field is None:
+            if log_missing_fields:
+                LOGGER.info(
+                    "SecondBrain-Custom-Field fehlt in Paperless und wird übersprungen: %s",
+                    definition.paperless_name,
+                )
+            if sync_report is not None:
+                sync_report["missing_fields"].append(definition.paperless_name)
+            continue
+
+        try:
+            field_id = int(field.get("id"))
+        except (TypeError, ValueError):
+            continue
+        if custom_field_id_to_definition is not None:
+            custom_field_id_to_definition[field_id] = definition
+
+        current_value = get_existing_custom_field_value(document, field, definition)
+        current_has_value = has_meaningful_custom_field_value(current_value)
+        if current_has_value and not overwrite_existing:
+            if sync_report is not None:
+                sync_report["preserved_existing"][key] = current_value
+            continue
+
+        if suggestion.value is None:
+            if not attach_empty_when_unknown:
+                continue
+            if current_has_value and overwrite_existing:
+                remove_field_ids.append(field_id)
+                if sync_report is not None:
+                    sync_report["cleared"].append(key)
+                continue
+            if not current_has_value:
+                empty_field_ids.append(field_id)
+                if sync_report is not None:
+                    sync_report["written"][key] = {
+                        "value": None,
+                        "mode": "empty",
+                        "confidence": round(float(suggestion.confidence), 3),
+                    }
+            continue
+
+        resolved_value, error_reason = resolve_custom_field_value(field, suggestion.value)
+        if error_reason:
+            if sync_report is not None:
+                target_bucket = (
+                    "unresolved_selects"
+                    if str(field.get("data_type") or "").strip().lower() == "select"
+                    else "invalid_values"
+                )
+                sync_report[target_bucket][key] = {
+                    "value": suggestion.value,
+                    "reason": error_reason,
+                }
+            continue
+        values[field_id] = resolved_value
+        if sync_report is not None:
+            sync_report["written"][key] = {
+                "value": resolved_value,
+                "mode": "set",
+                "confidence": round(float(suggestion.confidence), 3),
+            }
+
+    return values, sorted(set(empty_field_ids)), sorted(set(remove_field_ids))
+
+
 def build_patch_payload(
     client: PaperlessClient,
+    document: Dict[str, Any],
     prediction: Dict[str, Any],
     tags_map: Dict[str, int],
     doc_types_map: Dict[str, int],
     correspondents_map: Dict[str, int],
     storage_paths_map: Dict[str, int],
+    custom_fields_map: Optional[Dict[str, Dict[str, Any]]],
+    custom_field_definitions: Optional[Dict[str, CustomFieldDefinition]],
     create_missing_entities: bool,
+    create_missing_custom_fields: bool,
+    include_standard_metadata: bool,
+    enable_secondbrain_custom_fields: bool,
+    secondbrain_overwrite_existing: bool,
+    secondbrain_attach_empty_when_unknown: bool,
+    secondbrain_confidence_threshold: float,
+    secondbrain_log_missing_fields: bool,
+    tax_enrichment: Optional[Any] = None,
     created_entities: Optional[Dict[str, List[str]]] = None,
+    custom_field_id_to_definition: Optional[Dict[int, CustomFieldDefinition]] = None,
+    secondbrain_sync_report: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Konvertiert KI-Output in ein valides PATCH-Payload für Paperless."""
 
-    doc_type_id = ensure_entity_id(
-        client,
-        doc_types_map,
-        prediction.get("document_type"),
-        "/api/document_types/",
-        create_missing_entities,
-        created_entities,
-    )
-    correspondent_id = ensure_entity_id(
-        client,
-        correspondents_map,
-        prediction.get("correspondent"),
-        "/api/correspondents/",
-        create_missing_entities,
-        created_entities,
-    )
-    storage_path_id = ensure_entity_id(
-        client,
-        storage_paths_map,
-        prediction.get("storage_path"),
-        "/api/storage_paths/",
-        create_missing_entities,
-        created_entities,
-    )
+    payload: Dict[str, Any] = {}
 
-    tag_ids: List[int] = []
-    for tag_name in prediction.get("tags", []):
-        tag_id = ensure_entity_id(
+    if include_standard_metadata:
+        doc_type_id = ensure_entity_id(
             client,
-            tags_map,
-            str(tag_name),
-            "/api/tags/",
+            doc_types_map,
+            prediction.get("document_type"),
+            "/api/document_types/",
             create_missing_entities,
             created_entities,
         )
-        if tag_id is not None:
-            tag_ids.append(tag_id)
+        correspondent_id = ensure_entity_id(
+            client,
+            correspondents_map,
+            prediction.get("correspondent"),
+            "/api/correspondents/",
+            create_missing_entities,
+            created_entities,
+        )
+        storage_path_id = ensure_entity_id(
+            client,
+            storage_paths_map,
+            prediction.get("storage_path"),
+            "/api/storage_paths/",
+            create_missing_entities,
+            created_entities,
+        )
 
-    payload: Dict[str, Any] = {}
-    if doc_type_id is not None:
-        payload["document_type"] = doc_type_id
-    if correspondent_id is not None:
-        payload["correspondent"] = correspondent_id
-    if storage_path_id is not None:
-        payload["storage_path"] = storage_path_id
-    if tag_ids:
-        payload["tags"] = sorted(set(tag_ids))
+        tag_ids: List[int] = []
+        for tag_name in prediction.get("tags", []):
+            tag_id = ensure_entity_id(
+                client,
+                tags_map,
+                str(tag_name),
+                "/api/tags/",
+                create_missing_entities,
+                created_entities,
+            )
+            if tag_id is not None:
+                tag_ids.append(tag_id)
 
-    normalized_date = normalize_iso_date(prediction.get("document_date"))
-    if normalized_date is not None:
-        # Paperless verwendet `created` als Dokumentdatum.
-        payload["created"] = normalized_date
+        if doc_type_id is not None:
+            payload["document_type"] = doc_type_id
+        if correspondent_id is not None:
+            payload["correspondent"] = correspondent_id
+        if storage_path_id is not None:
+            payload["storage_path"] = storage_path_id
+        if tag_ids:
+            payload["tags"] = sorted(set(tag_ids))
+
+        normalized_date = normalize_iso_date(prediction.get("document_date"))
+        if normalized_date is not None:
+            # Paperless verwendet `created` als Dokumentdatum.
+            payload["created"] = normalized_date
+
+    if enable_secondbrain_custom_fields and custom_fields_map is not None:
+        sb_values, sb_empty_ids, sb_remove_ids = build_secondbrain_custom_fields_payload(
+            document=document,
+            prediction=prediction,
+            tax_enrichment=tax_enrichment,
+            custom_fields_map=custom_fields_map,
+            overwrite_existing=secondbrain_overwrite_existing,
+            attach_empty_when_unknown=secondbrain_attach_empty_when_unknown,
+            confidence_threshold=secondbrain_confidence_threshold,
+            log_missing_fields=secondbrain_log_missing_fields,
+            custom_field_id_to_definition=custom_field_id_to_definition,
+            sync_report=secondbrain_sync_report,
+        )
+        if sb_values:
+            payload["custom_fields"] = dict(sb_values)
+        if sb_empty_ids:
+            payload["custom_fields_empty"] = list(sb_empty_ids)
+        if sb_remove_ids:
+            payload["custom_fields_remove"] = list(sb_remove_ids)
+
+    if custom_fields_map is not None and custom_field_definitions:
+        normalized_custom_fields = normalize_prediction_custom_fields(
+            prediction,
+            custom_field_definitions,
+        )
+        custom_fields_payload: Dict[int, Any] = {}
+        for field_key, field_value in normalized_custom_fields.items():
+            definition = custom_field_definitions.get(field_key)
+            if definition is None:
+                continue
+            custom_field_id = ensure_custom_field_id(
+                client,
+                custom_fields_map,
+                definition,
+                create_missing_custom_fields,
+                created_entities,
+                custom_field_id_to_definition,
+            )
+            if custom_field_id is None:
+                continue
+            custom_fields_payload[int(custom_field_id)] = field_value
+        if custom_fields_payload:
+            payload.setdefault("custom_fields", {}).update(custom_fields_payload)
 
     return payload
 
@@ -1221,6 +3074,7 @@ def filter_unchanged_patch_fields(
     *,
     document: Dict[str, Any],
     patch_payload: Dict[str, Any],
+    custom_field_id_to_definition: Optional[Dict[int, CustomFieldDefinition]] = None,
 ) -> Dict[str, Any]:
     """Entfernt unveränderte Felder aus dem Patch, um unnötige PATCHes zu vermeiden."""
 
@@ -1250,6 +3104,77 @@ def filter_unchanged_patch_fields(
         if current_tags == next_tags:
             filtered.pop("tags", None)
 
+    if "custom_fields" in filtered:
+        current_custom_fields = extract_document_custom_field_values(document)
+        next_custom_fields = dict(filtered.get("custom_fields") or {})
+        unchanged_custom_field_ids: List[int] = []
+        for custom_field_id, next_value in next_custom_fields.items():
+            try:
+                custom_field_id_int = int(custom_field_id)
+            except (TypeError, ValueError):
+                continue
+            definition = (custom_field_id_to_definition or {}).get(custom_field_id_int)
+            candidate_keys = [str(custom_field_id_int)]
+            if definition is not None:
+                candidate_keys.extend([definition.paperless_name, definition.paperless_name.lower()])
+            current_value = None
+            for candidate_key in candidate_keys:
+                if candidate_key in current_custom_fields:
+                    current_value = current_custom_fields[candidate_key]
+                    break
+            if definition is not None:
+                current_value = normalize_custom_field_value(definition, current_value)
+                next_value = normalize_custom_field_value(definition, next_value)
+            if current_value == next_value:
+                unchanged_custom_field_ids.append(custom_field_id_int)
+        for custom_field_id in unchanged_custom_field_ids:
+            filtered["custom_fields"].pop(custom_field_id, None)
+        if not filtered["custom_fields"]:
+            filtered.pop("custom_fields", None)
+
+    if "custom_fields_empty" in filtered:
+        current_custom_fields = extract_document_custom_field_values(document)
+        remaining_empty_ids: List[int] = []
+        for custom_field_id in filtered.get("custom_fields_empty", []) or []:
+            definition = (custom_field_id_to_definition or {}).get(int(custom_field_id))
+            candidate_keys = [str(custom_field_id)]
+            if definition is not None:
+                candidate_keys.extend([definition.paperless_name, definition.paperless_name.lower()])
+            current_value = None
+            key_found = False
+            for candidate_key in candidate_keys:
+                if candidate_key in current_custom_fields:
+                    key_found = True
+                    current_value = current_custom_fields[candidate_key]
+                    break
+            if key_found and not has_meaningful_custom_field_value(current_value):
+                continue
+            remaining_empty_ids.append(int(custom_field_id))
+        if remaining_empty_ids:
+            filtered["custom_fields_empty"] = remaining_empty_ids
+        else:
+            filtered.pop("custom_fields_empty", None)
+
+    if "custom_fields_remove" in filtered:
+        current_custom_fields = extract_document_custom_field_values(document)
+        remaining_remove_ids: List[int] = []
+        for custom_field_id in filtered.get("custom_fields_remove", []) or []:
+            definition = (custom_field_id_to_definition or {}).get(int(custom_field_id))
+            candidate_keys = [str(custom_field_id)]
+            if definition is not None:
+                candidate_keys.extend([definition.paperless_name, definition.paperless_name.lower()])
+            current_value = None
+            for candidate_key in candidate_keys:
+                if candidate_key in current_custom_fields:
+                    current_value = current_custom_fields[candidate_key]
+                    break
+            if has_meaningful_custom_field_value(current_value):
+                remaining_remove_ids.append(int(custom_field_id))
+        if remaining_remove_ids:
+            filtered["custom_fields_remove"] = remaining_remove_ids
+        else:
+            filtered.pop("custom_fields_remove", None)
+
     return filtered
 
 
@@ -1261,6 +3186,8 @@ def build_ai_note_entry(
     correspondent_id_to_label: Dict[int, str],
     storage_path_id_to_label: Dict[int, str],
     tag_id_to_label: Dict[int, str],
+    custom_field_id_to_definition: Optional[Dict[int, CustomFieldDefinition]],
+    secondbrain_sync_report: Optional[Dict[str, Any]],
     max_chars: int,
     include_summary: bool,
     summary_max_chars: int,
@@ -1285,6 +3212,31 @@ def build_ai_note_entry(
     for field in ("document_type", "correspondent", "storage_path", "created", "tags"):
         if field in patch_payload:
             lines.append(f"- {field}: {_value_to_label(field, patch_payload[field])}")
+    if isinstance(patch_payload.get("custom_fields"), dict):
+        for custom_field_id, custom_value in sorted(
+            patch_payload["custom_fields"].items(),
+            key=lambda item: (
+                (custom_field_id_to_definition or {}).get(int(item[0])).note_label
+                if (custom_field_id_to_definition or {}).get(int(item[0]))
+                else f"id:{item[0]}"
+            ),
+        ):
+            try:
+                definition = (custom_field_id_to_definition or {}).get(int(custom_field_id))
+            except (TypeError, ValueError):
+                definition = None
+            label = definition.note_label if definition is not None else f"custom_field_{custom_field_id}"
+            lines.append(f"- {label}: {custom_value}")
+    secondbrain_lines: List[str] = []
+    written_fields = {}
+    if isinstance(secondbrain_sync_report, dict):
+        written_fields = secondbrain_sync_report.get("written") or {}
+    if isinstance(written_fields, dict):
+        for key in SECOND_BRAIN_NOTE_KEYS:
+            entry = written_fields.get(key)
+            if not isinstance(entry, dict):
+                continue
+            secondbrain_lines.append(f"- {key}: {entry.get('value')}")
 
     rationale = str(prediction.get("rationale") or "Keine Begründung angegeben.").strip()
     if len(rationale) > max_chars:
@@ -1306,8 +3258,45 @@ def build_ai_note_entry(
         f"Begründung: {rationale}\n"
         f"Änderungen:\n"
         + ("\n".join(lines) if lines else "- keine")
+        + (
+            "\nSecondBrain-Felder:\n" + "\n".join(secondbrain_lines)
+            if secondbrain_lines
+            else ""
+        )
     )
     return note
+
+
+def log_secondbrain_sync_report(
+    *,
+    doc_id: Optional[int],
+    title: str,
+    sync_report: Dict[str, Any],
+) -> None:
+    """Schreibt nachvollziehbare Debug-Infos zum `sb_`-Sync ins Laufprotokoll."""
+
+    if not sync_report.get("enabled"):
+        LOGGER.info(
+            "SecondBrain-Custom-Field-Sync inaktiv fuer Dokument %s (%s).",
+            doc_id,
+            title,
+        )
+        return
+
+    LOGGER.info(
+        "SecondBrain-Custom-Field-Sync aktiv fuer Dokument %s (%s). Geschrieben=%s | "
+        "BelowThreshold=%s | BestehendeWerteBehalten=%s | FehlendeFelder=%s | "
+        "SelectProbleme=%s | UngueltigeWerte=%s | ApiFehler=%s",
+        doc_id,
+        title,
+        ", ".join(sorted((sync_report.get("written") or {}).keys())) or "keine",
+        ", ".join(sorted((sync_report.get("below_threshold") or {}).keys())) or "keine",
+        ", ".join(sorted((sync_report.get("preserved_existing") or {}).keys())) or "keine",
+        ", ".join(sorted(set(sync_report.get("missing_fields") or []))) or "keine",
+        ", ".join(sorted((sync_report.get("unresolved_selects") or {}).keys())) or "keine",
+        ", ".join(sorted((sync_report.get("invalid_values") or {}).keys())) or "keine",
+        ", ".join(sync_report.get("api_errors") or []) or "keine",
+    )
 
 
 def build_error_note_entry(
@@ -1423,6 +3412,7 @@ def log_dry_run_change(
     doc_type_id_to_label: Dict[int, str],
     correspondent_id_to_label: Dict[int, str],
     storage_path_id_to_label: Dict[int, str],
+    custom_field_id_to_definition: Optional[Dict[int, CustomFieldDefinition]] = None,
 ) -> None:
     """Gibt im Dry-Run eine Feld-für-Feld-Diff-Ansicht aus."""
 
@@ -1442,6 +3432,8 @@ def log_dry_run_change(
         for tag_id in tags_value:
             labels.append(tag_id_to_label.get(int(tag_id), f"id:{tag_id}"))
         return ", ".join(sorted(labels))
+
+    current_custom_fields = extract_document_custom_field_values(document)
 
     rows: List[tuple[str, str, str]] = []
     if "document_type" in patch_payload:
@@ -1497,6 +3489,40 @@ def log_dry_run_change(
                 str(patch_payload.get("created") or "keiner"),
             )
         )
+    if isinstance(patch_payload.get("custom_fields"), dict):
+        for custom_field_id, new_value in sorted(patch_payload["custom_fields"].items()):
+            try:
+                definition = (custom_field_id_to_definition or {}).get(int(custom_field_id))
+            except (TypeError, ValueError):
+                definition = None
+            field_label = definition.note_label if definition is not None else f"CustomField {custom_field_id}"
+            old_value = "keiner"
+            if definition is not None:
+                for candidate_key in (
+                    definition.paperless_name,
+                    definition.paperless_name.lower(),
+                    str(custom_field_id),
+                ):
+                    if candidate_key in current_custom_fields:
+                        old_value = str(current_custom_fields[candidate_key])
+                        break
+            rows.append((field_label, old_value, str(new_value)))
+    if isinstance(patch_payload.get("custom_fields_empty"), list):
+        for custom_field_id in patch_payload.get("custom_fields_empty", []):
+            try:
+                definition = (custom_field_id_to_definition or {}).get(int(custom_field_id))
+            except (TypeError, ValueError):
+                definition = None
+            field_label = definition.note_label if definition is not None else f"CustomField {custom_field_id}"
+            rows.append((field_label, "nicht angehängt", "leer anhängen"))
+    if isinstance(patch_payload.get("custom_fields_remove"), list):
+        for custom_field_id in patch_payload.get("custom_fields_remove", []):
+            try:
+                definition = (custom_field_id_to_definition or {}).get(int(custom_field_id))
+            except (TypeError, ValueError):
+                definition = None
+            field_label = definition.note_label if definition is not None else f"CustomField {custom_field_id}"
+            rows.append((field_label, "gesetzt", "Wert entfernen"))
     if note_will_be_added:
         rows.append(("Notiz", "bestehend", "KI-Notiz wird ergänzt"))
 
@@ -1544,6 +3570,7 @@ def log_run_details(
         "/api/document_types/": "Dokumenttyp neu erstellt",
         "/api/storage_paths/": "Speicherpfad neu erstellt",
         "/api/tags/": "Tag neu erstellt",
+        "/api/custom_fields/": "Benutzerdefiniertes Feld neu erstellt",
     }
 
     LOGGER.info("----- Zusammenfassung: Neu angelegte Entitäten -----")
@@ -1587,7 +3614,12 @@ def should_process_document(document: Dict[str, Any]) -> bool:
     return not (has_type and has_tags)
 
 
-def process_documents(config: AppConfig, process_all_documents: bool = False) -> None:
+def process_documents(
+    config: AppConfig,
+    process_all_documents: bool = False,
+    backfill_existing_documents: bool = False,
+    document_limit_override: Optional[int] = None,
+) -> None:
     """Hauptablauf: Laden, KI-Klassifizieren, validieren, patchen."""
 
     client = PaperlessClient(config)
@@ -1595,6 +3627,11 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     tax_service: Optional[TaxEnrichmentService] = None
     tax_export_collector: Optional[TaxExportCollector] = None
     tax_enrichment_errors = 0
+    generic_custom_field_sync_enabled = bool(config.enable_custom_field_enrichment)
+    secondbrain_sync_enabled = bool(config.enable_secondbrain_custom_fields)
+    custom_field_definitions = (
+        DEFAULT_CUSTOM_FIELD_DEFINITIONS if generic_custom_field_sync_enabled else {}
+    )
     if config.enable_tax_enrichment:
         tax_service = TaxEnrichmentService(
             ai_model=config.ai_model,
@@ -1613,6 +3650,19 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             config.tax_export_dir,
             ", ".join(str(year) for year in config.tax_export_years) if config.tax_export_years else "alle",
         )
+    if generic_custom_field_sync_enabled:
+        LOGGER.info(
+            "Custom-Field-Enrichment aktiv: %s definierte Felder fuer Vertrag/Lohnabrechnung.",
+            len(custom_field_definitions),
+        )
+    if secondbrain_sync_enabled:
+        LOGGER.info(
+            "SecondBrain-Custom-Fields aktiv: overwrite_existing=%s | "
+            "attach_empty_when_unknown=%s | confidence_threshold=%.2f",
+            config.secondbrain_custom_fields_overwrite_existing,
+            config.secondbrain_custom_fields_attach_empty_when_unknown,
+            config.secondbrain_custom_fields_confidence_threshold,
+        )
 
     LOGGER.info("Prüfe KI-Token-Budget...")
     classifier.preflight_token_budget()
@@ -1623,6 +3673,22 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     doc_types_map = client.list_named_entities("/api/document_types/")
     correspondents_map = client.list_named_entities("/api/correspondents/")
     storage_paths_map = client.list_named_entities("/api/storage_paths/")
+    if generic_custom_field_sync_enabled or secondbrain_sync_enabled:
+        try:
+            custom_fields_map = client.get_custom_fields_by_name()
+        except PaperlessApiError as exc:
+            LOGGER.error(
+                "Custom-Field-Sync konnte nicht initialisiert werden. "
+                "Die normale Dokumentklassifikation läuft weiter, aber Custom Fields werden "
+                "für diesen Lauf übersprungen. Prüfe /api/custom_fields/, Rechte und "
+                "Paperless-Version. Fehler: %s",
+                exc,
+            )
+            custom_fields_map = {}
+            generic_custom_field_sync_enabled = False
+            secondbrain_sync_enabled = False
+    else:
+        custom_fields_map = {}
     classifier.set_known_entities(
         document_types=list(doc_types_map.keys()),
         correspondents=list(correspondents_map.keys()),
@@ -1673,6 +3739,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
     perf_ai_docs = 0
     prefilt_ki_tagged = 0
     can_create_entities = config.create_missing_entities and not config.dry_run
+    can_create_custom_fields = config.create_missing_custom_fields and not config.dry_run
     ki_tag_id = ensure_entity_id(
         client,
         tags_map,
@@ -1715,13 +3782,20 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             can_create_entities,
             created_entities,
         )
+    effective_process_all_documents = process_all_documents or backfill_existing_documents
     remove_neu_tag_id = tags_map.get("#neu")
     only_tag_id: Optional[int] = None
     only_tag_name = config.process_only_tag.strip()
     doc_query_params: Dict[str, Any] = {}
-    target_documents = max(1, int(config.max_documents))
-    fetch_limit = target_documents
-    if (
+    if document_limit_override is not None and int(document_limit_override) > 0:
+        target_documents: Optional[int] = max(1, int(document_limit_override))
+    elif backfill_existing_documents:
+        target_documents = None
+    else:
+        target_documents = max(1, int(config.max_documents))
+
+    fetch_limit: Optional[int] = target_documents
+    if fetch_limit is not None and (
         config.quarantine_failed_documents
         or config.enable_tag_bypass_on_tags_500
         or not config.reprocess_ki_tagged_documents
@@ -1731,7 +3805,20 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         # Dasselbe gilt für KI-Tag-Vorfilter.
         fetch_limit = max(target_documents * 10, target_documents + 100)
     budget_used = 0
-    if process_all_documents:
+    if backfill_existing_documents:
+        LOGGER.info(
+            "Backfill-Modus aktiv: Bestehende Paperless-Datenbank wird erneut "
+            "für neue Anreicherungen durchsucht. Bereits KI-getaggte Dokumente "
+            "werden nur für Zusatzfunktionen aktualisiert."
+        )
+        if target_documents is None:
+            LOGGER.info(
+                "Backfill läuft ohne Dokumentlimit. Mit --max-documents lässt sich "
+                "der Gesamtdurchlauf bei Bedarf in mehrere Chargen aufteilen."
+            )
+        else:
+            LOGGER.info("Backfill-Limit aktiv: maximal %s Dokument(e).", target_documents)
+    elif effective_process_all_documents:
         LOGGER.info(
             "All-Documents Modus aktiv: Tag-Filter und Standard-Skip-Regeln werden ignoriert."
         )
@@ -1974,6 +4061,8 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         title = pending.title
         doc_tags = pending.doc_tags
         patch_payload_for_error: Optional[Dict[str, Any]] = None
+        tax_enrichment_result: Optional[Any] = None
+        secondbrain_sync_report = build_secondbrain_sync_report()
 
         try:
             if classification_exc is not None:
@@ -1981,7 +4070,11 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             if prediction is None:
                 raise AiClassificationError("KI lieferte kein Ergebnis.")
 
-            prediction = sanitize_prediction(prediction, storage_paths_map)
+            prediction = sanitize_prediction(
+                prediction,
+                storage_paths_map,
+                custom_field_definitions if generic_custom_field_sync_enabled else None,
+            )
             prompt_tokens, completion_tokens, total_tokens = extract_usage(prediction)
             run_prompt_tokens += prompt_tokens
             run_completion_tokens += completion_tokens
@@ -1992,12 +4085,12 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             )
             if tax_service is not None and tax_export_collector is not None:
                 try:
-                    enrichment = tax_service.enrich(
+                    tax_enrichment_result = tax_service.enrich(
                         document=document,
                         classification_prediction=prediction,
                     )
-                    tax_export_collector.add(enrichment)
-                    _apply_tax_tags(document=document, enrichment=enrichment)
+                    tax_export_collector.add(tax_enrichment_result)
+                    _apply_tax_tags(document=document, enrichment=tax_enrichment_result)
                 except TaxEnrichmentError as tax_exc:
                     tax_enrichment_errors += 1
                     LOGGER.warning(
@@ -2007,7 +4100,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                         tax_exc,
                     )
             confidence = float(prediction["confidence"])
-            if confidence < config.confidence_threshold:
+            if confidence < config.confidence_threshold and not pending.enrichment_only:
                 if not config.dry_run and doc_id is not None:
                     current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
                     new_tags = set(current_tags)
@@ -2056,33 +4149,64 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                 )
                 skipped += 1
                 return
+            if confidence < config.confidence_threshold and pending.enrichment_only:
+                LOGGER.info(
+                    "Backfill Dokument %s (%s): Confidence %.2f unter Schwellwert %.2f, "
+                    "Zusatzfelder werden dennoch geprüft.",
+                    doc_id,
+                    title,
+                    confidence,
+                    config.confidence_threshold,
+                )
 
+            custom_field_id_to_definition: Dict[int, CustomFieldDefinition] = {}
             patch_payload = build_patch_payload(
                 client=client,
+                document=document,
                 prediction=prediction,
                 tags_map=tags_map,
                 doc_types_map=doc_types_map,
                 correspondents_map=correspondents_map,
                 storage_paths_map=storage_paths_map,
+                custom_fields_map=custom_fields_map if (generic_custom_field_sync_enabled or secondbrain_sync_enabled) else None,
+                custom_field_definitions=custom_field_definitions if generic_custom_field_sync_enabled else None,
                 create_missing_entities=can_create_entities,
+                create_missing_custom_fields=can_create_custom_fields,
+                include_standard_metadata=not pending.enrichment_only,
+                enable_secondbrain_custom_fields=secondbrain_sync_enabled,
+                secondbrain_overwrite_existing=config.secondbrain_custom_fields_overwrite_existing,
+                secondbrain_attach_empty_when_unknown=config.secondbrain_custom_fields_attach_empty_when_unknown,
+                secondbrain_confidence_threshold=config.secondbrain_custom_fields_confidence_threshold,
+                secondbrain_log_missing_fields=config.secondbrain_custom_fields_log_missing_fields,
+                tax_enrichment=tax_enrichment_result,
                 created_entities=created_entities,
+                custom_field_id_to_definition=custom_field_id_to_definition,
+                secondbrain_sync_report=secondbrain_sync_report,
             )
             patch_payload_for_error = dict(patch_payload)
 
             if not patch_payload:
                 LOGGER.info("Skip Dokument %s (%s): Keine verwertbaren Felder im KI-Output", doc_id, title)
+                if secondbrain_sync_enabled:
+                    log_secondbrain_sync_report(
+                        doc_id=doc_id,
+                        title=title,
+                        sync_report=secondbrain_sync_report,
+                    )
                 skipped += 1
                 return
 
-            apply_forced_tag_rules(
-                patch_payload=patch_payload,
-                current_tag_ids=doc_tags,
-                ki_tag_id=ki_tag_id,
-                remove_neu_tag_id=remove_neu_tag_id,
-            )
+            if not pending.enrichment_only:
+                apply_forced_tag_rules(
+                    patch_payload=patch_payload,
+                    current_tag_ids=doc_tags,
+                    ki_tag_id=ki_tag_id,
+                    remove_neu_tag_id=remove_neu_tag_id,
+                )
             patch_payload = filter_unchanged_patch_fields(
                 document=document,
                 patch_payload=patch_payload,
+                custom_field_id_to_definition=custom_field_id_to_definition,
             )
             patch_payload_for_error = dict(patch_payload)
 
@@ -2092,6 +4216,12 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                     doc_id,
                     title,
                 )
+                if secondbrain_sync_enabled:
+                    log_secondbrain_sync_report(
+                        doc_id=doc_id,
+                        title=title,
+                        sync_report=secondbrain_sync_report,
+                    )
                 skipped += 1
                 return
 
@@ -2108,9 +4238,18 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                     correspondent_id_to_label=correspondent_id_to_label,
                     storage_path_id_to_label=storage_path_id_to_label,
                     tag_id_to_label=tag_id_to_label_local,
+                    custom_field_id_to_definition=custom_field_id_to_definition,
+                    secondbrain_sync_report=secondbrain_sync_report,
                     max_chars=config.ai_notes_max_chars,
                     include_summary=config.enable_ai_note_summary,
                     summary_max_chars=config.ai_note_summary_max_chars,
+                )
+
+            if secondbrain_sync_enabled:
+                log_secondbrain_sync_report(
+                    doc_id=doc_id,
+                    title=title,
+                    sync_report=secondbrain_sync_report,
                 )
 
             if config.dry_run:
@@ -2123,6 +4262,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                     doc_type_id_to_label=doc_type_id_to_label,
                     correspondent_id_to_label=correspondent_id_to_label,
                     storage_path_id_to_label=storage_path_id_to_label,
+                    custom_field_id_to_definition=custom_field_id_to_definition,
                 )
             else:
                 apply_started = time.perf_counter()
@@ -2144,6 +4284,13 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                 failed_patch_cache.pop(doc_key, None)
             updated += 1
         except (AiClassificationError, PaperlessApiError, ValueError, Exception) as exc:  # noqa: BLE001
+            if secondbrain_sync_enabled:
+                secondbrain_sync_report["api_errors"].append(str(exc))
+                log_secondbrain_sync_report(
+                    doc_id=doc_id,
+                    title=title,
+                    sync_report=secondbrain_sync_report,
+                )
             error_text = str(exc)
             tags_only_patch = bool(
                 patch_payload_for_error
@@ -2289,6 +4436,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         # außer Reprocessing wurde explizit aktiviert.
         if (
             has_ki_tag
+            and not backfill_existing_documents
             and not config.reprocess_ki_tagged_documents
             and not (config.enable_tax_enrichment and config.tax_process_ki_tagged_documents)
         ):
@@ -2432,18 +4580,26 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                 failed_docs_until.pop(doc_key, None)
 
         # Defensive Prüfung bleibt aktiv, falls API-Filter je nach Version anders reagiert.
-        if not process_all_documents and only_tag_id is not None and only_tag_id not in doc_tags:
+        if not effective_process_all_documents and only_tag_id is not None and only_tag_id not in doc_tags:
             skipped += 1
             continue
 
-        if not process_all_documents and only_tag_id is None and not should_process_document(document):
+        if (
+            not effective_process_all_documents
+            and only_tag_id is None
+            and not should_process_document(document)
+        ):
             LOGGER.debug("Skip Dokument %s (%s): bereits klassifiziert", doc_id, title)
             skipped += 1
             continue
 
         # ---------- Precheck-Gates vor KI ----------
 
-        if config.already_classified_skip and not process_all_documents:
+        if (
+            config.already_classified_skip
+            and not effective_process_all_documents
+            and not backfill_existing_documents
+        ):
             has_type = document.get("document_type") is not None
             has_tags = bool(document.get("tags"))
             # Regel für already_classified_skip:
@@ -2493,13 +4649,14 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
 
         names_lower = [name.lower() for name in collect_document_names(document)]
         matched_pattern = None
-        for pattern in config.precheck_blocked_filename_patterns:
-            pattern_lower = str(pattern).strip().lower()
-            if not pattern_lower:
-                continue
-            if any(pattern_lower in name for name in names_lower):
-                matched_pattern = pattern
-                break
+        if not backfill_existing_documents:
+            for pattern in config.precheck_blocked_filename_patterns:
+                pattern_lower = str(pattern).strip().lower()
+                if not pattern_lower:
+                    continue
+                if any(pattern_lower in name for name in names_lower):
+                    matched_pattern = pattern
+                    break
         if matched_pattern:
             if not config.dry_run and doc_id is not None:
                 current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
@@ -2551,18 +4708,19 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
         word_count = len(re.findall(r"\b\w+\b", doc_text))
         alnum_ratio = calc_alnum_ratio(doc_text)
         precheck_reasons: List[str] = []
-        if len(doc_text) < max(0, int(config.precheck_min_content_chars)):
-            precheck_reasons.append(
-                f"content_len={len(doc_text)} < min_content_chars={int(config.precheck_min_content_chars)}"
-            )
-        if word_count < max(0, int(config.precheck_min_word_count)):
-            precheck_reasons.append(
-                f"word_count={word_count} < min_word_count={int(config.precheck_min_word_count)}"
-            )
-        if alnum_ratio < max(0.0, float(config.precheck_min_alnum_ratio)):
-            precheck_reasons.append(
-                f"alnum_ratio={alnum_ratio:.2f} < min_alnum_ratio={float(config.precheck_min_alnum_ratio):.2f}"
-            )
+        if not backfill_existing_documents:
+            if len(doc_text) < max(0, int(config.precheck_min_content_chars)):
+                precheck_reasons.append(
+                    f"content_len={len(doc_text)} < min_content_chars={int(config.precheck_min_content_chars)}"
+                )
+            if word_count < max(0, int(config.precheck_min_word_count)):
+                precheck_reasons.append(
+                    f"word_count={word_count} < min_word_count={int(config.precheck_min_word_count)}"
+                )
+            if alnum_ratio < max(0.0, float(config.precheck_min_alnum_ratio)):
+                precheck_reasons.append(
+                    f"alnum_ratio={alnum_ratio:.2f} < min_alnum_ratio={float(config.precheck_min_alnum_ratio):.2f}"
+                )
         if precheck_reasons:
             if not config.dry_run and doc_id is not None:
                 current_tags = {int(tag_id) for tag_id in document.get("tags", [])}
@@ -2610,7 +4768,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
             skipped += 1
             continue
 
-        if config.precheck_image_only_gate:
+        if config.precheck_image_only_gate and not backfill_existing_documents:
             mime_type = str(document.get("mime_type") or document.get("media_type") or "").lower()
             has_image_or_pdf_type = ("pdf" in mime_type) or mime_type.startswith("image/")
             image_like_name = any(
@@ -2663,7 +4821,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                 skipped += 1
                 continue
 
-        if config.precheck_duplicate_hash_gate and doc_id is not None:
+        if config.precheck_duplicate_hash_gate and doc_id is not None and not backfill_existing_documents:
             checksum = str(document.get("checksum") or "").strip()
             if checksum:
                 duplicate_doc = client.find_classified_duplicate(
@@ -2777,18 +4935,19 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
 
         if (
             has_ki_tag
+            and not backfill_existing_documents
             and not config.reprocess_ki_tagged_documents
             and config.enable_tax_enrichment
             and config.tax_process_ki_tagged_documents
         ):
-            if budget_used >= target_documents:
+            if target_documents is not None and budget_used >= target_documents:
                 break
             budget_used += 1
             _run_tax_only_for_document(document=document, doc_id=doc_id, title=title)
             continue
 
         # Budget zählt nur für Dokumente, die die Skip-Gates passiert haben.
-        if budget_used >= target_documents:
+        if target_documents is not None and budget_used >= target_documents:
             break
         budget_used += 1
 
@@ -2799,6 +4958,7 @@ def process_documents(config: AppConfig, process_all_documents: bool = False) ->
                 doc_key=doc_key,
                 title=title,
                 doc_tags=set(doc_tags),
+                enrichment_only=bool(backfill_existing_documents and has_ki_tag),
             )
         )
         if len(pending_ai_documents) >= parallel_ai_workers:
@@ -2926,10 +5086,22 @@ def parse_args() -> argparse.Namespace:
         help="Einmal alle Dokumente durchsuchen (ignoriert Tag-Filter und Standard-Skip-Regeln)",
     )
     parser.add_argument(
+        "--backfill-existing-documents",
+        action="store_true",
+        help=(
+            "Bestehende Paperless-Datenbank erneut für neue Zusatzfunktionen "
+            "durchlaufen. Bereits KI-getaggte Dokumente werden dabei nur "
+            "anreichernd aktualisiert."
+        ),
+    )
+    parser.add_argument(
         "--max-documents",
         type=int,
         default=None,
-        help="Optionaler Override für max_documents aus der YAML (nur > 0 wirksam)",
+        help=(
+            "Optionaler Override für max_documents aus der YAML (nur > 0 wirksam). "
+            "Im Backfill-Modus eignet sich das zum Aufteilen in Chargen."
+        ),
     )
     return parser.parse_args()
 
@@ -2951,7 +5123,12 @@ def main() -> int:
     LOGGER.info("Starte Paperless KI Sorter | dry_run=%s", config.dry_run)
 
     try:
-        process_documents(config, process_all_documents=args.all_documents)
+        process_documents(
+            config,
+            process_all_documents=args.all_documents,
+            backfill_existing_documents=args.backfill_existing_documents,
+            document_limit_override=args.max_documents,
+        )
     except Exception as exc:  # Breiter Catch für sauberen Exit + logischen Fehlercode.
         LOGGER.exception("Unerwarteter Fehler im Hauptablauf: %s", exc)
         return 1

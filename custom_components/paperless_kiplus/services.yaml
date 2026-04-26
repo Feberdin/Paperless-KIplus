@@ -51,3 +51,10 @@ run:
           min: 0
           max: 5000
           mode: box
+    backfill_existing_documents:
+      name: Bestandsdaten-Backfill
+      description: Optional. Durchläuft die bereits eingelesene Paperless-Datenbank erneut, um neue Zusatzfunktionen wie Steuer- und SecondBrain-Felder zu befüllen. Bereits KI-getaggte Dokumente werden dabei nur anreichernd aktualisiert.
+      required: false
+      default: false
+      selector:
+        boolean:

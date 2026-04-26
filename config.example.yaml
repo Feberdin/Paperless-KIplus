@@ -125,6 +125,62 @@ ai_notes_max_chars: 800
 enable_ai_note_summary: true
 ai_note_summary_max_chars: 220
 
+# Optional: Benutzerdefinierte Felder für Verträge und Lohnabrechnungen
+# automatisch aus dem Dokument extrahieren und direkt in Paperless speichern.
+# Das ist besonders nützlich, wenn nachgelagerte Systeme wie SecondBrain mit
+# diesen strukturierten Werten weiterarbeiten sollen.
+enable_custom_field_enrichment: false
+
+# Falls true: fehlende Paperless-Custom-Fields bei Bedarf automatisch anlegen.
+# Angelegt werden nur Felder aus dem festen Standard-Katalog dieses Projekts.
+create_missing_custom_fields: true
+
+# Standard-Katalog der automatisch befüllten Felder:
+# Verträge:
+# - Vertragsnummer
+# - Kundennummer
+# - Vertragsbeginn
+# - Vertragsende
+# - Kündigen bis
+# - Monatliche Aufwendungen
+#
+# Lohnabrechnungen:
+# - Brutto
+# - Netto
+# - Boni
+# - Sonstige Bezüge
+# - Steuern/Sozialabgaben
+# - Sonstige Abzüge
+# - Abgaben gesamt
+
+# Optional: Bereits in Paperless angelegte `sb_`-Custom-Fields für SecondBrain
+# aus der KI-Klassifikation befüllen. Diese Felder werden NICHT automatisch
+# angelegt, sondern nur genutzt, wenn sie in Paperless bereits vorhanden sind.
+enable_secondbrain_custom_fields: false
+
+# Bestehende `sb_`-Feldwerte standardmäßig NICHT überschreiben.
+secondbrain_custom_fields_overwrite_existing: false
+
+# Falls die KI für ein bereits vorhandenes `sb_`-Feld keinen belastbaren Wert
+# liefern kann, kann das Feld optional leer an das Dokument angehängt werden.
+secondbrain_custom_fields_attach_empty_when_unknown: false
+
+# Nur `sb_`-Vorschläge oberhalb dieses Confidence-Schwellwertes werden nach
+# Paperless geschrieben.
+secondbrain_custom_fields_confidence_threshold: 0.70
+
+# Fehlende `sb_`-Felder im Paperless-System im Log sichtbar machen, aber den
+# Dokumentlauf nicht abbrechen.
+secondbrain_custom_fields_log_missing_fields: true
+
+# Alternativ koennen dieselben Optionen auch gruppiert notiert werden:
+# secondbrain_custom_fields:
+#   enabled: true
+#   overwrite_existing: false
+#   attach_empty_when_unknown: false
+#   confidence_threshold: 0.70
+#   log_missing_fields: true
+
 # Steuerorientierte Zusatzanalyse fuer private deutsche Einkommensteuerfaelle.
 # Diese Funktion greift zusaetzlich zur normalen Klassifikation und erzeugt
 # strukturierte Exporte fuer manuelle Weiterarbeit, z. B. Richtung WISO Steuer.

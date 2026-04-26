@@ -15,6 +15,7 @@ from .const import (
     CONF_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
     CONF_ALREADY_CLASSIFIED_SKIP,
     ATTR_ALL_DOCUMENTS,
+    ATTR_BACKFILL_EXISTING_DOCUMENTS,
     ATTR_CONFIG_FILE,
     ATTR_ENTRY_ID,
     ATTR_FORCE,
@@ -120,6 +121,7 @@ RUN_SERVICE_SCHEMA = vol.Schema(
         vol.Optional(ATTR_DRY_RUN): cv.boolean,
         vol.Optional(ATTR_ALL_DOCUMENTS): cv.boolean,
         vol.Optional(ATTR_MAX_DOCUMENTS): vol.All(vol.Coerce(int), vol.Range(min=0, max=5000)),
+        vol.Optional(ATTR_BACKFILL_EXISTING_DOCUMENTS): cv.boolean,
     }
 )
 
@@ -335,6 +337,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             dry_run_override = call.data.get(ATTR_DRY_RUN)
             all_documents_override = call.data.get(ATTR_ALL_DOCUMENTS)
             max_documents_override = call.data.get(ATTR_MAX_DOCUMENTS)
+            backfill_existing_documents_override = call.data.get(
+                ATTR_BACKFILL_EXISTING_DOCUMENTS, False
+            )
 
             if target_entry_id:
                 target_runners = [
@@ -355,6 +360,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         dry_run=dry_run_override,
                         all_documents=all_documents_override,
                         max_documents=max_documents_override,
+                        backfill_existing_documents=backfill_existing_documents_override,
                     )
                 else:
                     tasks.append(
@@ -365,6 +371,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                                 dry_run=dry_run_override,
                                 all_documents=all_documents_override,
                                 max_documents=max_documents_override,
+                                backfill_existing_documents=backfill_existing_documents_override,
                             )
                         )
                     )

@@ -69,5 +69,6 @@ ATTR_CONFIG_FILE = "config_file"
 ATTR_DRY_RUN = "dry_run"
 ATTR_ALL_DOCUMENTS = "all_documents"
 ATTR_MAX_DOCUMENTS = "max_documents"
+ATTR_BACKFILL_EXISTING_DOCUMENTS = "backfill_existing_documents"
 
 SIGNAL_STATUS_UPDATED = f"{DOMAIN}_status_updated"

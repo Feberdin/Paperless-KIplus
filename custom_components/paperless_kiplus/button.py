@@ -33,6 +33,7 @@ async def async_setup_entry(
     runner: PaperlessRunner = hass.data[DOMAIN][entry.entry_id]
     async_add_entities(
         [
+            PaperlessRunnerBackfillButton(entry.entry_id, runner),
             PaperlessRunnerResetMetricsButton(entry.entry_id, runner),
             PaperlessRunnerResetFailedDocumentsButton(entry.entry_id, runner),
             PaperlessRunnerShowLogButton(entry.entry_id, runner),
@@ -64,6 +65,32 @@ class PaperlessRunnerResetMetricsButton(ButtonEntity):
         """Reset token/cost metrics."""
 
         await self._runner.async_reset_metrics()
+
+
+class PaperlessRunnerBackfillButton(ButtonEntity):
+    """Button to run a one-off enrichment backfill across existing documents."""
+
+    _attr_icon = "mdi:database-refresh-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        self._entry_id = entry_id
+        self._runner = runner
+        self._attr_unique_id = f"{entry_id}_start_backfill"
+        self._attr_name = "Paperless KIplus Bestandsdaten neu anreichern"
+        self._attr_has_entity_name = True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Ordnet den Button dem zentralen Integrationsgerät zu."""
+
+        return _device_info(self._entry_id)
+
+    async def async_press(self) -> None:
+        """Start a background backfill run without blocking the HA UI."""
+
+        self.hass.async_create_task(
+            self._runner.async_run(backfill_existing_documents=True)
+        )
 
 
 class PaperlessRunnerExportLogButton(ButtonEntity):
