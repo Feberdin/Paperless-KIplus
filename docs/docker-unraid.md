@@ -16,10 +16,9 @@ Diese Betriebsart verschiebt die eigentliche Rechenlast von Home Assistant auf e
 ## Schnellstart mit Docker Compose
 
 ```bash
-cd /path/to/Paperless-KIplus/docker
-cp ../config.example.yaml ../worker-data/config/config.yaml
-cd ..
-docker compose -f docker/docker-compose.example.yml up -d --build
+mkdir -p worker-data/config
+cp config.example.yaml worker-data/config/config.yaml
+docker compose -f docker/docker-compose.example.yml up -d
 ```
 
 Danach:
@@ -27,6 +26,41 @@ Danach:
 - API-Status: `http://<server>:8787/api/status`
 
 ## Schnellstart auf Unraid
+
+### Empfohlener Weg: Installationsskript
+
+Das robusteste Setup fuer Unraid ist jetzt das neue Installationsskript:
+
+```bash
+bash docker/install-unraid-worker.sh \
+  --paperless-url http://192.168.178.20:8000 \
+  --paperless-token PAPERLESS_TOKEN \
+  --ai-api-key OPENAI_KEY \
+  --ai-model gpt-4.1-mini
+```
+
+Das Skript:
+
+- erkennt Docker Compose
+- legt das Appdata-Verzeichnis an
+- erzeugt oder uebernimmt `config.yaml`
+- sichert bestehende Dateien vor dem Ueberschreiben
+- schreibt einen Compose-Stack fuer GHCR
+- startet oder aktualisiert den Container
+- prueft `/api/status` per Health-Check
+
+Typische Zusatzoptionen:
+
+```bash
+--data-dir /mnt/user/appdata/paperless-kiplus-worker
+--worker-token MEIN_API_TOKEN
+--enable-tax-enrichment true
+--tax-ai-api-key dummy
+--tax-ai-model qwen2.5:7b
+--tax-ai-base-url http://192.168.178.30:11434/v1
+```
+
+### Alternativ: Unraid-Template
 
 1. `docker/unraid-template.xml` als eigenes Template importieren.
 2. Ein persistentes Appdata-Verzeichnis fuer `/data` angeben.

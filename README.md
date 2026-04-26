@@ -857,13 +857,36 @@ Dokumentation:
 ### Schnellstart Standalone
 
 ```bash
-docker compose -f docker/docker-compose.example.yml up -d --build
+mkdir -p worker-data/config
+cp config.example.yaml worker-data/config/config.yaml
+docker compose -f docker/docker-compose.example.yml up -d
 ```
 
 Danach:
 
 - Weboberfläche: `http://<server>:8787/`
 - Status-API: `http://<server>:8787/api/status`
+
+### Robustes Unraid-Installationsskript
+
+Für Unraid gibt es jetzt zusätzlich ein direkt nutzbares Installationsskript:
+
+```bash
+bash docker/install-unraid-worker.sh \
+  --paperless-url http://192.168.178.20:8000 \
+  --paperless-token PAPERLESS_TOKEN \
+  --ai-api-key OPENAI_KEY \
+  --ai-model gpt-4.1-mini
+```
+
+Das Skript:
+
+- legt die Appdata-Verzeichnisse an
+- sichert bestehende Dateien
+- erzeugt eine startfähige `config.yaml`
+- schreibt einen Compose-Stack mit GHCR-Image
+- startet oder aktualisiert den Worker
+- prüft die API per Health-Check
 
 ### Remote-Steuerung aus Home Assistant
 
@@ -905,12 +928,13 @@ tax_ai_base_url: http://ollama:11434/v1
 
 ## Versionsverlauf (antichronologisch)
 
-- `v1.4.1` (2026-04-26)
+- `v1.4.2` (2026-04-26)
   - Eigenständigen Docker-/Unraid-Worker mit Weboberfläche und JSON-API ergänzt.
   - Remote-Ausführungsmodus in Home Assistant ergänzt, inklusive `execution_mode`, `remote_worker_url` und automatischem Config-Sync.
   - Neuer Config-Export-Service und neue Buttons für Worker-UI sowie Worker-Konfiguration ergänzt.
   - Optionalen eigenen Tax-KI-Provider (`tax_ai_*`) ergänzt, damit kleinere Steuer-Aufgaben auf lokalen OpenAI-kompatiblen LLMs laufen können.
   - Dockerfile, Compose-Beispiel, Unraid-Template, GHCR-Build-Workflow und Betriebsdoku ergänzt.
+  - Neues robustes Unraid-Installationsskript ergänzt, das Appdata, Compose, Konfiguration, Backups und Health-Check automatisch vorbereitet.
 
 - `v1.3.5` (2026-04-26)
   - Neuer Service und Button `Lauf neu starten`: verwirft bewusst den alten Resume-Stand und startet frisch von vorne.
