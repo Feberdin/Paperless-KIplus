@@ -25,6 +25,7 @@ import yaml
 
 from tax_enrichment import (
     TaxEnrichmentError,
+    TaxPauseRequested,
     TaxEnrichmentService,
     TaxExportCollector,
     build_tax_tag_labels,
@@ -36,6 +37,14 @@ UUID_TAG_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 MONETARY_SANITIZE_PATTERN = re.compile(r"[^0-9,.\-]")
+RETRY_AFTER_SECONDS_PATTERN = re.compile(r"Please try again in\s+([0-9]+(?:\.[0-9]+)?)s", re.IGNORECASE)
+RUN_STATE_VERSION = 1
+RUN_STATE_FILE_DEFAULT = "paperless_kiplus_run_state.json"
+STOP_REQUEST_FILE_DEFAULT = "paperless_kiplus_stop.request"
+RUNTIME_EVENT_MARKER = "PAPERLESS_RUNTIME_EVENT "
+RUN_PAUSE_EXIT_CODE = 75
+SHORT_RATE_LIMIT_WAIT_SECONDS = 15.0
+DEFAULT_AUTO_RESUME_WAIT_SECONDS = 300.0
 SUPPORTED_CUSTOM_FIELD_TYPES = {
     "string",
     "date",
@@ -59,6 +68,46 @@ class PaperlessApiError(Exception):
 
 class AiClassificationError(Exception):
     """Fehler bei KI-Klassifizierung oder Antwortformat."""
+
+
+class AiTemporaryPauseError(AiClassificationError):
+    """Signalisiert eine geplante Laufpause statt eines permanenten Fehlers.
+
+    Warum wir diese eigene Fehlerart haben:
+    - 429/Quota-Fälle sollen nicht als Dokumentfehler in Quarantäne laufen.
+    - Der Runner kann diese Fehlerart gezielt in "Pause jetzt, später weiter"
+      übersetzen.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        pause_reason: str,
+        retry_after_seconds: float | None = None,
+        document_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.pause_reason = pause_reason
+        self.retry_after_seconds = retry_after_seconds
+        self.document_context = document_context or {}
+
+
+class RunPausedError(Exception):
+    """Kontrollierter Stopp des Gesamtlaufs mit gespeichertem Resume-Zustand."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        pause_reason: str,
+        retry_after_seconds: float | None = None,
+        pause_state: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(message)
+        self.pause_reason = pause_reason
+        self.retry_after_seconds = retry_after_seconds
+        self.pause_state = pause_state or {}
 
 
 @dataclass(frozen=True)
@@ -531,6 +580,35 @@ class PendingAiDocument:
     doc_tags: set[int]
     enrichment_only: bool = False
 
+    def to_state_dict(self) -> Dict[str, Any]:
+        """Serialisiert einen Pending-Eintrag für Pause/Resume-Zwischenstände."""
+
+        return {
+            "document": self.document,
+            "doc_id": self.doc_id,
+            "doc_key": self.doc_key,
+            "title": self.title,
+            "doc_tags": sorted(self.doc_tags),
+            "enrichment_only": self.enrichment_only,
+        }
+
+    @classmethod
+    def from_state_dict(cls, payload: Dict[str, Any]) -> "PendingAiDocument":
+        """Stellt einen Pending-Eintrag aus der State-Datei wieder her."""
+
+        return cls(
+            document=dict(payload.get("document") or {}),
+            doc_id=payload.get("doc_id"),
+            doc_key=payload.get("doc_key"),
+            title=str(payload.get("title") or "<ohne Titel>"),
+            doc_tags={
+                int(tag_id)
+                for tag_id in (payload.get("doc_tags") or [])
+                if str(tag_id).strip()
+            },
+            enrichment_only=bool(payload.get("enrichment_only", False)),
+        )
+
 
 def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | None = None) -> AppConfig:
     """Lädt YAML-Konfiguration und validiert Pflichtfelder.
@@ -816,6 +894,28 @@ class PaperlessClient:
                     break
 
             next_url = str(page.get("next") or "")
+
+    def count_documents(self, extra_params: Optional[Dict[str, Any]] = None) -> int:
+        """Liest die Paperless-Gesamtzahl für die aktuelle Dokumentabfrage.
+
+        Warum diese Hilfsfunktion existiert:
+        - Für eine echte Fortschrittsanzeige brauchen wir eine belastbare
+          Zielgröße.
+        - Wir fragen nur die erste Seite ab und nutzen den `count`-Wert der API,
+          statt alle Dokumente doppelt laden zu müssen.
+        """
+
+        params: Dict[str, Any] = {
+            "ordering": "-created",
+            "page_size": 1,
+        }
+        if extra_params:
+            params.update(extra_params)
+        page = self._request("GET", "/api/documents/", params=params)
+        try:
+            return max(0, int(page.get("count", 0) or 0))
+        except (TypeError, ValueError):
+            return 0
 
     def preflight_check(self) -> None:
         """Prüft frühzeitig, ob die Paperless-API grundsätzlich erreichbar ist.
@@ -1367,6 +1467,44 @@ class AiClassifier:
                 f"Token-Precheck fehlgeschlagen (API nicht erreichbar/ungültige Header): {exc}"
             ) from exc
 
+    @staticmethod
+    def _build_pause_error_from_http_error(exc: requests.HTTPError) -> Optional[AiTemporaryPauseError]:
+        """Übersetzt 429-Antworten in eine geplante Laufpause statt Dokumentfehler."""
+
+        response = getattr(exc, "response", None)
+        if response is None:
+            return None
+        try:
+            status_code = int(response.status_code)
+        except (TypeError, ValueError):
+            return None
+        if status_code != 429:
+            return None
+
+        response_text = getattr(response, "text", "") or str(exc)
+        retry_after_seconds = extract_retry_after_seconds_from_error(
+            response_text,
+            getattr(response, "headers", None),
+        )
+        normalized_text = response_text.lower()
+        if "insufficient_quota" in normalized_text:
+            return AiTemporaryPauseError(
+                "KI-Quota erschöpft. Lauf wird pausiert und kann später fortgesetzt werden.",
+                pause_reason="quota_exhausted",
+                retry_after_seconds=retry_after_seconds or DEFAULT_AUTO_RESUME_WAIT_SECONDS,
+            )
+        if "rate_limit" in normalized_text or "tokens per min" in normalized_text:
+            return AiTemporaryPauseError(
+                "KI-Rate-Limit erreicht. Lauf wird kontrolliert pausiert.",
+                pause_reason="rate_limit_wait",
+                retry_after_seconds=retry_after_seconds or DEFAULT_AUTO_RESUME_WAIT_SECONDS,
+            )
+        return AiTemporaryPauseError(
+            "KI-Provider meldet 429. Lauf wird kontrolliert pausiert.",
+            pause_reason="provider_backoff",
+            retry_after_seconds=retry_after_seconds or DEFAULT_AUTO_RESUME_WAIT_SECONDS,
+        )
+
     def classify(self, document: Dict[str, Any]) -> Dict[str, Any]:
         """Sendet Dokumentkontext an KI und erwartet streng JSON als Antwort."""
 
@@ -1496,6 +1634,20 @@ class AiClassifier:
                 return parsed
             except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as exc:
                 last_exc = exc
+                if isinstance(exc, requests.HTTPError):
+                    pause_exc = self._build_pause_error_from_http_error(exc)
+                    if pause_exc is not None:
+                        wait_seconds = float(pause_exc.retry_after_seconds or 0.0)
+                        if wait_seconds > 0.0 and wait_seconds <= SHORT_RATE_LIMIT_WAIT_SECONDS:
+                            LOGGER.warning(
+                                "KI-Rate-Limit erreicht (Versuch %s/%s), warte %.2fs und versuche es erneut.",
+                                attempt,
+                                max_attempts,
+                                wait_seconds,
+                            )
+                            time.sleep(wait_seconds)
+                            continue
+                        raise pause_exc from exc
                 if attempt < max_attempts:
                     wait_seconds = 0.7 * (2 ** (attempt - 1))
                     LOGGER.warning(
@@ -2605,6 +2757,135 @@ def save_metrics(metrics_path: Path, payload: Dict[str, Any]) -> None:
         LOGGER.error("Metrics-Datei konnte nicht geschrieben werden: %s | %s", metrics_path, exc)
 
 
+def resolve_runtime_path(path_value: str, base_dir: Optional[Path] = None) -> Path:
+    """Löst Pfade für Laufzeitdateien robust relativ zum Arbeitsverzeichnis auf."""
+
+    path = Path(str(path_value).strip() or RUN_STATE_FILE_DEFAULT)
+    if path.is_absolute():
+        return path
+    resolved_base = base_dir or Path.cwd()
+    return resolved_base / path
+
+
+def load_json_file(path: Path) -> Dict[str, Any]:
+    """Lädt kleine JSON-Hilfsdateien tolerant und liefert immer ein Dict zurück."""
+
+    try:
+        if not path.exists():
+            return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        LOGGER.warning("JSON-Datei konnte nicht gelesen werden: %s", path)
+        return {}
+
+
+def save_json_file(path: Path, payload: Dict[str, Any]) -> None:
+    """Schreibt kleine JSON-Hilfsdateien robust auf Disk."""
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except OSError as exc:
+        LOGGER.error("JSON-Datei konnte nicht geschrieben werden: %s | %s", path, exc)
+
+
+def delete_runtime_file(path: Path) -> None:
+    """Entfernt Laufzeitdateien defensiv, falls sie existieren."""
+
+    try:
+        if path.exists():
+            path.unlink()
+    except OSError as exc:
+        LOGGER.warning("Laufzeitdatei konnte nicht entfernt werden: %s | %s", path, exc)
+
+
+def load_run_state(path: Path) -> Dict[str, Any]:
+    """Lädt den gespeicherten Resume-Zustand eines pausierten Laufs."""
+
+    payload = load_json_file(path)
+    if not payload:
+        return {}
+    version = int(payload.get("version", 0) or 0)
+    if version != RUN_STATE_VERSION:
+        LOGGER.warning(
+            "Run-State-Datei %s hat Version %s statt %s und wird ignoriert.",
+            path,
+            version,
+            RUN_STATE_VERSION,
+        )
+        return {}
+    return payload
+
+
+def save_run_state(path: Path, payload: Dict[str, Any]) -> None:
+    """Speichert den Resume-Zustand für einen kontrolliert pausierten Lauf."""
+
+    payload = dict(payload)
+    payload["version"] = RUN_STATE_VERSION
+    payload["updated_at"] = dt.datetime.now(dt.timezone.utc).isoformat()
+    save_json_file(path, payload)
+
+
+def request_manual_stop(path: Path) -> None:
+    """Schreibt eine kleine Stop-Anfrage-Datei für den laufenden Prozess."""
+
+    save_json_file(
+        path,
+        {
+            "requested_at": dt.datetime.now(dt.timezone.utc).isoformat(),
+            "reason": "manual_stop",
+        },
+    )
+
+
+def is_stop_requested(path: Path) -> bool:
+    """Prüft, ob ein manueller Stop für den aktuellen Lauf angefordert wurde."""
+
+    return path.exists()
+
+
+def extract_retry_after_seconds_from_error(
+    message: str,
+    headers: Optional[Dict[str, Any]] = None,
+) -> Optional[float]:
+    """Extrahiert Retry-After-Zeiten aus Headern oder OpenAI-Fehlermeldungen.
+
+    Beispiel:
+    - Input: `Please try again in 2.533s`
+    - Output: `2.533`
+    """
+
+    if headers:
+        for key in ("retry-after", "Retry-After"):
+            raw = headers.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                return max(0.0, float(raw))
+            except (TypeError, ValueError):
+                continue
+
+    match = RETRY_AFTER_SECONDS_PATTERN.search(str(message or ""))
+    if not match:
+        return None
+    try:
+        return max(0.0, float(match.group(1)))
+    except (TypeError, ValueError):
+        return None
+
+
+def emit_runtime_event(kind: str, **payload: Any) -> None:
+    """Schreibt maschinenlesbare Laufzeitereignisse ins normale Skript-Log.
+
+    Home Assistant liest diese Marker live mit, ohne dass wir ein zweites IPC-
+    Protokoll pflegen müssen.
+    """
+
+    event = {"kind": kind, **payload}
+    LOGGER.info("%s%s", RUNTIME_EVENT_MARKER, json.dumps(event, ensure_ascii=False, sort_keys=True))
+
+
 def extract_document_custom_field_values(document: Dict[str, Any]) -> Dict[str, Any]:
     """Liest bereits gesetzte Custom Fields tolerant aus einem Dokumentpayload.
 
@@ -3619,6 +3900,9 @@ def process_documents(
     process_all_documents: bool = False,
     backfill_existing_documents: bool = False,
     document_limit_override: Optional[int] = None,
+    run_state_file: str = RUN_STATE_FILE_DEFAULT,
+    stop_request_file: str = STOP_REQUEST_FILE_DEFAULT,
+    resume_run: bool = False,
 ) -> None:
     """Hauptablauf: Laden, KI-Klassifizieren, validieren, patchen."""
 
@@ -3629,6 +3913,20 @@ def process_documents(
     tax_enrichment_errors = 0
     generic_custom_field_sync_enabled = bool(config.enable_custom_field_enrichment)
     secondbrain_sync_enabled = bool(config.enable_secondbrain_custom_fields)
+    runtime_base_dir = Path.cwd()
+    run_state_path = resolve_runtime_path(run_state_file, runtime_base_dir)
+    stop_request_path = resolve_runtime_path(stop_request_file, runtime_base_dir)
+    existing_run_state = load_run_state(run_state_path) if resume_run else {}
+    if resume_run and existing_run_state:
+        LOGGER.info(
+            "Resume-Modus aktiv: gespeicherter Laufzustand aus %s wird fortgesetzt.",
+            run_state_path,
+        )
+    elif resume_run:
+        LOGGER.warning(
+            "Resume-Modus angefordert, aber kein Laufzustand unter %s gefunden. Starte regulären Lauf.",
+            run_state_path,
+        )
     custom_field_definitions = (
         DEFAULT_CUSTOM_FIELD_DEFINITIONS if generic_custom_field_sync_enabled else {}
     )
@@ -3738,6 +4036,9 @@ def process_documents(
     perf_ai_batches = 0
     perf_ai_docs = 0
     prefilt_ki_tagged = 0
+    completed_document_ids: set[int] = set()
+    restored_pending_documents: List[PendingAiDocument] = []
+    progress_total_documents = 0
     can_create_entities = config.create_missing_entities and not config.dry_run
     can_create_custom_fields = config.create_missing_custom_fields and not config.dry_run
     ki_tag_id = ensure_entity_id(
@@ -3782,6 +4083,17 @@ def process_documents(
             can_create_entities,
             created_entities,
         )
+    resumed_mode = existing_run_state.get("mode") or {}
+    if resumed_mode:
+        process_all_documents = bool(resumed_mode.get("process_all_documents", process_all_documents))
+        backfill_existing_documents = bool(
+            resumed_mode.get("backfill_existing_documents", backfill_existing_documents)
+        )
+        if resumed_mode.get("document_limit_override") not in (None, ""):
+            try:
+                document_limit_override = int(resumed_mode.get("document_limit_override"))
+            except (TypeError, ValueError):
+                document_limit_override = document_limit_override
     effective_process_all_documents = process_all_documents or backfill_existing_documents
     remove_neu_tag_id = tags_map.get("#neu")
     only_tag_id: Optional[int] = None
@@ -3805,6 +4117,43 @@ def process_documents(
         # Dasselbe gilt für KI-Tag-Vorfilter.
         fetch_limit = max(target_documents * 10, target_documents + 100)
     budget_used = 0
+    if existing_run_state:
+        progress_state = existing_run_state.get("progress") or {}
+        scanned = int(progress_state.get("scanned", scanned) or scanned)
+        updated = int(progress_state.get("updated", updated) or updated)
+        skipped = int(progress_state.get("skipped", skipped) or skipped)
+        failed = int(progress_state.get("failed", failed) or failed)
+        bypassed = int(progress_state.get("bypassed", bypassed) or bypassed)
+        bypass_skipped = int(progress_state.get("bypass_skipped", bypass_skipped) or bypass_skipped)
+        skipped_with_neu_still_set = int(
+            progress_state.get("skipped_with_neu_still_set", skipped_with_neu_still_set)
+            or skipped_with_neu_still_set
+        )
+        prefilt_ki_tagged = int(progress_state.get("prefilt_ki_tagged", prefilt_ki_tagged) or prefilt_ki_tagged)
+        budget_used = int(progress_state.get("budget_used", budget_used) or budget_used)
+        run_prompt_tokens = int(progress_state.get("run_prompt_tokens", run_prompt_tokens) or run_prompt_tokens)
+        run_completion_tokens = int(
+            progress_state.get("run_completion_tokens", run_completion_tokens) or run_completion_tokens
+        )
+        run_total_tokens = int(progress_state.get("run_total_tokens", run_total_tokens) or run_total_tokens)
+        run_cost_eur = float(progress_state.get("run_cost_eur", run_cost_eur) or run_cost_eur)
+        perf_apply_seconds = float(progress_state.get("perf_apply_seconds", perf_apply_seconds) or perf_apply_seconds)
+        perf_ai_seconds = float(progress_state.get("perf_ai_seconds", perf_ai_seconds) or perf_ai_seconds)
+        perf_ai_batches = int(progress_state.get("perf_ai_batches", perf_ai_batches) or perf_ai_batches)
+        perf_ai_docs = int(progress_state.get("perf_ai_docs", perf_ai_docs) or perf_ai_docs)
+        progress_total_documents = int(
+            progress_state.get("total_documents", progress_total_documents) or progress_total_documents
+        )
+        completed_document_ids = {
+            int(doc_id)
+            for doc_id in (existing_run_state.get("completed_document_ids") or [])
+            if str(doc_id).strip()
+        }
+        restored_pending_documents = [
+            PendingAiDocument.from_state_dict(item)
+            for item in (existing_run_state.get("pending_documents") or [])
+            if isinstance(item, dict)
+        ]
     if backfill_existing_documents:
         LOGGER.info(
             "Backfill-Modus aktiv: Bestehende Paperless-Datenbank wird erneut "
@@ -3843,6 +4192,193 @@ def process_documents(
             "Parallele KI-Verarbeitung aktiv: max_parallel_ai_jobs=%s",
             parallel_ai_workers,
         )
+
+    if progress_total_documents <= 0:
+        if target_documents is not None:
+            progress_total_documents = int(target_documents)
+        else:
+            progress_total_documents = client.count_documents(doc_query_params)
+
+    def _progress_payload(
+        *,
+        current_document_id: Optional[int] = None,
+        current_document_title: str = "",
+        status: str = "running",
+        pause_reason: Optional[str] = None,
+        retry_after_seconds: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Baut einen serialisierbaren Laufzustand für Fortschritt und Resume.
+
+        Enthalten sind:
+        - Fortschrittszähler für UI und Debugging
+        - bereits abgeschlossene Dokumente
+        - aktuell noch offene Batch-Dokumente
+        - Modus-Informationen, damit Resume denselben Lauf fortsetzen kann
+        """
+
+        total = max(0, int(progress_total_documents))
+        if target_documents is None:
+            completed = len(completed_document_ids)
+        else:
+            completed = max(0, min(int(target_documents), int(budget_used) - len(pending_ai_documents)))
+        percent = round((completed / total) * 100.0, 2) if total else 0.0
+        return {
+            "version": RUN_STATE_VERSION,
+            "status": status,
+            "pause_reason": pause_reason,
+            "retry_after_seconds": retry_after_seconds,
+            "mode": {
+                "process_all_documents": bool(process_all_documents),
+                "backfill_existing_documents": bool(backfill_existing_documents),
+                "document_limit_override": document_limit_override,
+            },
+            "progress": {
+                "total_documents": total,
+                "completed_documents": completed,
+                "percent": percent,
+                "scanned": scanned,
+                "updated": updated,
+                "skipped": skipped,
+                "failed": failed,
+                "bypassed": bypassed,
+                "bypass_skipped": bypass_skipped,
+                "prefilt_ki_tagged": prefilt_ki_tagged,
+                "skipped_with_neu_still_set": skipped_with_neu_still_set,
+                "budget_used": budget_used,
+                "run_prompt_tokens": run_prompt_tokens,
+                "run_completion_tokens": run_completion_tokens,
+                "run_total_tokens": run_total_tokens,
+                "run_cost_eur": round(run_cost_eur, 6),
+                "perf_apply_seconds": round(perf_apply_seconds, 6),
+                "perf_ai_seconds": round(perf_ai_seconds, 6),
+                "perf_ai_batches": perf_ai_batches,
+                "perf_ai_docs": perf_ai_docs,
+            },
+            "completed_document_ids": sorted(completed_document_ids),
+            "pending_documents": [
+                item.to_state_dict()
+                for item in pending_ai_documents
+            ],
+            "current_document": {
+                "id": current_document_id,
+                "title": current_document_title,
+            },
+        }
+
+    def _persist_run_state(
+        *,
+        current_document_id: Optional[int] = None,
+        current_document_title: str = "",
+        status: str = "running",
+        pause_reason: Optional[str] = None,
+        retry_after_seconds: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Schreibt den aktuellen Laufzustand auf Disk und gibt ihn zurück."""
+
+        payload = _progress_payload(
+            current_document_id=current_document_id,
+            current_document_title=current_document_title,
+            status=status,
+            pause_reason=pause_reason,
+            retry_after_seconds=retry_after_seconds,
+        )
+        save_run_state(run_state_path, payload)
+        return payload
+
+    def _emit_progress(
+        *,
+        current_document_id: Optional[int] = None,
+        current_document_title: str = "",
+        status: str = "running",
+    ) -> None:
+        """Sendet einen Live-Fortschrittspunkt für Home Assistant ins Log."""
+
+        payload = _progress_payload(
+            current_document_id=current_document_id,
+            current_document_title=current_document_title,
+            status=status,
+        )
+        emit_runtime_event("progress", **payload)
+
+    def _mark_completed(
+        *,
+        document_id: Optional[int],
+        document_title: str,
+        status: str = "running",
+    ) -> None:
+        """Markiert ein Dokument final als erledigt und aktualisiert Fortschritt."""
+
+        if document_id is not None:
+            completed_document_ids.add(int(document_id))
+        _persist_run_state(
+            current_document_id=document_id,
+            current_document_title=document_title,
+            status=status,
+        )
+        _emit_progress(
+            current_document_id=document_id,
+            current_document_title=document_title,
+            status=status,
+        )
+
+    def _pause_run(
+        *,
+        pause_reason: str,
+        retry_after_seconds: Optional[float],
+        current_document_id: Optional[int],
+        current_document_title: str,
+        pending_items: Optional[List[PendingAiDocument]] = None,
+    ) -> None:
+        """Speichert Pause-Zustand und bricht den Lauf kontrolliert ab."""
+
+        original_pending = list(pending_ai_documents)
+        if pending_items is not None:
+            pending_ai_documents.clear()
+            pending_ai_documents.extend(pending_items)
+        pause_state = _persist_run_state(
+            current_document_id=current_document_id,
+            current_document_title=current_document_title,
+            status="paused",
+            pause_reason=pause_reason,
+            retry_after_seconds=retry_after_seconds,
+        )
+        emit_runtime_event(
+            "paused",
+            **pause_state,
+        )
+        delete_runtime_file(stop_request_path)
+        pending_ai_documents.clear()
+        pending_ai_documents.extend(original_pending)
+        raise RunPausedError(
+            f"Lauf pausiert: {pause_reason}",
+            pause_reason=pause_reason,
+            retry_after_seconds=retry_after_seconds,
+            pause_state=pause_state,
+        )
+
+    def _check_for_manual_stop(
+        *,
+        current_document_id: Optional[int] = None,
+        current_document_title: str = "",
+    ) -> None:
+        """Hält den Lauf an einem sicheren Punkt an, wenn ein Stop angefordert wurde."""
+
+        if not is_stop_requested(stop_request_path):
+            return
+        _pause_run(
+            pause_reason="manual_stop",
+            retry_after_seconds=None,
+            current_document_id=current_document_id,
+            current_document_title=current_document_title,
+        )
+
+    if restored_pending_documents:
+        LOGGER.info(
+            "Resume enthält %s noch nicht abgeschlossene Batch-Dokument(e), die zuerst fortgesetzt werden.",
+            len(restored_pending_documents),
+        )
+    _persist_run_state(status="running")
+    _emit_progress(status="running")
 
     def _build_existing_prediction(document: Dict[str, Any]) -> Dict[str, Any]:
         """Builds a classification-like object from already stored Paperless metadata.
@@ -3969,6 +4505,13 @@ def process_documents(
             )
             updated += 1
             return True
+        except TaxPauseRequested as tax_pause_exc:
+            raise AiTemporaryPauseError(
+                str(tax_pause_exc),
+                pause_reason=tax_pause_exc.pause_reason,
+                retry_after_seconds=tax_pause_exc.retry_after_seconds,
+                document_context={"document_id": doc_id, "title": title},
+            ) from tax_pause_exc
         except TaxEnrichmentError as tax_exc:
             tax_enrichment_errors += 1
             failed += 1
@@ -4042,6 +4585,40 @@ def process_documents(
         perf_ai_docs += len(items)
         return ordered
 
+    def _flush_pending_batch(items: List[PendingAiDocument]) -> None:
+        """Verarbeitet einen KI-Batch vollständig oder pausiert kontrolliert.
+
+        Verhalten:
+        - erfolgreiche Dokumente werden direkt angewendet
+        - Dokumente mit planbarer Pause bleiben als Pending-State erhalten
+        - danach wird der Gesamtlauf mit Resume-Information pausiert
+        """
+
+        if not items:
+            return
+        _check_for_manual_stop(
+            current_document_id=items[0].doc_id,
+            current_document_title=items[0].title,
+        )
+        batch_results = _classify_pending_documents(items)
+        pause_items: List[PendingAiDocument] = []
+        pause_exc: Optional[AiTemporaryPauseError] = None
+        for pending, prediction, pred_exc in batch_results:
+            if isinstance(pred_exc, AiTemporaryPauseError):
+                if pause_exc is None:
+                    pause_exc = pred_exc
+                pause_items.append(pending)
+                continue
+            _apply_ai_result(pending, prediction, pred_exc)
+        if pause_exc is not None:
+            _pause_run(
+                pause_reason=pause_exc.pause_reason,
+                retry_after_seconds=pause_exc.retry_after_seconds,
+                current_document_id=pause_items[0].doc_id if pause_items else None,
+                current_document_title=pause_items[0].title if pause_items else "",
+                pending_items=pause_items,
+            )
+
     def _apply_ai_result(
         pending: PendingAiDocument,
         prediction: Optional[Dict[str, Any]],
@@ -4063,9 +4640,12 @@ def process_documents(
         patch_payload_for_error: Optional[Dict[str, Any]] = None
         tax_enrichment_result: Optional[Any] = None
         secondbrain_sync_report = build_secondbrain_sync_report()
+        mark_completed_on_exit = True
 
         try:
             if classification_exc is not None:
+                if isinstance(classification_exc, AiTemporaryPauseError):
+                    raise classification_exc
                 raise classification_exc
             if prediction is None:
                 raise AiClassificationError("KI lieferte kein Ergebnis.")
@@ -4091,6 +4671,13 @@ def process_documents(
                     )
                     tax_export_collector.add(tax_enrichment_result)
                     _apply_tax_tags(document=document, enrichment=tax_enrichment_result)
+                except TaxPauseRequested as tax_pause_exc:
+                    raise AiTemporaryPauseError(
+                        str(tax_pause_exc),
+                        pause_reason=tax_pause_exc.pause_reason,
+                        retry_after_seconds=tax_pause_exc.retry_after_seconds,
+                        document_context={"document_id": doc_id, "title": title},
+                    ) from tax_pause_exc
                 except TaxEnrichmentError as tax_exc:
                     tax_enrichment_errors += 1
                     LOGGER.warning(
@@ -4283,6 +4870,9 @@ def process_documents(
             if config.quarantine_failed_documents and doc_key is not None:
                 failed_patch_cache.pop(doc_key, None)
             updated += 1
+        except AiTemporaryPauseError:
+            mark_completed_on_exit = False
+            raise
         except (AiClassificationError, PaperlessApiError, ValueError, Exception) as exc:  # noqa: BLE001
             if secondbrain_sync_enabled:
                 secondbrain_sync_report["api_errors"].append(str(exc))
@@ -4423,6 +5013,17 @@ def process_documents(
                 }
             )
             LOGGER.error("Fehler bei Dokument %s (%s): %s", doc_id, title, exc)
+        finally:
+            if mark_completed_on_exit:
+                _mark_completed(
+                    document_id=doc_id,
+                    document_title=title,
+                )
+
+    if restored_pending_documents:
+        pending_ai_documents = list(restored_pending_documents)
+        _flush_pending_batch(pending_ai_documents)
+        pending_ai_documents.clear()
 
     for document in client.iter_documents(fetch_limit, extra_params=doc_query_params):
         doc_id = document.get("id")
@@ -4431,6 +5032,12 @@ def process_documents(
         doc_tags = {int(tag_id) for tag_id in document.get("tags", [])}
         patch_payload_for_error: Optional[Dict[str, Any]] = None
         has_ki_tag = bool(ki_tag_id is not None and int(ki_tag_id) in doc_tags)
+        _check_for_manual_stop(
+            current_document_id=int(doc_id) if doc_id is not None else None,
+            current_document_title=title,
+        )
+        if doc_id is not None and int(doc_id) in completed_document_ids:
+            continue
 
         # Harte Vorfilter-Regel: Dokumente mit KI-Tag werden gar nicht angefasst,
         # außer Reprocessing wurde explizit aktiviert.
@@ -4441,9 +5048,18 @@ def process_documents(
             and not (config.enable_tax_enrichment and config.tax_process_ki_tagged_documents)
         ):
             prefilt_ki_tagged += 1
+            _mark_completed(
+                document_id=int(doc_id) if doc_id is not None else None,
+                document_title=title,
+            )
             continue
 
         scanned += 1
+        _emit_progress(
+            current_document_id=int(doc_id) if doc_id is not None else None,
+            current_document_title=title,
+            status="running",
+        )
 
         if config.enable_tag_bypass_on_tags_500 and doc_key is not None and doc_key in tag_bypass_docs:
             # Bypass-Dokumente sollen keine KI-Tokens verbrauchen.
@@ -4486,6 +5102,10 @@ def process_documents(
             )
             bypass_skipped += 1
             skipped += 1
+            _mark_completed(
+                document_id=int(doc_id) if doc_id is not None else None,
+                document_title=title,
+            )
             continue
 
         if config.quarantine_failed_documents and doc_key is not None and doc_key in failed_patch_cache:
@@ -4498,6 +5118,10 @@ def process_documents(
                     retry_payload,
                 )
                 skipped += 1
+                _mark_completed(
+                    document_id=int(doc_id) if doc_id is not None else None,
+                    document_title=title,
+                )
                 continue
             try:
                 client.update_document(int(doc_id), retry_payload)
@@ -4505,6 +5129,10 @@ def process_documents(
                 failed_docs_until.pop(doc_key, None)
                 LOGGER.info("Aktualisiert Dokument %s (%s) via Retry ohne KI", doc_id, title)
                 updated += 1
+                _mark_completed(
+                    document_id=int(doc_id) if doc_id is not None else None,
+                    document_title=title,
+                )
                 continue
             except PaperlessApiError as retry_exc:
                 failed += 1
@@ -4531,6 +5159,10 @@ def process_documents(
                         "message": f"Retry ohne KI fehlgeschlagen: {retry_exc}",
                         "patch_payload": retry_payload,
                     }
+                )
+                _mark_completed(
+                    document_id=int(doc_id) if doc_id is not None else None,
+                    document_title=title,
                 )
                 continue
 
@@ -4575,6 +5207,10 @@ def process_documents(
                     retry_after_text,
                 )
                 skipped += 1
+                _mark_completed(
+                    document_id=int(doc_id) if doc_id is not None else None,
+                    document_title=title,
+                )
                 continue
             if doc_key in failed_docs_until:
                 failed_docs_until.pop(doc_key, None)
@@ -4582,6 +5218,10 @@ def process_documents(
         # Defensive Prüfung bleibt aktiv, falls API-Filter je nach Version anders reagiert.
         if not effective_process_all_documents and only_tag_id is not None and only_tag_id not in doc_tags:
             skipped += 1
+            _mark_completed(
+                document_id=int(doc_id) if doc_id is not None else None,
+                document_title=title,
+            )
             continue
 
         if (
@@ -4591,6 +5231,10 @@ def process_documents(
         ):
             LOGGER.debug("Skip Dokument %s (%s): bereits klassifiziert", doc_id, title)
             skipped += 1
+            _mark_completed(
+                document_id=int(doc_id) if doc_id is not None else None,
+                document_title=title,
+            )
             continue
 
         # ---------- Precheck-Gates vor KI ----------
@@ -4645,6 +5289,10 @@ def process_documents(
                     title,
                 )
                 skipped += 1
+                _mark_completed(
+                    document_id=int(doc_id) if doc_id is not None else None,
+                    document_title=title,
+                )
                 continue
 
         names_lower = [name.lower() for name in collect_document_names(document)]
@@ -4702,6 +5350,10 @@ def process_documents(
                 matched_pattern,
             )
             skipped += 1
+            _mark_completed(
+                document_id=int(doc_id) if doc_id is not None else None,
+                document_title=title,
+            )
             continue
 
         doc_text = collect_document_text(document)
@@ -4766,6 +5418,10 @@ def process_documents(
                 "; ".join(precheck_reasons),
             )
             skipped += 1
+            _mark_completed(
+                document_id=int(doc_id) if doc_id is not None else None,
+                document_title=title,
+            )
             continue
 
         if config.precheck_image_only_gate and not backfill_existing_documents:
@@ -4819,6 +5475,10 @@ def process_documents(
                     title,
                 )
                 skipped += 1
+                _mark_completed(
+                    document_id=int(doc_id) if doc_id is not None else None,
+                    document_title=title,
+                )
                 continue
 
         if config.precheck_duplicate_hash_gate and doc_id is not None and not backfill_existing_documents:
@@ -4880,6 +5540,10 @@ def process_documents(
                             duplicate_id,
                         )
                         updated += 1
+                        _mark_completed(
+                            document_id=int(doc_id) if doc_id is not None else None,
+                            document_title=title,
+                        )
                         continue
 
                     if not config.dry_run and doc_id is not None:
@@ -4926,6 +5590,10 @@ def process_documents(
                         duplicate_id,
                     )
                     skipped += 1
+                    _mark_completed(
+                        document_id=int(doc_id) if doc_id is not None else None,
+                        document_title=title,
+                    )
                     continue
 
         if config.quarantine_failed_documents and doc_key is not None:
@@ -4943,7 +5611,19 @@ def process_documents(
             if target_documents is not None and budget_used >= target_documents:
                 break
             budget_used += 1
-            _run_tax_only_for_document(document=document, doc_id=doc_id, title=title)
+            try:
+                _run_tax_only_for_document(document=document, doc_id=doc_id, title=title)
+            except AiTemporaryPauseError as pause_exc:
+                _pause_run(
+                    pause_reason=pause_exc.pause_reason,
+                    retry_after_seconds=pause_exc.retry_after_seconds,
+                    current_document_id=int(doc_id) if doc_id is not None else None,
+                    current_document_title=title,
+                )
+            _mark_completed(
+                document_id=int(doc_id) if doc_id is not None else None,
+                document_title=title,
+            )
             continue
 
         # Budget zählt nur für Dokumente, die die Skip-Gates passiert haben.
@@ -4962,16 +5642,12 @@ def process_documents(
             )
         )
         if len(pending_ai_documents) >= parallel_ai_workers:
-            batch_results = _classify_pending_documents(pending_ai_documents)
+            _flush_pending_batch(list(pending_ai_documents))
             pending_ai_documents.clear()
-            for pending, prediction, pred_exc in batch_results:
-                _apply_ai_result(pending, prediction, pred_exc)
 
     if pending_ai_documents:
-        batch_results = _classify_pending_documents(pending_ai_documents)
+        _flush_pending_batch(list(pending_ai_documents))
         pending_ai_documents.clear()
-        for pending, prediction, pred_exc in batch_results:
-            _apply_ai_result(pending, prediction, pred_exc)
 
     if prefilt_ki_tagged > 0:
         LOGGER.info(
@@ -5066,6 +5742,12 @@ def process_documents(
             "(API-Fehler bei Tag-Update). Diese Dokumente triggern externe #NEU-Automatiken weiter.",
             skipped_with_neu_still_set,
         )
+    emit_runtime_event(
+        "progress",
+        **_progress_payload(status="success"),
+    )
+    delete_runtime_file(run_state_path)
+    delete_runtime_file(stop_request_path)
 
 
 def parse_args() -> argparse.Namespace:
@@ -5103,11 +5785,43 @@ def parse_args() -> argparse.Namespace:
             "Im Backfill-Modus eignet sich das zum Aufteilen in Chargen."
         ),
     )
+    parser.add_argument(
+        "--run-state-file",
+        default=RUN_STATE_FILE_DEFAULT,
+        help=(
+            "Pfad zur Resume-State-Datei. Relative Pfade werden zum aktuellen "
+            "Arbeitsverzeichnis aufgelöst."
+        ),
+    )
+    parser.add_argument(
+        "--stop-request-file",
+        default=STOP_REQUEST_FILE_DEFAULT,
+        help=(
+            "Pfad zur Stop-Anfrage-Datei. Wenn die Datei existiert, pausiert der "
+            "Lauf am nächsten sicheren Punkt."
+        ),
+    )
+    parser.add_argument(
+        "--resume-run",
+        action="store_true",
+        help="Setzt einen pausierten Lauf anhand der Run-State-Datei fort.",
+    )
+    parser.add_argument(
+        "--request-stop",
+        action="store_true",
+        help="Legt nur eine Stop-Anfrage-Datei an und beendet sich sofort.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+
+    if args.request_stop:
+        stop_path = resolve_runtime_path(args.stop_request_file, Path.cwd())
+        request_manual_stop(stop_path)
+        print(f"[STOP-REQUESTED] {stop_path}")
+        return 0
 
     try:
         config = load_config(args.config, args.dry_run, args.max_documents)
@@ -5128,7 +5842,17 @@ def main() -> int:
             process_all_documents=args.all_documents,
             backfill_existing_documents=args.backfill_existing_documents,
             document_limit_override=args.max_documents,
+            run_state_file=args.run_state_file,
+            stop_request_file=args.stop_request_file,
+            resume_run=args.resume_run,
         )
+    except RunPausedError as exc:
+        LOGGER.warning(
+            "Lauf kontrolliert pausiert | reason=%s | retry_after_seconds=%s",
+            exc.pause_reason,
+            exc.retry_after_seconds,
+        )
+        return RUN_PAUSE_EXIT_CODE
     except Exception as exc:  # Breiter Catch für sauberen Exit + logischen Fehlercode.
         LOGGER.exception("Unerwarteter Fehler im Hauptablauf: %s", exc)
         return 1

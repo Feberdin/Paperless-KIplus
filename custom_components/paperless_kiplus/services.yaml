@@ -58,3 +58,41 @@ run:
       default: false
       selector:
         boolean:
+
+stop:
+  name: Paperless KIplus Lauf pausieren
+  description: Fordert einen kontrollierten Stop an. Der aktuelle Lauf pausiert nach dem aktuellen Dokument oder Batch und kann später fortgesetzt werden.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Optional. Pausiert nur diese Integration-Instanz.
+      example: "abcd1234"
+      required: false
+      selector:
+        text:
+
+resume:
+  name: Paperless KIplus Lauf fortsetzen
+  description: Setzt einen zuvor pausierten Lauf anhand der gespeicherten Resume-Datei fort.
+  fields:
+    entry_id:
+      name: Entry ID
+      description: Optional. Setzt nur diese Integration-Instanz fort.
+      example: "abcd1234"
+      required: false
+      selector:
+        text:
+    force:
+      name: Force
+      description: Standardmäßig aktiv. Ignoriert beim Resume einen noch laufenden Cooldown.
+      required: false
+      default: true
+      selector:
+        boolean:
+    wait:
+      name: Wait
+      description: Wartet synchron bis der Fortsetzungslauf wieder beendet oder erneut pausiert ist.
+      required: false
+      default: false
+      selector:
+        boolean:

@@ -1,8 +1,36 @@
-"""Script runner for Paperless KIplus."""
+"""Script runner for Paperless KIplus.
+
+Purpose:
+- Startet das eigentliche CLI-Skript sicher aus Home Assistant.
+- Stellt Live-Fortschritt, Pause/Resume und automatische Wiederaufnahme bei
+  Provider-Wartezeiten bereit.
+
+Input / Output:
+- Input: Integrationsoptionen, Startparameter und Runtime-Events aus dem
+  Paperless-CLI-Skript.
+- Output: aktualisierte Sensor-/Button-Zustände, laufende Prozesssteuerung und
+  persistente Resume-Dateien im Arbeitsverzeichnis.
+
+Important invariants:
+- Ein manueller Stop ist ein kontrollierter "Pause nach sicherem Punkt", kein
+  harter Kill des Prozesses.
+- Eine Provider-Pause (429 / Quota / Retry-After) bleibt als Resume-State
+  erhalten und kann automatisch oder manuell fortgesetzt werden.
+- Dry-Run, Backfill und normale Läufe nutzen denselben Runner-Pfad.
+
+How to debug:
+- Prüfe `sensor.paperless_kiplus_status` auf `progress_*`, `pause_reason`,
+  `auto_resume_at` und `resume_available`.
+- `stdout_tail` und `stderr_tail` zeigen die letzten Logzeilen bereits während
+  des Laufs.
+- Die Runtime-State-Datei liegt im Arbeitsverzeichnis und heißt pro Entry
+  `.paperless_kiplus_<entry_id>_run_state.json`.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 import json
@@ -10,7 +38,8 @@ import logging
 from pathlib import Path
 import re
 import shlex
-from typing import Sequence
+from typing import Any, Optional, Sequence
+
 import yaml
 
 from homeassistant.core import HomeAssistant
@@ -19,6 +48,10 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from .const import SIGNAL_STATUS_UPDATED
 
 _LOGGER = logging.getLogger(__name__)
+
+RUNTIME_EVENT_MARKER = "PAPERLESS_RUNTIME_EVENT "
+RUN_PAUSE_EXIT_CODE = 75
+TAIL_LIMIT_CHARS = 20000
 
 
 @dataclass
@@ -37,6 +70,7 @@ class PaperlessRunner:
         self,
         hass: HomeAssistant,
         *,
+        entry_id: str,
         command: str,
         workdir: str,
         cooldown_seconds: int,
@@ -66,6 +100,7 @@ class PaperlessRunner:
         tax_personal_context: str,
     ) -> None:
         self.hass = hass
+        self.entry_id = entry_id
         self.command = command
         self.workdir = workdir
         self.cooldown_seconds = cooldown_seconds
@@ -95,7 +130,13 @@ class PaperlessRunner:
         self.tax_personal_context = tax_personal_context
 
         self._lock = asyncio.Lock()
+        self._process: asyncio.subprocess.Process | None = None
+        self._auto_resume_task: asyncio.Task | None = None
         self.running = False
+        self.stop_requested = False
+        self.resume_available = False
+        self.pause_reason: str = ""
+        self.auto_resume_at: datetime | None = None
 
         self.last_started: datetime | None = None
         self.last_finished: datetime | None = None
@@ -124,6 +165,21 @@ class PaperlessRunner:
         self.active_quarantine_count: int = 0
         self.active_bypass_count: int = 0
 
+        self.progress_total_documents: int = 0
+        self.progress_completed_documents: int = 0
+        self.progress_percent: float = 0.0
+        self.progress_scanned: int = 0
+        self.progress_updated: int = 0
+        self.progress_skipped: int = 0
+        self.progress_failed: int = 0
+        self.progress_bypassed: int = 0
+        self.progress_bypass_skipped: int = 0
+        self.progress_prefiltered_ki_tagged: int = 0
+        self.progress_current_document_id: int | None = None
+        self.progress_current_document_title: str = ""
+        self.progress_budget_used: int = 0
+        self.progress_pending_documents: int = 0
+
     @property
     def cooldown_until(self) -> datetime | None:
         """Return the next allowed run time if cooldown is active."""
@@ -131,6 +187,28 @@ class PaperlessRunner:
         if self.last_finished is None:
             return None
         return self.last_finished + timedelta(seconds=self.cooldown_seconds)
+
+    @property
+    def run_state_path(self) -> str:
+        """Exposes the resolved run-state path for diagnostics."""
+
+        return str(self._run_state_path())
+
+    @property
+    def stop_request_path(self) -> str:
+        """Exposes the resolved stop-request path for diagnostics."""
+
+        return str(self._stop_request_path())
+
+    def _run_state_path(self) -> Path:
+        """Returns the persisted resume-state path for this config entry."""
+
+        return Path(self.workdir) / f".paperless_kiplus_{self.entry_id}_run_state.json"
+
+    def _stop_request_path(self) -> Path:
+        """Returns the stop-request marker path for this config entry."""
+
+        return Path(self.workdir) / f".paperless_kiplus_{self.entry_id}_stop.request"
 
     async def async_run(
         self,
@@ -141,6 +219,7 @@ class PaperlessRunner:
         all_documents: bool | None = None,
         max_documents: int | None = None,
         backfill_existing_documents: bool = False,
+        resume_run: bool = False,
     ) -> RunResult:
         """Run the command unless already running or in cooldown."""
 
@@ -152,17 +231,35 @@ class PaperlessRunner:
 
         now = datetime.now(UTC)
         cooldown_until = self.cooldown_until
-        if not force and cooldown_until is not None and now < cooldown_until:
+        if not resume_run and not force and cooldown_until is not None and now < cooldown_until:
             self.last_status = "cooldown"
             self.last_message = f"run skipped due to cooldown until {cooldown_until.isoformat()}"
             self._notify()
             return RunResult(self.last_status, self.last_exit_code, self.last_message)
 
+        if resume_run and not self._run_state_path().exists():
+            self.last_status = "resume_unavailable"
+            self.last_message = "resume requested but no paused run state exists"
+            self.resume_available = False
+            self._notify()
+            return RunResult(self.last_status, self.last_exit_code, self.last_message)
+
+        self._cancel_auto_resume_task()
+
         async with self._lock:
             self.running = True
+            self.stop_requested = False
+            self.resume_available = False
+            self.pause_reason = ""
+            self.auto_resume_at = None
             self.last_started = datetime.now(UTC)
             self.last_status = "running"
-            self.last_message = "script is running"
+            self.last_message = "paused run is resuming" if resume_run else "script is running"
+            self.last_stdout_tail = ""
+            self.last_stderr_tail = ""
+            self.last_summary_line = ""
+            self.last_cost_line = ""
+            self.last_log_combined = ""
             self._notify()
 
             try:
@@ -178,12 +275,17 @@ class PaperlessRunner:
                 if self.managed_config_enabled:
                     await self._write_managed_config(effective_config_file)
 
+                await self.hass.async_add_executor_job(
+                    lambda: self._delete_file(self._stop_request_path())
+                )
+
                 args = self._build_command(
                     config_file=effective_config_file,
                     dry_run=effective_dry_run,
                     all_documents=effective_all_documents,
                     max_documents=effective_max_documents,
                     backfill_existing_documents=backfill_existing_documents,
+                    resume_run=resume_run,
                 )
                 if not args:
                     raise ValueError("configured command is empty")
@@ -195,37 +297,46 @@ class PaperlessRunner:
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
-                stdout, stderr = await process.communicate()
+                self._process = process
 
-                self.last_stdout_tail = stdout.decode("utf-8", errors="replace")[-20000:]
-                self.last_stderr_tail = stderr.decode("utf-8", errors="replace")[-20000:]
-                combined_tail = f"{self.last_stdout_tail}\n{self.last_stderr_tail}"
-                self.last_summary_line = self._extract_last_line(
-                    combined_tail, "Fertig. Gescannt="
-                )
-                self.last_cost_line = self._extract_last_line(
-                    combined_tail, "Kosten/Token:"
-                )
-                self.last_scanned, self.last_updated, self.last_skipped, self.last_failed = (
-                    self._parse_summary_counts(self.last_summary_line)
-                )
-                self.last_log_combined = (
-                    f"[STDOUT]\n{self.last_stdout_tail.strip()}\n\n[STDERR]\n{self.last_stderr_tail.strip()}"
-                ).strip()
-                self.last_exit_code = process.returncode
+                stream_tasks = [
+                    self.hass.async_create_task(self._stream_reader(process.stdout, is_stderr=False)),
+                    self.hass.async_create_task(self._stream_reader(process.stderr, is_stderr=True)),
+                ]
 
-                if process.returncode == 0:
+                self.last_exit_code = await process.wait()
+                await asyncio.gather(*stream_tasks)
+                self._rebuild_combined_log()
+
+                if self.last_exit_code == 0:
                     self.last_status = "success"
                     self.last_message = "script completed successfully"
+                    self.resume_available = False
+                    self.pause_reason = ""
+                    self.auto_resume_at = None
+                    self.progress_current_document_title = ""
+                    self.progress_current_document_id = None
+                elif self.last_exit_code == RUN_PAUSE_EXIT_CODE:
+                    await self._refresh_resume_state()
+                    if self.pause_reason == "manual_stop":
+                        self.last_status = "paused"
+                        self.last_message = "run paused manually; resume available"
+                    else:
+                        self.last_status = "waiting_auto_resume"
+                        self.last_message = (
+                            f"run paused due to {self.pause_reason or 'provider backoff'}"
+                        )
+                        if self.auto_resume_at is not None:
+                            self.last_message += (
+                                f" until {self.auto_resume_at.isoformat()}"
+                            )
+                            self._schedule_auto_resume()
                 else:
                     self.last_status = "error"
-                    self.last_message = f"script failed with exit code {process.returncode}"
-                    # Bei Fehlern die Output-Tails aktiv loggen, damit
-                    # Konfigurationsprobleme (z. B. [CONFIG-ERROR]) direkt
-                    # im Home-Assistant-Log sichtbar sind.
+                    self.last_message = f"script failed with exit code {self.last_exit_code}"
                     _LOGGER.error(
                         "Paperless KIplus run failed | exit_code=%s | stdout_tail=%s | stderr_tail=%s",
-                        process.returncode,
+                        self.last_exit_code,
                         self.last_stdout_tail.strip() or "<empty>",
                         self.last_stderr_tail.strip() or "<empty>",
                     )
@@ -240,6 +351,7 @@ class PaperlessRunner:
                 self.last_message = f"runner exception: {exc}"
                 self.last_exit_code = None
                 self.last_stderr_tail = str(exc)
+                self._rebuild_combined_log()
                 if isinstance(exc, FileNotFoundError):
                     self.last_message = (
                         "runner exception: Datei/Befehl nicht gefunden. "
@@ -247,18 +359,162 @@ class PaperlessRunner:
                     )
                 _LOGGER.exception("Paperless KIplus run crashed: %s", exc)
             finally:
+                self._process = None
                 await self._refresh_metrics_from_file()
                 await self._refresh_failed_state_counts()
+                if self.last_exit_code != RUN_PAUSE_EXIT_CODE and not self._run_state_path().exists():
+                    self.resume_available = False
+                    self.pause_reason = ""
                 self.running = False
+                self.stop_requested = False
                 self.last_finished = datetime.now(UTC)
                 self._notify()
 
         return RunResult(self.last_status, self.last_exit_code, self.last_message)
 
+    async def async_request_stop(self) -> RunResult:
+        """Requests a safe stop at the next document/batch boundary."""
+
+        if not self.running:
+            self.last_status = "stop_ignored"
+            self.last_message = "no active run to stop"
+            self._notify()
+            return RunResult(self.last_status, self.last_exit_code, self.last_message)
+
+        await self.hass.async_add_executor_job(
+            lambda: self._write_json_file(
+                self._stop_request_path(),
+                {
+                    "requested_at": datetime.now(UTC).isoformat(),
+                    "reason": "manual_stop",
+                },
+            )
+        )
+        self.stop_requested = True
+        self.last_status = "stop_requested"
+        self.last_message = "stop requested; runner pauses after current document/batch"
+        self._notify()
+        return RunResult(self.last_status, self.last_exit_code, self.last_message)
+
+    async def async_resume(self, *, force: bool = True) -> RunResult:
+        """Resumes a previously paused run from its persisted state."""
+
+        return await self.async_run(force=force, resume_run=True)
+
+    async def async_shutdown(self) -> None:
+        """Cleans up background resume tasks when the integration unloads."""
+
+        self._cancel_auto_resume_task()
+
     def _notify(self) -> None:
         """Notify entities/sensors about runner state updates."""
 
         async_dispatcher_send(self.hass, SIGNAL_STATUS_UPDATED)
+
+    async def _stream_reader(
+        self,
+        stream: asyncio.StreamReader | None,
+        *,
+        is_stderr: bool,
+    ) -> None:
+        """Reads subprocess output line by line for live progress updates."""
+
+        if stream is None:
+            return
+
+        while True:
+            raw = await stream.readline()
+            if not raw:
+                break
+            line = raw.decode("utf-8", errors="replace").rstrip()
+            if not line:
+                continue
+            self._append_output_line(line, is_stderr=is_stderr)
+
+    def _append_output_line(self, line: str, *, is_stderr: bool) -> None:
+        """Stores the most recent output lines and parses runtime events."""
+
+        if is_stderr:
+            self.last_stderr_tail = self._append_tail(self.last_stderr_tail, line)
+        else:
+            self.last_stdout_tail = self._append_tail(self.last_stdout_tail, line)
+
+        runtime_event = self._extract_runtime_event(line)
+        if runtime_event is not None:
+            self._apply_runtime_event(runtime_event)
+            self._rebuild_combined_log()
+            self._notify()
+            return
+
+        if "Fertig. Gescannt=" in line:
+            self.last_summary_line = line.strip()
+            (
+                self.last_scanned,
+                self.last_updated,
+                self.last_skipped,
+                self.last_failed,
+            ) = self._parse_summary_counts(self.last_summary_line)
+        elif "Kosten/Token:" in line:
+            self.last_cost_line = line.strip()
+
+        self._rebuild_combined_log()
+
+    def _extract_runtime_event(self, line: str) -> dict[str, Any] | None:
+        """Parses machine-readable progress events emitted by the CLI script."""
+
+        if RUNTIME_EVENT_MARKER not in line:
+            return None
+        payload_text = line.split(RUNTIME_EVENT_MARKER, 1)[1].strip()
+        if not payload_text:
+            return None
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            _LOGGER.warning("Could not parse runtime event payload: %s", payload_text)
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _apply_runtime_event(self, payload: dict[str, Any]) -> None:
+        """Maps CLI runtime events into Home Assistant visible runner state."""
+
+        progress = payload.get("progress") or {}
+        current_document = payload.get("current_document") or {}
+        self.progress_total_documents = int(progress.get("total_documents", 0) or 0)
+        self.progress_completed_documents = int(progress.get("completed_documents", 0) or 0)
+        self.progress_percent = float(progress.get("percent", 0.0) or 0.0)
+        self.progress_scanned = int(progress.get("scanned", 0) or 0)
+        self.progress_updated = int(progress.get("updated", 0) or 0)
+        self.progress_skipped = int(progress.get("skipped", 0) or 0)
+        self.progress_failed = int(progress.get("failed", 0) or 0)
+        self.progress_bypassed = int(progress.get("bypassed", 0) or 0)
+        self.progress_bypass_skipped = int(progress.get("bypass_skipped", 0) or 0)
+        self.progress_prefiltered_ki_tagged = int(
+            progress.get("prefilt_ki_tagged", 0) or 0
+        )
+        self.progress_budget_used = int(progress.get("budget_used", 0) or 0)
+        self.progress_pending_documents = len(payload.get("pending_documents") or [])
+        self.progress_current_document_id = self._safe_int(current_document.get("id"))
+        self.progress_current_document_title = str(current_document.get("title") or "")
+        self.last_scanned = self.progress_scanned
+        self.last_updated = self.progress_updated
+        self.last_skipped = self.progress_skipped
+        self.last_failed = self.progress_failed
+
+        kind = str(payload.get("kind") or "")
+        status = str(payload.get("status") or "")
+        self.pause_reason = str(payload.get("pause_reason") or self.pause_reason or "")
+        retry_after_seconds = self._safe_float(payload.get("retry_after_seconds"))
+        if kind == "paused":
+            self.resume_available = True
+            if retry_after_seconds is not None:
+                self.auto_resume_at = datetime.now(UTC) + timedelta(seconds=retry_after_seconds)
+            else:
+                self.auto_resume_at = None
+        elif status == "success":
+            self.resume_available = False
+            self.pause_reason = ""
+            self.auto_resume_at = None
+            self.progress_pending_documents = 0
 
     async def _refresh_metrics_from_file(self) -> None:
         """Load token/cost metrics from the configured JSON file."""
@@ -352,11 +608,50 @@ class PaperlessRunner:
         self.active_quarantine_count = quarantine_count
         self.active_bypass_count = len(bypass_payload)
 
+    async def _refresh_resume_state(self) -> None:
+        """Loads persisted run-state metadata for paused/resumable runs."""
+
+        path = self._run_state_path()
+        if not path.exists():
+            self.resume_available = False
+            self.pause_reason = ""
+            self.auto_resume_at = None
+            return
+
+        def _read_state() -> dict[str, Any]:
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                return payload if isinstance(payload, dict) else {}
+            except (OSError, json.JSONDecodeError):
+                return {}
+
+        payload = await self.hass.async_add_executor_job(_read_state)
+        if not payload:
+            self.resume_available = False
+            self.pause_reason = ""
+            self.auto_resume_at = None
+            return
+
+        self._apply_runtime_event({"kind": "paused", **payload})
+        self.resume_available = True
+        self.pause_reason = str(payload.get("pause_reason") or self.pause_reason or "")
+        retry_after_seconds = self._safe_float(payload.get("retry_after_seconds"))
+        updated_at = self._parse_datetime(payload.get("updated_at"))
+        if retry_after_seconds is not None and updated_at is not None:
+            self.auto_resume_at = updated_at + timedelta(seconds=retry_after_seconds)
+        elif retry_after_seconds is not None:
+            self.auto_resume_at = datetime.now(UTC) + timedelta(seconds=retry_after_seconds)
+        else:
+            self.auto_resume_at = None
+
     async def async_load_initial_metrics(self) -> None:
-        """Lädt Metriken beim Setup, damit Sensorwerte nach Reload erhalten bleiben."""
+        """Lädt Metriken und Resume-State beim Setup."""
 
         await self._refresh_metrics_from_file()
         await self._refresh_failed_state_counts()
+        await self._refresh_resume_state()
+        if self.resume_available and self.auto_resume_at is not None:
+            self._schedule_auto_resume()
 
     async def async_reset_metrics(self) -> None:
         """Setzt Token-/Kostenmetriken in Datei und Runtime zurück."""
@@ -385,11 +680,7 @@ class PaperlessRunner:
             },
         }
 
-        def _write() -> None:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-
-        await self.hass.async_add_executor_job(_write)
+        await self.hass.async_add_executor_job(lambda: self._write_json_file(path, payload))
 
         self.last_run_total_tokens = 0
         self.last_run_cost_eur = 0.0
@@ -408,11 +699,12 @@ class PaperlessRunner:
         export_path = Path("/config/www/paperless_kiplus_last_log.txt")
         log_text = self.last_log_combined or "[Kein Log vorhanden]"
 
-        def _write() -> None:
-            export_path.parent.mkdir(parents=True, exist_ok=True)
-            export_path.write_text(log_text, encoding="utf-8")
-
-        await self.hass.async_add_executor_job(_write)
+        await self.hass.async_add_executor_job(
+            lambda: export_path.parent.mkdir(parents=True, exist_ok=True)
+        )
+        await self.hass.async_add_executor_job(
+            lambda: export_path.write_text(log_text, encoding="utf-8")
+        )
 
         self.last_log_export_path = str(export_path)
         self.last_log_export_url = "/local/paperless_kiplus_last_log.txt"
@@ -519,11 +811,7 @@ class PaperlessRunner:
         return tuple(int(group) for group in match.groups())  # type: ignore[return-value]
 
     async def _write_managed_config(self, config_file: str) -> None:
-        """Write integration-managed YAML config to disk before script execution.
-
-        Damit wird die Konfiguration nativ in Home Assistant gepflegt und
-        für jeden Lauf konsistent in die vom Skript erwartete YAML-Datei geschrieben.
-        """
+        """Write integration-managed YAML config to disk before script execution."""
 
         if not self.managed_config_yaml.strip():
             raise ValueError(
@@ -584,12 +872,9 @@ class PaperlessRunner:
         all_documents: bool,
         max_documents: int,
         backfill_existing_documents: bool,
+        resume_run: bool,
     ) -> list[str]:
-        """Build a robust CLI command based on HA options and per-run overrides.
-
-        Falls der Basis-Befehl Flags bereits enthält, werden sie nicht doppelt
-        angehängt. So bleibt auch eine manuell gepflegte Kommandozeile kompatibel.
-        """
+        """Build a robust CLI command based on HA options and per-run overrides."""
 
         args = shlex.split(self.command)
         if not args:
@@ -608,5 +893,109 @@ class PaperlessRunner:
             args.append("--backfill-existing-documents")
         if max_documents > 0 and not _has_flag(["--max-documents"]):
             args.extend(["--max-documents", str(max_documents)])
+        if resume_run and not _has_flag(["--resume-run"]):
+            args.append("--resume-run")
+        if not _has_flag(["--run-state-file"]):
+            args.extend(["--run-state-file", str(self._run_state_path())])
+        if not _has_flag(["--stop-request-file"]):
+            args.extend(["--stop-request-file", str(self._stop_request_path())])
 
         return args
+
+    def _schedule_auto_resume(self) -> None:
+        """Schedules an automatic resume if a provider backoff window exists."""
+
+        if self.auto_resume_at is None:
+            return
+        self._cancel_auto_resume_task()
+        self._auto_resume_task = self.hass.async_create_task(self._auto_resume_worker())
+
+    async def _auto_resume_worker(self) -> None:
+        """Waits until auto_resume_at and then resumes the paused run."""
+
+        if self.auto_resume_at is None:
+            return
+        delay = max(0.0, (self.auto_resume_at - datetime.now(UTC)).total_seconds())
+        try:
+            await asyncio.sleep(delay)
+            if self.running or not self._run_state_path().exists():
+                return
+            self.last_status = "auto_resuming"
+            self.last_message = "auto resume after provider backoff"
+            self._notify()
+            await self.async_resume(force=True)
+        except asyncio.CancelledError:
+            return
+
+    def _cancel_auto_resume_task(self) -> None:
+        """Cancels a pending automatic resume task if one exists."""
+
+        if self._auto_resume_task is None:
+            return
+        if not self._auto_resume_task.done():
+            self._auto_resume_task.cancel()
+        self._auto_resume_task = None
+
+    def _append_tail(self, existing: str, line: str) -> str:
+        """Appends one line to a rolling output tail."""
+
+        combined = f"{existing}\n{line}".strip() if existing else line
+        return combined[-TAIL_LIMIT_CHARS:]
+
+    def _rebuild_combined_log(self) -> None:
+        """Rebuilds the combined log payload shown in HA entities."""
+
+        self.last_log_combined = (
+            f"[STDOUT]\n{self.last_stdout_tail.strip()}\n\n[STDERR]\n{self.last_stderr_tail.strip()}"
+        ).strip()
+
+    @staticmethod
+    def _safe_int(value: Any) -> int | None:
+        """Converts values to int where possible."""
+
+        try:
+            if value in (None, ""):
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _safe_float(value: Any) -> float | None:
+        """Converts values to float where possible."""
+
+        try:
+            if value in (None, ""):
+                return None
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _parse_datetime(value: Any) -> datetime | None:
+        """Parses ISO timestamps to aware UTC datetimes where possible."""
+
+        if value in (None, ""):
+            return None
+        try:
+            parsed = datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=UTC)
+        return parsed.astimezone(UTC)
+
+    @staticmethod
+    def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
+        """Writes a small runtime JSON file safely."""
+
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _delete_file(path: Path) -> None:
+        """Deletes a runtime helper file if it exists."""
+
+        with contextlib.suppress(OSError):
+            if path.exists():
+                path.unlink()

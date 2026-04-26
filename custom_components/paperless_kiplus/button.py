@@ -34,6 +34,8 @@ async def async_setup_entry(
     async_add_entities(
         [
             PaperlessRunnerBackfillButton(entry.entry_id, runner),
+            PaperlessRunnerStopButton(entry.entry_id, runner),
+            PaperlessRunnerResumeButton(entry.entry_id, runner),
             PaperlessRunnerResetMetricsButton(entry.entry_id, runner),
             PaperlessRunnerResetFailedDocumentsButton(entry.entry_id, runner),
             PaperlessRunnerShowLogButton(entry.entry_id, runner),
@@ -91,6 +93,50 @@ class PaperlessRunnerBackfillButton(ButtonEntity):
         self.hass.async_create_task(
             self._runner.async_run(backfill_existing_documents=True)
         )
+
+
+class PaperlessRunnerStopButton(ButtonEntity):
+    """Button to request a safe stop for the current run."""
+
+    _attr_icon = "mdi:pause-circle-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        self._entry_id = entry_id
+        self._runner = runner
+        self._attr_unique_id = f"{entry_id}_request_stop"
+        self._attr_name = "Paperless KIplus Lauf pausieren"
+        self._attr_has_entity_name = True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry_id)
+
+    async def async_press(self) -> None:
+        """Request a safe pause after the current document/batch."""
+
+        await self._runner.async_request_stop()
+
+
+class PaperlessRunnerResumeButton(ButtonEntity):
+    """Button to resume a paused run from its saved state."""
+
+    _attr_icon = "mdi:play-circle-outline"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        self._entry_id = entry_id
+        self._runner = runner
+        self._attr_unique_id = f"{entry_id}_resume_run"
+        self._attr_name = "Paperless KIplus Pausierten Lauf fortsetzen"
+        self._attr_has_entity_name = True
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        return _device_info(self._entry_id)
+
+    async def async_press(self) -> None:
+        """Resume the saved paused run in the background."""
+
+        self.hass.async_create_task(self._runner.async_resume())
 
 
 class PaperlessRunnerExportLogButton(ButtonEntity):

@@ -31,6 +31,7 @@ import datetime as dt
 import json
 import logging
 import re
+import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
@@ -39,6 +40,9 @@ import requests
 
 
 LOGGER = logging.getLogger("paperless_ai_sorter")
+RETRY_AFTER_SECONDS_PATTERN = re.compile(r"Please try again in\s+([0-9]+(?:\.[0-9]+)?)s", re.IGNORECASE)
+SHORT_RATE_LIMIT_WAIT_SECONDS = 15.0
+DEFAULT_AUTO_RESUME_WAIT_SECONDS = 300.0
 
 TAX_ENRICHMENT_SCHEMA_VERSION = "tax_enrichment.v1"
 
@@ -236,6 +240,43 @@ WISO_MAPPING_RULES: Dict[tuple[str, Optional[str]], Dict[str, Any]] = {
 
 class TaxEnrichmentError(Exception):
     """Raised when tax enrichment extraction fails."""
+
+
+class TaxPauseRequested(TaxEnrichmentError):
+    """Signalisiert, dass der Hauptlauf wegen Rate Limit/Quota pausieren soll."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        pause_reason: str,
+        retry_after_seconds: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.pause_reason = pause_reason
+        self.retry_after_seconds = retry_after_seconds
+
+
+def extract_retry_after_seconds(message: str, headers: Optional[Dict[str, Any]] = None) -> Optional[float]:
+    """Extrahiert Retry-After aus Headern oder OpenAI-Fehlermeldungen."""
+
+    if headers:
+        for key in ("retry-after", "Retry-After"):
+            raw = headers.get(key)
+            if raw in (None, ""):
+                continue
+            try:
+                return max(0.0, float(raw))
+            except (TypeError, ValueError):
+                continue
+
+    match = RETRY_AFTER_SECONDS_PATTERN.search(str(message or ""))
+    if not match:
+        return None
+    try:
+        return max(0.0, float(match.group(1)))
+    except (TypeError, ValueError):
+        return None
 
 
 def normalize_iso_date(value: Any) -> Optional[str]:
@@ -860,21 +901,68 @@ class TaxEnrichmentAiExtractor:
             "temperature": 0.1,
         }
 
-        try:
-            response = self.session.post(
-                f"{self.ai_base_url}/chat/completions",
-                data=json.dumps(req_body),
-                timeout=self.request_timeout_seconds,
-            )
-            response.raise_for_status()
-            payload = response.json()
-            content = payload["choices"][0]["message"]["content"]
-            parsed = json.loads(content)
-            if not isinstance(parsed, dict):
-                raise TaxEnrichmentError("Tax-KI lieferte kein Objekt.")
-            return parsed
-        except (requests.RequestException, KeyError, ValueError, json.JSONDecodeError) as exc:
-            raise TaxEnrichmentError(f"Tax-KI-Antwort ungueltig oder Request fehlgeschlagen: {exc}") from exc
+        max_attempts = 3
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, max_attempts + 1):
+            try:
+                response = self.session.post(
+                    f"{self.ai_base_url}/chat/completions",
+                    data=json.dumps(req_body),
+                    timeout=self.request_timeout_seconds,
+                )
+                if int(response.status_code) == 429:
+                    response_text = response.text or ""
+                    retry_after_seconds = extract_retry_after_seconds(
+                        response_text,
+                        getattr(response, "headers", None),
+                    )
+                    normalized_text = response_text.lower()
+                    if retry_after_seconds and retry_after_seconds <= SHORT_RATE_LIMIT_WAIT_SECONDS:
+                        LOGGER.warning(
+                            "Tax-KI Rate Limit erreicht (Versuch %s/%s), warte %.2fs und versuche es erneut.",
+                            attempt,
+                            max_attempts,
+                            retry_after_seconds,
+                        )
+                        time.sleep(retry_after_seconds)
+                        continue
+                    if "insufficient_quota" in normalized_text:
+                        raise TaxPauseRequested(
+                            "Tax-KI-Quota erschöpft. Lauf soll später fortgesetzt werden.",
+                            pause_reason="quota_exhausted",
+                            retry_after_seconds=retry_after_seconds or DEFAULT_AUTO_RESUME_WAIT_SECONDS,
+                        )
+                    raise TaxPauseRequested(
+                        "Tax-KI-Rate-Limit erreicht. Lauf soll später fortgesetzt werden.",
+                        pause_reason="rate_limit_wait",
+                        retry_after_seconds=retry_after_seconds or DEFAULT_AUTO_RESUME_WAIT_SECONDS,
+                    )
+                response.raise_for_status()
+                payload = response.json()
+                content = payload["choices"][0]["message"]["content"]
+                parsed = json.loads(content)
+                if not isinstance(parsed, dict):
+                    raise TaxEnrichmentError("Tax-KI lieferte kein Objekt.")
+                return parsed
+            except TaxPauseRequested:
+                raise
+            except (requests.RequestException, KeyError, ValueError, json.JSONDecodeError) as exc:
+                last_exc = exc
+                if attempt < max_attempts and isinstance(exc, requests.RequestException):
+                    wait_seconds = 0.7 * (2 ** (attempt - 1))
+                    LOGGER.warning(
+                        "Tax-KI-Request fehlgeschlagen (Versuch %s/%s), Retry in %.1fs: %s",
+                        attempt,
+                        max_attempts,
+                        wait_seconds,
+                        exc,
+                    )
+                    time.sleep(wait_seconds)
+                    continue
+                break
+        raise TaxEnrichmentError(
+            f"Tax-KI-Antwort ungueltig oder Request fehlgeschlagen: {last_exc}"
+        ) from last_exc
 
 
 class TaxEnrichmentService:

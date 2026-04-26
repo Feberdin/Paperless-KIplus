@@ -41,6 +41,7 @@ async def async_setup_entry(
     async_add_entities(
         [
             PaperlessRunnerStatusSensor(entry.entry_id, runner),
+            PaperlessRunnerProgressSensor(entry.entry_id, runner),
             PaperlessRunnerRunLogSensor(entry.entry_id, runner),
             PaperlessRunnerSummarySensor(entry.entry_id, runner),
             PaperlessRunnerErrorsSensor(entry.entry_id, runner),
@@ -139,6 +140,26 @@ class PaperlessRunnerStatusSensor(SensorEntity):
             "last_log_export_url": self._runner.last_log_export_url,
             "active_quarantine_count": self._runner.active_quarantine_count,
             "active_bypass_count": self._runner.active_bypass_count,
+            "run_state_file": self._runner.run_state_path,
+            "stop_request_file": self._runner.stop_request_path,
+            "resume_available": self._runner.resume_available,
+            "pause_reason": self._runner.pause_reason or None,
+            "auto_resume_at": _iso(self._runner.auto_resume_at),
+            "stop_requested": self._runner.stop_requested,
+            "progress_total_documents": self._runner.progress_total_documents,
+            "progress_completed_documents": self._runner.progress_completed_documents,
+            "progress_percent": round(self._runner.progress_percent, 2),
+            "progress_scanned": self._runner.progress_scanned,
+            "progress_updated": self._runner.progress_updated,
+            "progress_skipped": self._runner.progress_skipped,
+            "progress_failed": self._runner.progress_failed,
+            "progress_bypassed": self._runner.progress_bypassed,
+            "progress_bypass_skipped": self._runner.progress_bypass_skipped,
+            "progress_prefiltered_ki_tagged": self._runner.progress_prefiltered_ki_tagged,
+            "progress_budget_used": self._runner.progress_budget_used,
+            "progress_pending_documents": self._runner.progress_pending_documents,
+            "progress_current_document_id": self._runner.progress_current_document_id,
+            "progress_current_document_title": self._runner.progress_current_document_title or None,
         }
 
 
@@ -213,6 +234,45 @@ class _BaseMetricSensor(SensorEntity):
         """Ordnet alle Metrik-Sensoren demselben Integrationsgerät zu."""
 
         return _device_info(self._entry_id)
+
+
+class PaperlessRunnerProgressSensor(_BaseMetricSensor):
+    """Live progress percentage for running or paused runs."""
+
+    _attr_icon = "mdi:progress-clock"
+    _attr_native_unit_of_measurement = "%"
+
+    def __init__(self, entry_id: str, runner: PaperlessRunner) -> None:
+        super().__init__(
+            entry_id,
+            runner,
+            suffix="progress_percent",
+            name="Paperless KIplus Fortschritt",
+        )
+
+    @property
+    def native_value(self) -> float:
+        return round(self._runner.progress_percent, 2)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str | int | float | None]:
+        return {
+            "completed_documents": self._runner.progress_completed_documents,
+            "total_documents": self._runner.progress_total_documents,
+            "scanned": self._runner.progress_scanned,
+            "updated": self._runner.progress_updated,
+            "skipped": self._runner.progress_skipped,
+            "failed": self._runner.progress_failed,
+            "bypassed": self._runner.progress_bypassed,
+            "bypass_skipped": self._runner.progress_bypass_skipped,
+            "prefiltered_ki_tagged": self._runner.progress_prefiltered_ki_tagged,
+            "budget_used": self._runner.progress_budget_used,
+            "pending_documents": self._runner.progress_pending_documents,
+            "current_document_id": self._runner.progress_current_document_id,
+            "current_document_title": self._runner.progress_current_document_title or None,
+            "resume_available": self._runner.resume_available,
+            "pause_reason": self._runner.pause_reason or None,
+        }
 
 
 class PaperlessRunnerSummarySensor(_BaseMetricSensor):

@@ -70,7 +70,9 @@ from .const import (
     DEFAULT_TAX_PROCESS_KI_TAGGED_DOCUMENTS,
     DEFAULT_WORKDIR,
     DOMAIN,
+    SERVICE_RESUME,
     SERVICE_RUN,
+    SERVICE_STOP,
 )
 from .runner import PaperlessRunner
 
@@ -122,6 +124,20 @@ RUN_SERVICE_SCHEMA = vol.Schema(
         vol.Optional(ATTR_ALL_DOCUMENTS): cv.boolean,
         vol.Optional(ATTR_MAX_DOCUMENTS): vol.All(vol.Coerce(int), vol.Range(min=0, max=5000)),
         vol.Optional(ATTR_BACKFILL_EXISTING_DOCUMENTS): cv.boolean,
+    }
+)
+
+STOP_SERVICE_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_ENTRY_ID): cv.string,
+    }
+)
+
+RESUME_SERVICE_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_ENTRY_ID): cv.string,
+        vol.Optional(ATTR_FORCE, default=True): cv.boolean,
+        vol.Optional(ATTR_WAIT, default=False): cv.boolean,
     }
 )
 
@@ -296,6 +312,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     runner = PaperlessRunner(
         hass,
+        entry_id=entry.entry_id,
         command=command,
         workdir=workdir,
         cooldown_seconds=cooldown_seconds,
@@ -386,6 +403,65 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             schema=RUN_SERVICE_SCHEMA,
         )
 
+    if not hass.services.has_service(DOMAIN, SERVICE_STOP):
+
+        async def _handle_stop(call: ServiceCall) -> None:
+            target_entry_id = call.data.get(ATTR_ENTRY_ID)
+            if target_entry_id:
+                target_runners = [
+                    (target_entry_id, hass.data[DOMAIN].get(target_entry_id))
+                ]
+            else:
+                target_runners = list(hass.data[DOMAIN].items())
+
+            for entry_id, target_runner in target_runners:
+                if target_runner is None:
+                    _LOGGER.warning("Paperless KIplus entry '%s' not found", entry_id)
+                    continue
+                await target_runner.async_request_stop()
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_STOP,
+            _handle_stop,
+            schema=STOP_SERVICE_SCHEMA,
+        )
+
+    if not hass.services.has_service(DOMAIN, SERVICE_RESUME):
+
+        async def _handle_resume(call: ServiceCall) -> None:
+            target_entry_id = call.data.get(ATTR_ENTRY_ID)
+            wait = call.data.get(ATTR_WAIT, False)
+            force = call.data.get(ATTR_FORCE, True)
+            if target_entry_id:
+                target_runners = [
+                    (target_entry_id, hass.data[DOMAIN].get(target_entry_id))
+                ]
+            else:
+                target_runners = list(hass.data[DOMAIN].items())
+
+            tasks = []
+            for entry_id, target_runner in target_runners:
+                if target_runner is None:
+                    _LOGGER.warning("Paperless KIplus entry '%s' not found", entry_id)
+                    continue
+                if wait:
+                    await target_runner.async_resume(force=force)
+                else:
+                    tasks.append(
+                        hass.async_create_task(target_runner.async_resume(force=force))
+                    )
+
+            if tasks:
+                _LOGGER.info("Started %s Paperless KIplus resume task(s)", len(tasks))
+
+        hass.services.async_register(
+            DOMAIN,
+            SERVICE_RESUME,
+            _handle_resume,
+            schema=RESUME_SERVICE_SCHEMA,
+        )
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
 
@@ -393,13 +469,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Unload a config entry."""
 
+    runner: PaperlessRunner | None = hass.data[DOMAIN].get(entry.entry_id)
+    if runner is not None:
+        await runner.async_shutdown()
+
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
         return False
 
     hass.data[DOMAIN].pop(entry.entry_id, None)
 
-    if not hass.data[DOMAIN] and hass.services.has_service(DOMAIN, SERVICE_RUN):
-        hass.services.async_remove(DOMAIN, SERVICE_RUN)
+    if not hass.data[DOMAIN]:
+        for service_name in (SERVICE_RUN, SERVICE_STOP, SERVICE_RESUME):
+            if hass.services.has_service(DOMAIN, service_name):
+                hass.services.async_remove(DOMAIN, service_name)
 
     return True

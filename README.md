@@ -202,15 +202,27 @@ Erzeuge jetzt die vollständige YAML.
 - KI-Notizen inkl. Begründung/Kurz-Zusammenfassung
 - Optionales Custom-Field-Enrichment für strukturierte Vertrags- und Lohnfelder
 - Token-/Kosten-Tracking (letzter Lauf + Gesamtwerte)
-- Service `paperless_kiplus.run` mit Overrides (`force`, `wait`, `dry_run`, `all_documents`, `max_documents`, `backfill_existing_documents`)
+- Services:
+  - `paperless_kiplus.run`
+  - `paperless_kiplus.stop`
+  - `paperless_kiplus.resume`
 - Geräte-Buttons für:
   - Bestandsdaten neu anreichern
+  - Lauf pausieren
+  - Pausierten Lauf fortsetzen
   - Letztes Protokoll anzeigen
   - Letztes Protokoll exportieren
   - Statistiken zurücksetzen
   - Fehlgeschlagene Dokumente zurücksetzen
 - Parallele KI-Verarbeitung (konfigurierbar)
 - KI-Tag-Vorfilter: KI-getaggte Dokumente können standardmäßig komplett ausgeschlossen werden
+- Echte Live-Fortschrittsanzeige:
+  - Prozent-Fortschritt
+  - aktueller Dokumenttitel
+  - laufende Zähler für Gescannt / Aktualisiert / Übersprungen / Fehler
+- Kontrolliertes Pausieren und Fortsetzen:
+  - manuell per Button oder Service
+  - automatisch bei Provider-Wartezeiten (`429`, `Retry-After`, `insufficient_quota`)
 - Optionales Tax Enrichment für Einkommensteuer-Vorbereitung:
   - feste Steuer-Taxonomie
   - semantischer WISO-Mapping-Layer
@@ -233,6 +245,10 @@ Paperless-Custom-Fields befüllen. Es gibt dafür jetzt zwei getrennte Wege:
   `sb_`-Felder, die von `SecondBrain` später strukturiert ausgelesen werden
 
 ### SecondBrain `sb_`-Felder
+
+Die vollständige technische Consumer-Schnittstelle für `SecondBrain` steht in:
+
+- [docs/secondbrain-interface.md](./docs/secondbrain-interface.md)
 
 #### Aktivierung
 
@@ -404,6 +420,51 @@ service: paperless_kiplus.run
 data:
   backfill_existing_documents: true
 ```
+
+#### Live-Fortschritt, Pause und Resume
+
+Während eines Laufs schreibt der Sorter jetzt maschinenlesbare Runtime-Events.
+Dadurch kann Home Assistant echten Fortschritt anzeigen, statt nur auf das
+Laufende zu warten.
+
+Sichtbar sind unter anderem:
+
+- `Paperless KIplus Fortschritt` als Prozent-Sensor
+- `progress_current_document_title` im Statussensor
+- `progress_scanned`, `progress_updated`, `progress_skipped`, `progress_failed`
+- `resume_available`, `pause_reason` und `auto_resume_at`
+
+Neuer Service zum sicheren Pausieren:
+
+```yaml
+service: paperless_kiplus.stop
+data: {}
+```
+
+Neuer Service zum Fortsetzen eines pausierten Laufs:
+
+```yaml
+service: paperless_kiplus.resume
+data:
+  wait: false
+```
+
+Wichtige Regeln:
+
+- `stop` ist bewusst ein kontrollierter Stop nach aktuellem Dokument oder
+  aktuellem KI-Batch. Der Prozess wird nicht blind hart beendet.
+- Ein pausierter Lauf speichert seinen Zustand in einer Resume-Datei und setzt
+  später genau dort fort.
+- Bei kurzen Rate-Limits mit kleinem `Retry-After` wartet der Lauf direkt im
+  selben Prozess.
+- Bei längeren Provider-Wartezeiten oder `insufficient_quota` pausiert der Lauf
+  kontrolliert und plant die Wiederaufnahme, statt Dokumente unnötig in die
+  Fehlerquarantäne zu schicken.
+- Für manuelle CLI-Läufe gibt es zusätzlich:
+  - `--resume-run`
+  - `--request-stop`
+  - `--run-state-file`
+  - `--stop-request-file`
 
 #### Beispiel
 
@@ -696,6 +757,15 @@ Anforderungen:
 ```
 
 ## Versionsverlauf (antichronologisch)
+
+- `v1.3.0` (2026-04-26)
+  - Echte Live-Fortschrittsanzeige mit Prozent, aktuellem Dokument und laufenden Zählern ergänzt.
+  - Kontrolliertes Pausieren und Fortsetzen für manuelle Läufe eingebaut.
+  - Resume-State-Datei eingeführt, damit pausierte Läufe später exakt weiterlaufen können.
+  - Neue Home-Assistant-Services `paperless_kiplus.stop` und `paperless_kiplus.resume` ergänzt.
+  - Neue Geräte-Buttons für Pause und Fortsetzen ergänzt.
+  - Provider-429/Quota-Fälle werden jetzt als Pause statt als Dokumentfehler behandelt.
+  - Automatische Wiederaufnahme nach `Retry-After` bzw. Provider-Backoff ergänzt.
 
 - `v1.2.0` (2026-04-26)
   - SecondBrain-Custom-Field-Sync für bestehende `sb_`-Felder in Paperless ergänzt.
