@@ -27,19 +27,42 @@ Danach:
 
 ## Schnellstart auf Unraid
 
-### Empfohlener Weg: Installationsskript
+### Empfohlener Weg: Remote-Deploy von macOS/Linux nach Unraid
 
-Das robusteste Setup fuer Unraid ist jetzt das neue Installationsskript:
+Das robusteste Setup fuer Unraid ist jetzt das neue Remote-Deploy-Skript. Es
+wird auf deinem Mac oder Linux-Rechner gestartet, verbindet sich per SSH mit
+Unraid und fuehrt die eigentliche Installation dort aus:
 
 ```bash
-bash docker/install-unraid-worker.sh \
+bash docker/deploy-to-unraid.sh \
+  --unraid-host 192.168.178.30 \
   --paperless-url http://192.168.178.20:8000 \
   --paperless-token PAPERLESS_TOKEN \
   --ai-api-key OPENAI_KEY \
   --ai-model gpt-4.1-mini
 ```
 
-Das Skript:
+Das Remote-Skript:
+
+- verbindet sich per SSH zu Unraid
+- kopiert den Host-Installer auf den Server
+- uebertraegt optional eine lokale `config.yaml`
+- fuehrt die eigentliche Installation direkt auf Unraid aus
+
+### Direkte Ausfuehrung auf dem Unraid-Server
+
+Wenn du bereits eine Shell direkt auf Unraid offen hast, kannst du stattdessen
+das Host-Skript dort lokal ausfuehren:
+
+```bash
+bash /pfad/zum/repo/docker/install-unraid-worker.sh \
+  --paperless-url http://192.168.178.20:8000 \
+  --paperless-token PAPERLESS_TOKEN \
+  --ai-api-key OPENAI_KEY \
+  --ai-model gpt-4.1-mini
+```
+
+Das Host-Skript:
 
 - erkennt Docker Compose
 - legt das Appdata-Verzeichnis an
@@ -52,6 +75,9 @@ Das Skript:
 Typische Zusatzoptionen:
 
 ```bash
+--ssh-user root
+--ssh-port 22
+--keep-remote-files true
 --data-dir /mnt/user/appdata/paperless-kiplus-worker
 --worker-token MEIN_API_TOKEN
 --enable-tax-enrichment true

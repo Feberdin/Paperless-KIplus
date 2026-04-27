@@ -16,6 +16,9 @@ set -Eeuo pipefail
 # - Ohne gueltige Pflichtwerte wird keine neue YAML geschrieben.
 # - Der Worker wird ueber ein veroeffentlichtes GHCR-Image installiert, nicht
 #   ueber einen fragilen lokalen Build auf dem NAS.
+# - Dieses Skript installiert immer auf dem Rechner, auf dem es ausgefuehrt wird.
+#   Fuer den Aufruf von macOS oder Linux gegen einen entfernten Unraid-Server
+#   gibt es das separate Skript docker/deploy-to-unraid.sh.
 #
 # So debuggt man das Skript:
 # - bash -n docker/install-unraid-worker.sh
@@ -52,6 +55,12 @@ usage() {
   cat <<USAGE
 Verwendung:
   $SCRIPT_NAME [Optionen]
+
+Wichtig:
+  Dieses Skript wird direkt AUF dem Unraid- oder Linux-Host ausgefuehrt.
+  Wenn du von macOS oder einem anderen Rechner aus auf einen entfernten
+  Unraid-Server deployen willst, nutze:
+    bash docker/deploy-to-unraid.sh --unraid-host <HOST> ...
 
 Wichtige Standardwerte:
   --data-dir        $DATA_DIR
@@ -149,6 +158,9 @@ compose() {
 }
 
 check_unraid_context() {
+  if [ "$(uname -s)" = "Darwin" ]; then
+    fail "Dieses Skript wuerde lokal auf macOS installieren. Fuer die Remote-Installation auf Unraid nutze bitte: bash docker/deploy-to-unraid.sh --unraid-host <DEIN_UNRAID> ..."
+  fi
   if [ -f /etc/unraid-version ]; then
     log "Unraid erkannt: $(cat /etc/unraid-version)"
   else

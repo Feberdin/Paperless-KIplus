@@ -867,19 +867,44 @@ Danach:
 - Weboberfläche: `http://<server>:8787/`
 - Status-API: `http://<server>:8787/api/status`
 
-### Robustes Unraid-Installationsskript
+### Robuste Unraid-Installation
 
-Für Unraid gibt es jetzt zusätzlich ein direkt nutzbares Installationsskript:
+Für Unraid gibt es jetzt zwei klare Wege:
+
+1. Von macOS/Linux per SSH auf einen entfernten Unraid-Server deployen
+2. Direkt auf dem Unraid-Server installieren
+
+#### Empfohlen: Remote-Deploy von macOS/Linux nach Unraid
 
 ```bash
-bash docker/install-unraid-worker.sh \
+bash docker/deploy-to-unraid.sh \
+  --unraid-host 192.168.178.30 \
   --paperless-url http://192.168.178.20:8000 \
   --paperless-token PAPERLESS_TOKEN \
   --ai-api-key OPENAI_KEY \
   --ai-model gpt-4.1-mini
 ```
 
-Das Skript:
+Das Remote-Skript:
+
+- verbindet sich per SSH mit Unraid
+- kopiert den eigentlichen Host-Installer auf den Server
+- überträgt optional eine lokale `config.yaml`
+- führt die Installation direkt auf Unraid aus
+
+#### Direkte Ausführung auf dem Unraid-Server
+
+Wenn du bereits per Shell auf Unraid bist, kannst du dort das Host-Skript verwenden:
+
+```bash
+bash /pfad/zum/repo/docker/install-unraid-worker.sh \
+  --paperless-url http://192.168.178.20:8000 \
+  --paperless-token PAPERLESS_TOKEN \
+  --ai-api-key OPENAI_KEY \
+  --ai-model gpt-4.1-mini
+```
+
+Das Host-Skript:
 
 - legt die Appdata-Verzeichnisse an
 - sichert bestehende Dateien
@@ -927,6 +952,10 @@ tax_ai_base_url: http://ollama:11434/v1
 ```
 
 ## Versionsverlauf (antichronologisch)
+
+- `v1.4.3` (2026-04-27)
+  - Neues Remote-Deploy-Skript `docker/deploy-to-unraid.sh` ergänzt, damit die Installation von macOS/Linux per SSH sauber auf einem entfernten Unraid-Server ausgeführt werden kann.
+  - Das Host-Installationsskript `docker/install-unraid-worker.sh` blockiert jetzt bewusst direkte Ausführung auf macOS und verweist stattdessen auf den Remote-Deploy-Weg.
 
 - `v1.4.2` (2026-04-26)
   - Eigenständigen Docker-/Unraid-Worker mit Weboberfläche und JSON-API ergänzt.
