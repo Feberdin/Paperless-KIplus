@@ -23,7 +23,9 @@ set -Eeuo pipefail
 # - bash docker/deploy-to-unraid.sh --help
 # - ssh root@<unraid> "docker logs paperless-kiplus-worker"
 
-SCRIPT_NAME="$(basename "$0")"
+SCRIPT_NAME="${0:-deploy-to-unraid.sh}"
+SCRIPT_NAME="${SCRIPT_NAME##*/}"
+[ -n "$SCRIPT_NAME" ] || SCRIPT_NAME="deploy-to-unraid.sh"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LOCAL_INSTALLER="$SCRIPT_DIR/install-unraid-worker.sh"
 

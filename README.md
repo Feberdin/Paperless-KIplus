@@ -900,7 +900,12 @@ hast, kannst du jetzt den Bootstrap-Weg nutzen. Er legt zuerst den passenden
 Ordner an, lädt den Installer herunter und startet ihn direkt:
 
 ```bash
-bash -c "$(curl -fsSL https://raw.githubusercontent.com/Feberdin/Paperless-KIplus/main/docker/bootstrap-unraid-worker.sh)" -- \
+mkdir -p /boot/config/custom/paperless-kiplus && \
+curl -fsSL https://raw.githubusercontent.com/Feberdin/Paperless-KIplus/v1.4.5/docker/bootstrap-unraid-worker.sh \
+  -o /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh && \
+chmod +x /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh && \
+bash /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh \
+  --ref v1.4.5 \
   --paperless-url http://192.168.178.20:8000 \
   --paperless-token PAPERLESS_TOKEN \
   --ai-api-key OPENAI_KEY \
@@ -972,6 +977,10 @@ tax_ai_base_url: http://ollama:11434/v1
 ```
 
 ## Versionsverlauf (antichronologisch)
+
+- `v1.4.5` (2026-04-27)
+  - Unraid-Terminal-Beispiel auf einen robusteren Download-Flow umgestellt: Ordner anlegen, Bootstrap-Datei herunterladen, Datei ausfuehrbar machen, dann lokal starten.
+  - Alle Shell-Skripte gegen leeres `$0` gehaertet, damit `basename`-Fehler auf einzelnen Shell-Aufrufen nicht mehr auftreten.
 
 - `v1.4.4` (2026-04-27)
   - Neues Bootstrap-Skript `docker/bootstrap-unraid-worker.sh` ergänzt, damit der Worker direkt im Unraid-Terminal ohne lokales Repo-Checkout installiert werden kann.

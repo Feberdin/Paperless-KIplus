@@ -24,7 +24,9 @@ set -Eeuo pipefail
 # - pruefen, ob curl oder wget auf Unraid vorhanden ist
 # - pruefen, ob die Datei im Zielordner abgelegt wurde
 
-SCRIPT_NAME="$(basename "$0")"
+SCRIPT_NAME="${0:-bootstrap-unraid-worker.sh}"
+SCRIPT_NAME="${SCRIPT_NAME##*/}"
+[ -n "$SCRIPT_NAME" ] || SCRIPT_NAME="bootstrap-unraid-worker.sh"
 REPO_OWNER="Feberdin"
 REPO_NAME="Paperless-KIplus"
 REPO_REF="main"
@@ -39,7 +41,11 @@ Verwendung:
   $SCRIPT_NAME [Bootstrap-Optionen] [Installer-Optionen]
 
 Beispiel:
-  bash -c "\$(curl -fsSL https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/docker/bootstrap-unraid-worker.sh)" -- \
+  mkdir -p /boot/config/custom/paperless-kiplus && \
+  curl -fsSL https://raw.githubusercontent.com/${REPO_OWNER}/${REPO_NAME}/main/docker/bootstrap-unraid-worker.sh \
+    -o /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh && \
+  chmod +x /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh && \
+  bash /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh \
     --paperless-url http://192.168.178.20:8000 \
     --paperless-token PAPERLESS_TOKEN \
     --ai-api-key OPENAI_KEY \

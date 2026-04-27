@@ -27,7 +27,9 @@ set -Eeuo pipefail
 # - docker logs paperless-kiplus-worker
 # - curl http://<unraid>:8787/api/status
 
-SCRIPT_NAME="$(basename "$0")"
+SCRIPT_NAME="${0:-install-unraid-worker.sh}"
+SCRIPT_NAME="${SCRIPT_NAME##*/}"
+[ -n "$SCRIPT_NAME" ] || SCRIPT_NAME="install-unraid-worker.sh"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 
 DATA_DIR="/mnt/user/appdata/paperless-kiplus-worker"
@@ -64,7 +66,7 @@ Wichtig:
   Unraid-Server deployen willst, nutze:
     bash docker/deploy-to-unraid.sh --unraid-host <HOST> ...
   Wenn du direkt im Unraid-Terminal ohne Repo-Checkout starten willst, nutze:
-    bash -c "\$(curl -fsSL https://raw.githubusercontent.com/Feberdin/Paperless-KIplus/main/docker/bootstrap-unraid-worker.sh)" -- ...
+    mkdir -p /boot/config/custom/paperless-kiplus && curl -fsSL https://raw.githubusercontent.com/Feberdin/Paperless-KIplus/main/docker/bootstrap-unraid-worker.sh -o /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh && chmod +x /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh && bash /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh ...
 
 Wichtige Standardwerte:
   --data-dir        $DATA_DIR
