@@ -163,6 +163,49 @@ compose() {
   fi
 }
 
+find_other_docker_port_users() {
+  docker ps --format '{{.Names}}\t{{.Ports}}' \
+    | grep -F ":$PORT->" \
+    | grep -v "^${CONTAINER_NAME}[[:space:]]" || true
+}
+
+find_own_container_port_binding() {
+  docker ps --format '{{.Names}}\t{{.Ports}}' \
+    | grep -F ":$PORT->" \
+    | grep "^${CONTAINER_NAME}[[:space:]]" || true
+}
+
+find_host_port_listener() {
+  if command -v ss >/dev/null 2>&1; then
+    ss -ltnH | awk -v port="$PORT" '$4 ~ ":" port "$" || $4 ~ "\\]:" port "$" {print $4}' || true
+    return
+  fi
+  if command -v netstat >/dev/null 2>&1; then
+    netstat -ltn 2>/dev/null | awk -v port="$PORT" 'NR > 2 && ($4 ~ ":" port "$" || $4 ~ "\\]:" port "$") {print $4}' || true
+    return
+  fi
+  true
+}
+
+check_host_port_available() {
+  local other_docker_users own_docker_binding host_listener
+  other_docker_users="$(find_other_docker_port_users)"
+  if [ -n "$other_docker_users" ]; then
+    fail "Port $PORT ist bereits von einem anderen Docker-Container belegt:\n$other_docker_users\nNutze entweder einen anderen Port mit --port oder stoppe den anderen Container."
+  fi
+
+  own_docker_binding="$(find_own_container_port_binding)"
+  if [ -n "$own_docker_binding" ]; then
+    log "Port $PORT wird aktuell bereits vom bestehenden Container $CONTAINER_NAME genutzt. Das ist fuer ein Update in Ordnung."
+    return
+  fi
+
+  host_listener="$(find_host_port_listener)"
+  if [ -n "$host_listener" ]; then
+    fail "Port $PORT ist auf dem Host bereits belegt: $host_listener\nNutze einen freien Port, z. B. --port 8788, oder beende den anderen Dienst."
+  fi
+}
+
 check_unraid_context() {
   if [ "$(uname -s)" = "Darwin" ]; then
     fail "Dieses Skript wuerde lokal auf macOS installieren. Fuer die Remote-Installation auf Unraid nutze bitte: bash docker/deploy-to-unraid.sh --unraid-host <DEIN_UNRAID> ..."
@@ -453,6 +496,7 @@ pull_image_if_possible() {
 
 start_or_update_stack() {
   compose config >/dev/null
+  check_host_port_available
   pull_image_if_possible
   compose up -d --remove-orphans
 }

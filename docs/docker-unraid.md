@@ -36,11 +36,11 @@ anschliessend lokal auf Unraid aus:
 
 ```bash
 mkdir -p /boot/config/custom/paperless-kiplus && \
-curl -fsSL https://raw.githubusercontent.com/Feberdin/Paperless-KIplus/v1.4.5/docker/bootstrap-unraid-worker.sh \
+curl -fsSL https://raw.githubusercontent.com/Feberdin/Paperless-KIplus/v1.4.6/docker/bootstrap-unraid-worker.sh \
   -o /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh && \
 chmod +x /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh && \
 bash /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh \
-  --ref v1.4.5 \
+  --ref v1.4.6 \
   --paperless-url http://192.168.178.20:8000 \
   --paperless-token PAPERLESS_TOKEN \
   --ai-api-key OPENAI_KEY \

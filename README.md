@@ -901,11 +901,11 @@ Ordner an, lädt den Installer herunter und startet ihn direkt:
 
 ```bash
 mkdir -p /boot/config/custom/paperless-kiplus && \
-curl -fsSL https://raw.githubusercontent.com/Feberdin/Paperless-KIplus/v1.4.5/docker/bootstrap-unraid-worker.sh \
+curl -fsSL https://raw.githubusercontent.com/Feberdin/Paperless-KIplus/v1.4.6/docker/bootstrap-unraid-worker.sh \
   -o /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh && \
 chmod +x /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh && \
 bash /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh \
-  --ref v1.4.5 \
+  --ref v1.4.6 \
   --paperless-url http://192.168.178.20:8000 \
   --paperless-token PAPERLESS_TOKEN \
   --ai-api-key OPENAI_KEY \
@@ -977,6 +977,10 @@ tax_ai_base_url: http://ollama:11434/v1
 ```
 
 ## Versionsverlauf (antichronologisch)
+
+- `v1.4.6` (2026-04-27)
+  - Installer prueft belegte Host-Ports jetzt vor dem Container-Start und meldet klar, wenn z. B. `8787` schon von einem anderen Dienst oder Container verwendet wird.
+  - Damit wird auf Unraid bei Port-Konflikten frueher und verstaendlicher abgebrochen, statt erst spaet im Docker-Start zu scheitern.
 
 - `v1.4.5` (2026-04-27)
   - Unraid-Terminal-Beispiel auf einen robusteren Download-Flow umgestellt: Ordner anlegen, Bootstrap-Datei herunterladen, Datei ausfuehrbar machen, dann lokal starten.
