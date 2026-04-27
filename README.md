@@ -872,7 +872,8 @@ Danach:
 Für Unraid gibt es jetzt zwei klare Wege:
 
 1. Von macOS/Linux per SSH auf einen entfernten Unraid-Server deployen
-2. Direkt auf dem Unraid-Server installieren
+2. Direkt im Unraid-Terminal ohne Repo-Checkout installieren
+3. Direkt auf dem Unraid-Server mit vorhandenem Repo installieren
 
 #### Empfohlen: Remote-Deploy von macOS/Linux nach Unraid
 
@@ -894,7 +895,26 @@ Das Remote-Skript:
 
 #### Direkte Ausführung auf dem Unraid-Server
 
-Wenn du bereits per Shell auf Unraid bist, kannst du dort das Host-Skript verwenden:
+Wenn du direkt im Unraid-Terminal bist und das Repo dort nicht lokal liegen
+hast, kannst du jetzt den Bootstrap-Weg nutzen. Er legt zuerst den passenden
+Ordner an, lädt den Installer herunter und startet ihn direkt:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Feberdin/Paperless-KIplus/main/docker/bootstrap-unraid-worker.sh)" -- \
+  --paperless-url http://192.168.178.20:8000 \
+  --paperless-token PAPERLESS_TOKEN \
+  --ai-api-key OPENAI_KEY \
+  --ai-model gpt-4.1-mini
+```
+
+Dabei wird der Installer standardmäßig hier abgelegt:
+
+```text
+/boot/config/custom/paperless-kiplus/install-unraid-worker.sh
+```
+
+Wenn du bereits ein Repo-Checkout auf Unraid hast, kannst du weiterhin direkt
+das Host-Skript verwenden:
 
 ```bash
 bash /pfad/zum/repo/docker/install-unraid-worker.sh \
@@ -952,6 +972,10 @@ tax_ai_base_url: http://ollama:11434/v1
 ```
 
 ## Versionsverlauf (antichronologisch)
+
+- `v1.4.4` (2026-04-27)
+  - Neues Bootstrap-Skript `docker/bootstrap-unraid-worker.sh` ergänzt, damit der Worker direkt im Unraid-Terminal ohne lokales Repo-Checkout installiert werden kann.
+  - Der Bootstrap-Weg legt den Zielordner automatisch an, lädt `install-unraid-worker.sh` von GitHub herunter und startet die Installation lokal auf Unraid.
 
 - `v1.4.3` (2026-04-27)
   - Neues Remote-Deploy-Skript `docker/deploy-to-unraid.sh` ergänzt, damit die Installation von macOS/Linux per SSH sauber auf einem entfernten Unraid-Server ausgeführt werden kann.

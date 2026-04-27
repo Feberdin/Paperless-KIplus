@@ -19,6 +19,8 @@ set -Eeuo pipefail
 # - Dieses Skript installiert immer auf dem Rechner, auf dem es ausgefuehrt wird.
 #   Fuer den Aufruf von macOS oder Linux gegen einen entfernten Unraid-Server
 #   gibt es das separate Skript docker/deploy-to-unraid.sh.
+# - Wenn kein Repo-Checkout auf Unraid vorhanden ist, gibt es zusaetzlich das
+#   Bootstrap-Skript docker/bootstrap-unraid-worker.sh zum Herunterladen.
 #
 # So debuggt man das Skript:
 # - bash -n docker/install-unraid-worker.sh
@@ -61,6 +63,8 @@ Wichtig:
   Wenn du von macOS oder einem anderen Rechner aus auf einen entfernten
   Unraid-Server deployen willst, nutze:
     bash docker/deploy-to-unraid.sh --unraid-host <HOST> ...
+  Wenn du direkt im Unraid-Terminal ohne Repo-Checkout starten willst, nutze:
+    bash -c "\$(curl -fsSL https://raw.githubusercontent.com/Feberdin/Paperless-KIplus/main/docker/bootstrap-unraid-worker.sh)" -- ...
 
 Wichtige Standardwerte:
   --data-dir        $DATA_DIR

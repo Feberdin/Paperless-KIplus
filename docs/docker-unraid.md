@@ -27,6 +27,27 @@ Danach:
 
 ## Schnellstart auf Unraid
 
+### Einfachster Weg: Direkt im Unraid-Terminal ohne Repo-Checkout
+
+Wenn du direkt auf dem Unraid-Server arbeitest, kannst du den Installer jetzt
+ohne lokales Git-Checkout starten. Das Bootstrap-Skript legt zuerst den
+passenden Ordner an, laedt den eigentlichen Installer von GitHub und fuehrt ihn
+anschliessend lokal auf Unraid aus:
+
+```bash
+bash -c "$(curl -fsSL https://raw.githubusercontent.com/Feberdin/Paperless-KIplus/main/docker/bootstrap-unraid-worker.sh)" -- \
+  --paperless-url http://192.168.178.20:8000 \
+  --paperless-token PAPERLESS_TOKEN \
+  --ai-api-key OPENAI_KEY \
+  --ai-model gpt-4.1-mini
+```
+
+Der Installer landet standardmaessig hier:
+
+```text
+/boot/config/custom/paperless-kiplus/install-unraid-worker.sh
+```
+
 ### Empfohlener Weg: Remote-Deploy von macOS/Linux nach Unraid
 
 Das robusteste Setup fuer Unraid ist jetzt das neue Remote-Deploy-Skript. Es
@@ -52,7 +73,18 @@ Das Remote-Skript:
 ### Direkte Ausfuehrung auf dem Unraid-Server
 
 Wenn du bereits eine Shell direkt auf Unraid offen hast, kannst du stattdessen
-das Host-Skript dort lokal ausfuehren:
+das bereits heruntergeladene Host-Skript oder ein Repo-Checkout dort lokal
+ausfuehren:
+
+```bash
+bash /boot/config/custom/paperless-kiplus/install-unraid-worker.sh \
+  --paperless-url http://192.168.178.20:8000 \
+  --paperless-token PAPERLESS_TOKEN \
+  --ai-api-key OPENAI_KEY \
+  --ai-model gpt-4.1-mini
+```
+
+oder:
 
 ```bash
 bash /pfad/zum/repo/docker/install-unraid-worker.sh \
