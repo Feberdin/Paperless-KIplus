@@ -978,6 +978,9 @@ tax_ai_base_url: http://ollama:11434/v1
 
 ## Versionsverlauf (antichronologisch)
 
+- `v1.4.7` (2026-06-20)
+  - Fortschrittsanzeige fuer limitierte erfolgreiche Laeufe korrigiert: Wenn weniger passende Dokumente als `max_documents` gefunden werden, endet der Lauf jetzt sichtbar bei 100 % statt z. B. 56 %.
+
 - `v1.4.6` (2026-04-27)
   - Installer prueft belegte Host-Ports jetzt vor dem Container-Start und meldet klar, wenn z. B. `8787` schon von einem anderen Dienst oder Container verwendet wird.
   - Damit wird auf Unraid bei Port-Konflikten frueher und verstaendlicher abgebrochen, statt erst spaet im Docker-Start zu scheitern.

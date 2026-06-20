@@ -34,6 +34,7 @@ from paperless_ai_sorter import (
     PendingAiDocument,
     RUN_STATE_VERSION,
     extract_retry_after_seconds_from_error,
+    finalize_limited_progress_total,
     load_run_state,
     resolve_runtime_path,
     save_run_state,
@@ -97,6 +98,28 @@ class RuntimeStateTests(unittest.TestCase):
         self.assertEqual(payload["title"], "Rechnung")
         self.assertNotIn("document", payload)
         self.assertEqual(payload["doc_tags"], [1, 5, 9])
+
+    def test_limited_success_progress_uses_actual_completed_total(self) -> None:
+        self.assertEqual(
+            finalize_limited_progress_total(
+                current_total=50,
+                target_documents=50,
+                budget_used=28,
+                pending_count=0,
+            ),
+            28,
+        )
+
+    def test_limited_success_progress_keeps_total_when_limit_is_exhausted(self) -> None:
+        self.assertEqual(
+            finalize_limited_progress_total(
+                current_total=50,
+                target_documents=50,
+                budget_used=50,
+                pending_count=0,
+            ),
+            50,
+        )
 
     def test_run_state_roundtrip_and_version_guard(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

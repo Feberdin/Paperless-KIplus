@@ -634,6 +634,38 @@ class PendingAiDocument:
         )
 
 
+def finalize_limited_progress_total(
+    current_total: int,
+    target_documents: Optional[int],
+    budget_used: int,
+    pending_count: int,
+) -> int:
+    """Korrigiert den finalen Fortschritts-Nenner für limitierte Läufe.
+
+    Warum diese Funktion existiert:
+    - `max_documents` ist ein oberes Limit, keine Garantie auf so viele Treffer.
+    - Während des Laufs nutzen wir das Limit als stabile Fortschrittsgröße.
+    - Beim erfolgreichen Ende soll die UI aber zeigen, dass alle gefundenen
+      Dokumente erledigt sind.
+
+    Beispiel:
+    - Input: Limit 50, gefundene KI-Dokumente 28, keine Pending-Dokumente.
+    - Output: finaler Nenner 28, damit Home Assistant 28/28 = 100 % zeigt.
+    """
+
+    safe_total = max(0, int(current_total))
+    if target_documents is None:
+        return safe_total
+
+    safe_target = max(0, int(target_documents))
+    completed_budget = max(0, int(budget_used) - max(0, int(pending_count)))
+    if safe_target <= 0 or completed_budget <= 0:
+        return safe_total
+    if completed_budget < safe_target:
+        return completed_budget
+    return safe_total
+
+
 def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | None = None) -> AppConfig:
     """Lädt YAML-Konfiguration und validiert Pflichtfelder.
 
@@ -5901,6 +5933,12 @@ def process_documents(
             "(API-Fehler bei Tag-Update). Diese Dokumente triggern externe #NEU-Automatiken weiter.",
             skipped_with_neu_still_set,
         )
+    progress_total_documents = finalize_limited_progress_total(
+        progress_total_documents,
+        target_documents,
+        budget_used,
+        len(pending_ai_documents),
+    )
     emit_runtime_event(
         "progress",
         **_progress_payload(status="success"),
