@@ -978,6 +978,9 @@ tax_ai_base_url: http://ollama:11434/v1
 
 ## Versionsverlauf (antichronologisch)
 
+- `v1.4.8` (2026-06-20)
+  - HACS-/Hassfest-Manifestreihenfolge korrigiert, damit der HACS-Release-Check gruen laeuft.
+
 - `v1.4.7` (2026-06-20)
   - Fortschrittsanzeige fuer limitierte erfolgreiche Laeufe korrigiert: Wenn weniger passende Dokumente als `max_documents` gefunden werden, endet der Lauf jetzt sichtbar bei 100 % statt z. B. 56 %.
 

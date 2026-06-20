@@ -1,13 +1,13 @@
 {
   "domain": "paperless_kiplus",
   "name": "Paperless KIplus Runner",
-  "version": "1.4.7",
-  "documentation": "https://github.com/Feberdin/Paperless-KIplus",
-  "issue_tracker": "https://github.com/Feberdin/Paperless-KIplus/issues",
-  "config_flow": true,
   "codeowners": [
     "@Feberdin"
   ],
+  "config_flow": true,
+  "documentation": "https://github.com/Feberdin/Paperless-KIplus",
   "iot_class": "local_polling",
-  "requirements": []
+  "issue_tracker": "https://github.com/Feberdin/Paperless-KIplus/issues",
+  "requirements": [],
+  "version": "1.4.8"
 }
