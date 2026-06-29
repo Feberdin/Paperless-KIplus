@@ -1348,6 +1348,41 @@ class WorkerManager:
             "last_config_sync_at": self.config_updated_at.isoformat() if self.config_updated_at else None,
         }
 
+    def heimdall_payload(self) -> dict[str, Any]:
+        """Build a small, safe dashboard payload for broker/Heimdall probes.
+
+        Why this separate payload exists:
+        - `/api/status` intentionally contains rich operational state for Home
+          Assistant, including paths and log tails.
+        - Heimdall only needs a compact health summary that can be fetched
+          without a browser session or API token.
+        - We deliberately do not include secrets, raw logs, stack traces,
+          request bodies, document names, Paperless URLs, or config text.
+        """
+
+        with self.lock:
+            worker_state = "running" if self.running else "online"
+            config_state = "valid" if self.config_validation_ok else "needs_config"
+            last_run_at = self.last_finished or self.last_started
+            last_run_value = last_run_at.isoformat() if last_run_at else "never"
+            details = [
+                f"Config: {config_state}",
+                f"Last run: {last_run_value}",
+            ]
+            if self.resume_available:
+                details.append("Resume available")
+
+            return {
+                "status": "ok",
+                "summary": f"Paperless KIplus worker {worker_state}; config {config_state}",
+                "stats": [
+                    {"label": "Status", "value": worker_state},
+                    {"label": "Running", "value": "yes" if self.running else "no"},
+                    {"label": "Failed", "value": str(self.last_failed)},
+                ],
+                "details": details,
+            }
+
 
 class WorkerRequestHandler(BaseHTTPRequestHandler):
     """HTTP handler for the standalone worker API and web UI."""
@@ -1414,6 +1449,9 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
                 return
             if not path.startswith("/api/"):
                 self._json_response({"ok": False, "message": "Not found"}, status=HTTPStatus.NOT_FOUND)
+                return
+            if path == "/api/heimdall/v1":
+                self._json_response(self.manager.heimdall_payload())
                 return
             if not self._require_auth():
                 return

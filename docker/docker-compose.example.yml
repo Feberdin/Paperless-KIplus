@@ -1,8 +1,16 @@
+x-broker:
+  heimdall:
+    enabled: true
+
 services:
   paperless-kiplus-worker:
     image: ghcr.io/feberdin/paperless-kiplus-worker:latest
     container_name: paperless-kiplus-worker
     restart: unless-stopped
+    labels:
+      unraid-deploy-broker.heimdall.enabled: "true"
+      unraid-deploy-broker.heimdall.probe.enabled: "true"
+      unraid-deploy-broker.heimdall.probe.path: "/api/heimdall/v1"
     ports:
       - "8787:8787"
     environment:

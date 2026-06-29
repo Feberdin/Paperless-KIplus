@@ -13,11 +13,14 @@ How to run:
 from __future__ import annotations
 
 import importlib.util
+import json
 import sys
 import tempfile
 import textwrap
+import threading
 import types
 import unittest
+from urllib.request import urlopen
 from pathlib import Path
 
 
@@ -124,6 +127,43 @@ build_effective_managed_config_payload = (
     config_export_module.build_effective_managed_config_payload
 )
 WorkerManager = worker_api_module.WorkerManager
+WorkerHttpServer = worker_api_module.WorkerHttpServer
+
+
+def _collect_json_keys(payload):
+    """Collect nested keys so tests can guard against accidental leaks."""
+
+    if isinstance(payload, dict):
+        keys = set(payload)
+        for value in payload.values():
+            keys.update(_collect_json_keys(value))
+        return keys
+    if isinstance(payload, list):
+        keys = set()
+        for item in payload:
+            keys.update(_collect_json_keys(item))
+        return keys
+    return set()
+
+
+def _request_heimdall_payload(manager: WorkerManager) -> dict[str, object]:
+    """Start a local worker server and fetch the public Heimdall endpoint."""
+
+    server = WorkerHttpServer(("127.0.0.1", 0), manager)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        host, port = server.server_address
+        with urlopen(f"http://{host}:{port}/api/heimdall/v1", timeout=5) as response:
+            body = response.read().decode("utf-8")
+        payload = json.loads(body)
+        if not isinstance(payload, dict):
+            raise AssertionError("Heimdall response must be a JSON object.")
+        return payload
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
 
 
 class ConfigExportTests(unittest.TestCase):
@@ -255,6 +295,55 @@ class WorkerManagerTests(unittest.TestCase):
                 "https://paperless.example/documents/5366/details",
             )
             self.assertEqual(status["progress_completed_documents"], 15)
+
+    def test_heimdall_endpoint_returns_public_happy_path_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = WorkerManager(
+                data_dir=Path(tmp_dir),
+                sorter_command=["python3", "-c", "print('ok')"],
+                auth_token="secret-worker-token",
+            )
+            payload = _request_heimdall_payload(manager)
+
+            self.assertEqual(payload["status"], "ok")
+            self.assertIn("summary", payload)
+            self.assertIsInstance(payload["stats"], list)
+            self.assertIsInstance(payload["details"], list)
+
+    def test_heimdall_endpoint_has_at_least_one_stat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = WorkerManager(
+                data_dir=Path(tmp_dir),
+                sorter_command=["python3", "-c", "print('ok')"],
+                auth_token="secret-worker-token",
+            )
+            payload = _request_heimdall_payload(manager)
+
+            self.assertGreaterEqual(len(payload["stats"]), 1)
+
+    def test_heimdall_endpoint_omits_sensitive_fields_and_raw_logs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = WorkerManager(
+                data_dir=Path(tmp_dir),
+                sorter_command=["python3", "-c", "print('ok')"],
+                auth_token="secret-worker-token",
+            )
+            manager.last_stdout_tail = "API_KEY=secret"
+            manager.last_stderr_tail = "Traceback with token"
+            manager.log_lines = ["Cookie: secret", "Authorization: Bearer secret"]
+
+            payload = _request_heimdall_payload(manager)
+            rendered = json.dumps(payload, ensure_ascii=False).lower()
+            keys = {key.lower() for key in _collect_json_keys(payload)}
+
+            self.assertNotIn("secret-worker-token", rendered)
+            self.assertNotIn("api_key", rendered)
+            self.assertNotIn("authorization", rendered)
+            self.assertNotIn("cookie", rendered)
+            self.assertNotIn("traceback", rendered)
+            self.assertNotIn("log_text", keys)
+            self.assertNotIn("stdout_tail", keys)
+            self.assertNotIn("stderr_tail", keys)
 
 
 if __name__ == "__main__":
