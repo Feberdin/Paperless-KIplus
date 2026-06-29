@@ -1,0 +1,45 @@
+# Purpose:
+# - GitOps/Broker Compose source for the production Unraid worker deployment.
+# - Keeps the existing appdata mount and external port used by the current
+#   Paperless KIplus worker container.
+#
+# Input / Output:
+# - Input: broker-injected PAPERLESS_KIPLUS_TOKEN secret and persisted appdata
+#   under /mnt/user/appdata/paperless-kiplus.
+# - Output: Paperless KIplus worker API/UI on host port 8788, including the
+#   public Heimdall probe at /api/heimdall/v1.
+#
+# Important invariants:
+# - Do not replace the /data mount with a fresh relative directory; it contains
+#   worker config, state, logs, metrics and exports.
+# - Secrets stay as secret:// references and are injected only by the broker at
+#   deploy_apply time.
+# - Heimdall labels expose only the dedicated safe metadata endpoint.
+#
+# Debugging:
+# - Broker flow: stack_validate -> deploy_plan -> deploy_apply.
+# - Check /api/heimdall/v1 for public dashboard metadata.
+# - Use broker logs_tail for redacted service logs.
+
+x-broker:
+  heimdall:
+    enabled: true
+
+services:
+  paperless-kiplus-worker:
+    image: ghcr.io/feberdin/paperless-kiplus-worker:latest
+    container_name: paperless-kiplus-worker
+    restart: unless-stopped
+    labels:
+      unraid-deploy-broker.heimdall.enabled: "true"
+      unraid-deploy-broker.heimdall.probe.enabled: "true"
+      unraid-deploy-broker.heimdall.probe.path: "/api/heimdall/v1"
+    ports:
+      - "8788:8788"
+    environment:
+      PAPERLESS_KIPLUS_DATA_DIR: /data
+      PAPERLESS_KIPLUS_HOST: 0.0.0.0
+      PAPERLESS_KIPLUS_PORT: 8788
+      PAPERLESS_KIPLUS_TOKEN: secret://PAPERLESS_KIPLUS_TOKEN
+    volumes:
+      - /mnt/user/appdata/paperless-kiplus:/data
