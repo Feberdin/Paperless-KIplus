@@ -38,6 +38,9 @@ UUID_TAG_PATTERN = re.compile(
 )
 MONETARY_SANITIZE_PATTERN = re.compile(r"[^0-9,.\-]")
 RETRY_AFTER_SECONDS_PATTERN = re.compile(r"Please try again in\s+([0-9]+(?:\.[0-9]+)?)s", re.IGNORECASE)
+CALENDAR_GERMAN_DATE_PATTERN = re.compile(r"\b([0-3]?\d)\.([01]?\d)\.((?:19|20)\d{2})\b")
+CALENDAR_ISO_DATE_PATTERN = re.compile(r"\b((?:19|20)\d{2})-([01]?\d)-([0-3]?\d)\b")
+CALENDAR_TIME_PATTERN = re.compile(r"\b(?:um\s*)?([01]?\d|2[0-3])[:.]([0-5]\d)\s*(?:uhr)?\b", re.IGNORECASE)
 RUN_STATE_VERSION = 1
 RUN_STATE_FILE_DEFAULT = "paperless_kiplus_run_state.json"
 STOP_REQUEST_FILE_DEFAULT = "paperless_kiplus_stop.request"
@@ -56,6 +59,90 @@ SUPPORTED_CUSTOM_FIELD_TYPES = {
     "select",
     "documentlink",
 }
+CALENDAR_EVENT_KEYWORD_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Gericht",
+        (
+            "gerichtsverhandlung",
+            "mündliche verhandlung",
+            "mündlichen verhandlung",
+            "muendliche verhandlung",
+            "muendlichen verhandlung",
+            "hauptverhandlung",
+            "verhandlungstermin",
+            "gerichtstermin",
+            "ladung",
+            "anhörung",
+            "anhoerung",
+            "behördentermin",
+            "behoerdentermin",
+        ),
+    ),
+    (
+        "Einladung",
+        (
+            "einladung",
+            "eingeladen",
+            "terminbestätigung",
+            "terminbestaetigung",
+            "besprechung",
+            "veranstaltung",
+            "webinar",
+            "workshop",
+        ),
+    ),
+    (
+        "Frist",
+        (
+            "frist",
+            "fristablauf",
+            "widerspruch bis",
+            "einspruch bis",
+            "einzureichen bis",
+            "abzugeben bis",
+            "abgabe bis",
+            "deadline",
+            "rückmeldung bis",
+            "rueckmeldung bis",
+            "spätestens bis",
+            "spaetestens bis",
+        ),
+    ),
+    (
+        "Zahlung",
+        (
+            "fällig",
+            "faellig",
+            "zahlbar bis",
+            "zahlung bis",
+            "zahlungsfrist",
+        ),
+    ),
+    (
+        "Termin",
+        (
+            "termin",
+            "sprechstunde",
+            "beratung",
+            "untersuchung",
+            "arzttermin",
+            "kontrolltermin",
+            "impftermin",
+            "behandlungstermin",
+            "meeting",
+            "schulung",
+            "wiedervorlage",
+        ),
+    ),
+    (
+        "Erinnerung",
+        (
+            "erinnerung",
+            "reminder",
+            "bitte beachten",
+        ),
+    ),
+)
 
 
 class ConfigError(Exception):
@@ -334,6 +421,15 @@ SECOND_BRAIN_SELECT_FIELD_LABELS: Dict[str, tuple[str, ...]] = {
         "E-Mail",
         "Import",
     ),
+    "sb_calendar_type": (
+        "Termin",
+        "Einladung",
+        "Frist",
+        "Gericht",
+        "Zahlung",
+        "Erinnerung",
+        "Sonstiges",
+    ),
 }
 
 
@@ -389,6 +485,31 @@ SECOND_BRAIN_CUSTOM_FIELD_DEFINITIONS: Dict[str, CustomFieldDefinition] = {
     "sb_amount_tax": _make_secondbrain_definition("sb_amount_tax", "monetary", "Steuer- oder Mehrwertsteuerbetrag."),
     # Datumsfelder
     "sb_due_date": _make_secondbrain_definition("sb_due_date", "date", "Fälligkeits- oder Fristdatum."),
+    "sb_calendar_date": _make_secondbrain_definition(
+        "sb_calendar_date",
+        "date",
+        "Kalenderrelevantes Datum für Termine, Einladungen, Fristen oder Verhandlungen.",
+    ),
+    "sb_calendar_time": _make_secondbrain_definition(
+        "sb_calendar_time",
+        "string",
+        "Optionale Uhrzeit zum kalenderrelevanten Datum im Format HH:MM, wenn eindeutig erkennbar.",
+    ),
+    "sb_calendar_type": _make_secondbrain_definition(
+        "sb_calendar_type",
+        "select",
+        "Art des kalenderrelevanten Datums.",
+    ),
+    "sb_calendar_title": _make_secondbrain_definition(
+        "sb_calendar_title",
+        "string",
+        "Kurzer, kalendergeeigneter Titel ohne lange OCR-Auszüge.",
+    ),
+    "sb_calendar_events": _make_secondbrain_definition(
+        "sb_calendar_events",
+        "string",
+        "Kompakte JSON-Liste aller kalenderrelevanten Termine, Einladungen und Fristen im Dokument.",
+    ),
     "sb_document_date": _make_secondbrain_definition("sb_document_date", "date", "Dokumentdatum."),
     "sb_period_start": _make_secondbrain_definition("sb_period_start", "date", "Beginn eines Leistungs- oder Abrechnungszeitraums."),
     "sb_period_end": _make_secondbrain_definition("sb_period_end", "date", "Ende eines Leistungs- oder Abrechnungszeitraums."),
@@ -425,6 +546,9 @@ SECOND_BRAIN_NOTE_KEYS = (
     "sb_case_reference",
     "sb_amount_total",
     "sb_due_date",
+    "sb_calendar_date",
+    "sb_calendar_type",
+    "sb_calendar_events",
     "sb_requires_action",
     "sb_action_status",
     "sb_confidence",
@@ -1618,7 +1742,20 @@ class AiClassifier:
                 "Datumswerte immer als YYYY-MM-DD. "
                 "Monetäre Werte als Dezimalzahl mit Punkt, z. B. 123.45. "
                 "Boolean-Werte nur true/false. Integer-Werte als ganze Zahl. "
-                "Bei Select-Feldern bitte das sichtbare Label verwenden, nicht eine ID."
+                "Bei Select-Feldern bitte das sichtbare Label verwenden, nicht eine ID. "
+                "Prüfe explizit, ob das Dokument ein oder mehrere kalenderrelevante Daten enthält: "
+                "Termine, Einladungen, Fristen, Behörden- oder Gerichtstermine, medizinische Termine, "
+                "Meetings, Schulungen, Veranstaltungen, Zahlungsfristen oder konkrete Wiedervorlagen. "
+                "Wenn ja, setze `sb_calendar_events` als kompakten JSON-Array-String mit Objekten "
+                "im Schema `date`, optional `time`, `type`, `title`, `reason`. "
+                "Nutze pro Ereignis `date` im Format YYYY-MM-DD, `time` im Format HH:MM und "
+                "`type` als eines der Labels aus `sb_calendar_type`, wenn möglich. "
+                "Setze zusätzlich `sb_calendar_date`; wenn eindeutig vorhanden auch "
+                "`sb_calendar_time`, `sb_calendar_type` und einen kurzen `sb_calendar_title` "
+                "für das wichtigste oder zeitlich nächste Ereignis. "
+                "`sb_calendar_date` ist nicht das Dokumentdatum und nicht der Leistungszeitraum; "
+                "nutze es nur, wenn SecondBrain daraus sinnvoll einen Kalender- oder "
+                "Reminder-Eintrag erzeugen kann."
                 "\nUnterstützte SecondBrain-Felder:\n"
                 + json.dumps(secondbrain_specs, ensure_ascii=False)
             )
@@ -1909,12 +2046,98 @@ def build_select_option_lookup(extra_data: Dict[str, Any]) -> Dict[str, int]:
     return by_label
 
 
+def normalize_calendar_time(value: Any) -> Optional[str]:
+    """Normalisiert Uhrzeiten für Kalenderfelder auf HH:MM."""
+
+    if value in (None, ""):
+        return None
+    match = CALENDAR_TIME_PATTERN.search(str(value).strip())
+    if match is None:
+        return None
+    try:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+    except (TypeError, ValueError):
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def normalize_calendar_events_value(value: Any) -> Optional[str]:
+    """Normalisiert alle Kalenderereignisse in einen kompakten JSON-String.
+
+    Warum dieses Feld als String existiert:
+    - Paperless-Custom-Fields haben keinen portablen Listen-/JSON-Typ.
+    - SecondBrain soll dennoch mehrere Termine aus einem Dokument übernehmen
+      können.
+
+    Beispiel:
+    - Input: `[{"date": "2026-08-15", "time": "9:30", "type": "Gericht"}]`
+    - Output: `[{"date":"2026-08-15","time":"09:30","type":"Gericht"}]`
+    """
+
+    raw_events: Any = value
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate:
+            return None
+        try:
+            raw_events = json.loads(candidate)
+        except json.JSONDecodeError:
+            return None
+
+    if isinstance(raw_events, dict):
+        raw_items = [raw_events]
+    elif isinstance(raw_events, list):
+        raw_items = raw_events
+    else:
+        return None
+
+    normalized_events: List[Dict[str, str]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    allowed_types = set(SECOND_BRAIN_SELECT_FIELD_LABELS.get("sb_calendar_type", ()))
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+        event_date = normalize_iso_date(item.get("date"))
+        if event_date is None:
+            continue
+        event_time = normalize_calendar_time(item.get("time"))
+        event_type = str(item.get("type") or "Termin").strip() or "Termin"
+        if event_type not in allowed_types:
+            event_type = "Termin"
+        event_title = str(item.get("title") or event_type).strip()[:120] or event_type
+        event_reason = str(item.get("reason") or "").strip()[:180]
+        dedupe_key = (event_date, event_time or "", event_type, event_title.lower())
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+
+        normalized_event = {
+            "date": event_date,
+            "type": event_type,
+            "title": event_title,
+        }
+        if event_time:
+            normalized_event["time"] = event_time
+        if event_reason:
+            normalized_event["reason"] = event_reason
+        normalized_events.append(normalized_event)
+        if len(normalized_events) >= 10:
+            break
+
+    if not normalized_events:
+        return None
+    return json.dumps(normalized_events, ensure_ascii=False, separators=(",", ":"))
+
+
 def normalize_custom_field_value(definition: CustomFieldDefinition, value: Any) -> Any:
     """Normalisiert einen KI-Wert gemäß dem erwarteten Paperless-Datentyp."""
 
     if value in (None, "", []):
         return None
 
+    if definition.key == "sb_calendar_events":
+        return normalize_calendar_events_value(value)
     if definition.data_type == "string":
         normalized = str(value).strip()
         return normalized or None
@@ -2328,6 +2551,180 @@ def infer_secondbrain_confidence_label(
     return "Ungeprüft"
 
 
+def infer_calendar_event_type(context_text: str) -> Optional[str]:
+    """Erkennt die grobe Art eines kalenderrelevanten Datums aus Schlagworten."""
+
+    for label, keywords in CALENDAR_EVENT_KEYWORD_RULES:
+        if any(keyword in context_text for keyword in keywords):
+            return label
+    return None
+
+
+def _normalize_calendar_match_to_iso(match: re.Match[str], *, german_date: bool) -> Optional[str]:
+    """Normalisiert ein deutsches oder ISO-Datum aus einem Regex-Match.
+
+    Beispiel:
+    - `15.08.2026` -> `2026-08-15`
+    - `2026-08-15` -> `2026-08-15`
+    """
+
+    try:
+        if german_date:
+            day = int(match.group(1))
+            month = int(match.group(2))
+            year = int(match.group(3))
+        else:
+            year = int(match.group(1))
+            month = int(match.group(2))
+            day = int(match.group(3))
+        return dt.date(year, month, day).isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_calendar_time_near(text: str, start: int, end: int) -> Optional[str]:
+    """Sucht eine Uhrzeit direkt um das gefundene Datum herum."""
+
+    window = text[end : min(len(text), end + 120)]
+    match = CALENDAR_TIME_PATTERN.search(window)
+    if match is None:
+        return None
+    try:
+        hour = int(match.group(1))
+        minute = int(match.group(2))
+    except (TypeError, ValueError):
+        return None
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _calendar_event_type_near_date(text: str, start: int, end: int) -> Optional[str]:
+    """Prüft, welcher Termin-/Fristkontext nah genug an einem Datum steht.
+
+    Warum die Nähe zählt:
+    - Dokumente enthalten oft viele Daten wie Ausstellungsdatum oder
+      Abrechnungszeiträume.
+    - Für Kalenderfelder wollen wir nur Daten, die im Textumfeld explizit nach
+      Termin, Einladung, Frist, Verhandlung oder Zahlung klingen.
+    """
+
+    window_start = max(0, start - 180)
+    window = text[window_start : min(len(text), end + 180)].lower()
+    date_center = ((start - window_start) + (end - window_start)) / 2
+    best_match: Optional[tuple[float, int, str]] = None
+    for priority, (label, keywords) in enumerate(CALENDAR_EVENT_KEYWORD_RULES):
+        for keyword in keywords:
+            search_from = 0
+            while True:
+                keyword_index = window.find(keyword, search_from)
+                if keyword_index < 0:
+                    break
+                keyword_center = keyword_index + (len(keyword) / 2)
+                distance = abs(keyword_center - date_center)
+                candidate = (distance, priority, label)
+                if best_match is None or candidate < best_match:
+                    best_match = candidate
+                search_from = keyword_index + 1
+    return best_match[2] if best_match is not None else None
+
+
+def infer_calendar_event_from_text(
+    *,
+    document: Dict[str, Any],
+    prediction: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Extrahiert einen vorsichtigen Kalender-Fallback aus Dokumenttext.
+
+    Rückgabe:
+    - `{}` wenn kein kalenderrelevanter Kontext gefunden wurde
+    - sonst wichtigstes Ereignis unter `date`, optional `time`, `type`, `title`
+      plus `events` als Liste aller gefundenen Ereignisse
+
+    Beispiel:
+    - Input: "Termin zur mündlichen Verhandlung am 15.08.2026 um 09:30 Uhr"
+    - Output: `{"date": "2026-08-15", "events": [{"date": "2026-08-15", ...}]}`
+    """
+
+    text_parts = [
+        str(part).strip()
+        for part in (
+            document.get("title"),
+            str(document.get("content") or "")[:6000],
+            prediction.get("summary"),
+            prediction.get("rationale"),
+        )
+        if str(part or "").strip()
+    ]
+    if not text_parts:
+        return {}
+
+    if not any(infer_calendar_event_type(part.lower()) for part in text_parts):
+        return {}
+
+    candidates: List[tuple[int, str, Optional[str], str]] = []
+    for part_index, text_part in enumerate(text_parts):
+        for pattern, german_date in (
+            (CALENDAR_GERMAN_DATE_PATTERN, True),
+            (CALENDAR_ISO_DATE_PATTERN, False),
+        ):
+            for match in pattern.finditer(text_part):
+                iso_date = _normalize_calendar_match_to_iso(match, german_date=german_date)
+                if iso_date is None:
+                    continue
+                event_type = _calendar_event_type_near_date(text_part, match.start(), match.end())
+                if event_type is None:
+                    continue
+                candidates.append(
+                    (
+                        (part_index * 100000) + match.start(),
+                        iso_date,
+                        _extract_calendar_time_near(text_part, match.start(), match.end()),
+                        event_type,
+                    )
+                )
+
+    if not candidates:
+        return {}
+
+    title = str(document.get("title") or prediction.get("summary") or "Kalenderrelevantes Dokument").strip()
+    events: List[Dict[str, str]] = []
+    for _, event_date, event_time, event_type in sorted(candidates, key=lambda item: item[0]):
+        if title:
+            calendar_title = f"{event_type}: {title}"[:120]
+        else:
+            calendar_title = event_type
+        event = {
+            "date": event_date,
+            "type": event_type,
+            "title": calendar_title,
+            "reason": "Kalenderrelevantes Datum in Termin-, Frist- oder Einladungskontext erkannt.",
+        }
+        if event_time:
+            event["time"] = event_time
+        events.append(event)
+
+    normalized_events_text = normalize_calendar_events_value(events)
+    if normalized_events_text is None:
+        return {}
+    normalized_events = json.loads(normalized_events_text)
+    first_event = normalized_events[0]
+    event_date = str(first_event.get("date") or "")
+    event_time = first_event.get("time")
+    event_type = str(first_event.get("type") or "Termin")
+    title = str(document.get("title") or prediction.get("summary") or "Kalenderrelevantes Dokument").strip()
+    if title:
+        calendar_title = f"{event_type}: {title}"[:120]
+    else:
+        calendar_title = event_type
+
+    return {
+        "date": event_date,
+        "time": event_time,
+        "type": event_type,
+        "title": calendar_title,
+        "events": normalized_events,
+    }
+
+
 def build_secondbrain_rule_based_suggestions(
     *,
     document: Dict[str, Any],
@@ -2386,8 +2783,53 @@ def build_secondbrain_rule_based_suggestions(
         source="rules",
     )
 
+    calendar_event = infer_calendar_event_from_text(document=document, prediction=prediction)
+    if calendar_event:
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_calendar_date",
+            value=calendar_event.get("date"),
+            confidence=0.86,
+            reason="Kalenderrelevantes Datum in Termin-, Einladungs-, Frist- oder Verhandlungskontext erkannt.",
+            source="rules",
+        )
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_calendar_time",
+            value=calendar_event.get("time"),
+            confidence=0.80,
+            reason="Uhrzeit im Umfeld des kalenderrelevanten Datums erkannt.",
+            source="rules",
+        )
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_calendar_type",
+            value=calendar_event.get("type") or "Sonstiges",
+            confidence=0.84,
+            reason="Art des Kalendereintrags aus Kontext-Schlagworten abgeleitet.",
+            source="rules",
+        )
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_calendar_title",
+            value=calendar_event.get("title"),
+            confidence=0.78,
+            reason="Kurzer Titel für einen möglichen SecondBrain-Kalendereintrag gebildet.",
+            source="rules",
+        )
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_calendar_events",
+            value=normalize_calendar_events_value(calendar_event.get("events")),
+            confidence=0.86,
+            reason="Alle erkannten kalenderrelevanten Termine und Fristen als JSON-Liste gesammelt.",
+            source="rules",
+        )
+
     requires_action = False
     if any(keyword in context_text for keyword in ("frist", "fällig", "faellig", "mah", "kuendigung", "kündigung")):
+        requires_action = True
+    if calendar_event:
         requires_action = True
     set_secondbrain_suggestion_if_missing(
         suggestions,

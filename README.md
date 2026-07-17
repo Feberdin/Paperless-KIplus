@@ -328,6 +328,11 @@ Beträge:
 Datumsfelder:
 
 - `sb_due_date`
+- `sb_calendar_date`
+- `sb_calendar_time`
+- `sb_calendar_type`
+- `sb_calendar_title`
+- `sb_calendar_events`
 - `sb_document_date`
 - `sb_period_start`
 - `sb_period_end`
@@ -370,6 +375,12 @@ Verknüpfungen:
 
 - Die KI kann optional ein strukturiertes Objekt `secondbrain_custom_fields`
   liefern. Jeder Feldvorschlag besteht aus `value`, `confidence` und `reason`.
+- Bei kalenderrelevanten Dokumenten sucht die KI explizit nach Terminen,
+  Einladungen, Fristen, Behörden-/Gerichtsterminen, medizinischen Terminen,
+  Meetings, Schulungen, Veranstaltungen und Zahlungsfristen. Alle erkannten
+  Ereignisse landen als kompakte JSON-Liste in `sb_calendar_events`; der
+  wichtigste Kalenderwert landet zusätzlich in `sb_calendar_date`. Optional
+  werden `sb_calendar_time`, `sb_calendar_type` und `sb_calendar_title` gesetzt.
 - Werte unterhalb `secondbrain_custom_fields_confidence_threshold` werden nicht
   nach Paperless geschrieben.
 - Datumswerte werden auf `YYYY-MM-DD` normalisiert.
@@ -571,6 +582,28 @@ Beispiel einer KI-Antwort mit zusätzlichen SecondBrain-Feldern:
       "value": "2026-05-15",
       "confidence": 0.84,
       "reason": "Zahlungsziel im Dokument erkannt."
+    },
+    "sb_calendar_date": {
+      "value": "2026-05-15",
+      "confidence": 0.84,
+      "reason": "Zahlungsziel ist als mögliche Kalendererinnerung relevant."
+    },
+    "sb_calendar_type": {
+      "value": "Zahlung",
+      "confidence": 0.82,
+      "reason": "Datum bezieht sich auf eine Zahlungsfrist."
+    },
+    "sb_calendar_events": {
+      "value": [
+        {
+          "date": "2026-05-15",
+          "type": "Zahlung",
+          "title": "Zahlung: Rechnung Muster GmbH",
+          "reason": "Zahlungsfrist im Dokument erkannt."
+        }
+      ],
+      "confidence": 0.84,
+      "reason": "Alle kalenderrelevanten Ereignisse gesammelt."
     }
   }
 }
@@ -582,6 +615,9 @@ entstehen:
 - `sb_document_category` -> Select-Option-ID aus Paperless
 - `sb_amount_total` -> `EUR123.45`
 - `sb_due_date` -> `2026-05-15`
+- `sb_calendar_date` -> `2026-05-15`
+- `sb_calendar_type` -> Select-Option-ID aus Paperless
+- `sb_calendar_events` -> JSON-String mit allen Kalenderkandidaten
 
 ### Standard-Katalog (Vertrag / Lohnabrechnung)
 

@@ -12,6 +12,7 @@ How to run:
 
 from __future__ import annotations
 
+import json
 import sys
 import types
 import unittest
@@ -36,6 +37,7 @@ from paperless_ai_sorter import (
     build_patch_payload,
     collect_populated_secondbrain_fields,
     build_secondbrain_custom_fields_payload,
+    build_secondbrain_sync_report,
     build_secondbrain_suggestions,
     build_select_option_lookup,
     filter_unchanged_patch_fields,
@@ -100,6 +102,63 @@ class CustomFieldTests(unittest.TestCase):
                 "id": 203,
                 "name": "sb_due_date",
                 "data_type": "date",
+                "extra_data": {},
+                "select_options_by_label": {},
+            },
+            "sb_calendar_date": {
+                "id": 214,
+                "name": "sb_calendar_date",
+                "data_type": "date",
+                "extra_data": {},
+                "select_options_by_label": {},
+            },
+            "sb_calendar_time": {
+                "id": 215,
+                "name": "sb_calendar_time",
+                "data_type": "string",
+                "extra_data": {},
+                "select_options_by_label": {},
+            },
+            "sb_calendar_type": {
+                "id": 216,
+                "name": "sb_calendar_type",
+                "data_type": "select",
+                "extra_data": {
+                    "select_options": [
+                        {"id": 51, "label": "Termin"},
+                        {"id": 52, "label": "Einladung"},
+                        {"id": 53, "label": "Frist"},
+                        {"id": 54, "label": "Gericht"},
+                        {"id": 55, "label": "Zahlung"},
+                        {"id": 56, "label": "Erinnerung"},
+                        {"id": 57, "label": "Sonstiges"},
+                    ]
+                },
+                "select_options_by_label": build_select_option_lookup(
+                    {
+                        "select_options": [
+                            {"id": 51, "label": "Termin"},
+                            {"id": 52, "label": "Einladung"},
+                            {"id": 53, "label": "Frist"},
+                            {"id": 54, "label": "Gericht"},
+                            {"id": 55, "label": "Zahlung"},
+                            {"id": 56, "label": "Erinnerung"},
+                            {"id": 57, "label": "Sonstiges"},
+                        ]
+                    }
+                ),
+            },
+            "sb_calendar_title": {
+                "id": 217,
+                "name": "sb_calendar_title",
+                "data_type": "string",
+                "extra_data": {},
+                "select_options_by_label": {},
+            },
+            "sb_calendar_events": {
+                "id": 218,
+                "name": "sb_calendar_events",
+                "data_type": "string",
                 "extra_data": {},
                 "select_options_by_label": {},
             },
@@ -523,6 +582,156 @@ class CustomFieldTests(unittest.TestCase):
         self.assertEqual(suggestions["sb_provider_name"].value, "Kita Musterstadt")
         self.assertEqual(suggestions["sb_amount_total"].value, "123.45")
         self.assertEqual(suggestions["sb_action_status"].value, "In Prüfung")
+
+    def test_ai_calendar_fields_are_written_to_secondbrain_custom_fields(self) -> None:
+        values, empty_ids, remove_ids = build_secondbrain_custom_fields_payload(
+            document={"title": "Einladung Elternabend", "content": "Bitte kommen Sie zum Elternabend.", "custom_fields": []},
+            prediction={
+                "document_type": "Einladung",
+                "correspondent": "Schule",
+                "summary": "Einladung mit konkretem Termin.",
+                "confidence": 0.93,
+                "secondbrain_custom_fields": {
+                    "sb_calendar_date": {
+                        "value": "2026-09-12",
+                        "confidence": 0.95,
+                        "reason": "Termin der Einladung klar genannt.",
+                    },
+                    "sb_calendar_time": {
+                        "value": "18:30",
+                        "confidence": 0.90,
+                        "reason": "Uhrzeit klar genannt.",
+                    },
+                    "sb_calendar_type": {
+                        "value": "Einladung",
+                        "confidence": 0.91,
+                        "reason": "Dokument ist als Einladung formuliert.",
+                    },
+                    "sb_calendar_title": {
+                        "value": "Elternabend Schule",
+                        "confidence": 0.88,
+                        "reason": "Kurzer Kalendertitel aus Dokumenttitel.",
+                    },
+                    "sb_calendar_events": {
+                        "value": [
+                            {
+                                "date": "2026-09-12",
+                                "time": "18:30",
+                                "type": "Einladung",
+                                "title": "Elternabend Schule",
+                                "reason": "Einladungstermin klar genannt.",
+                            },
+                            {
+                                "date": "2026-09-19",
+                                "type": "Frist",
+                                "title": "Rückmeldung Elternabend",
+                                "reason": "Rückmeldefrist klar genannt.",
+                            },
+                        ],
+                        "confidence": 0.92,
+                        "reason": "Alle kalenderrelevanten Ereignisse gesammelt.",
+                    },
+                },
+            },
+            tax_enrichment=None,
+            custom_fields_map=self._secondbrain_field_map(),
+            overwrite_existing=False,
+            attach_empty_when_unknown=False,
+            confidence_threshold=0.70,
+            log_missing_fields=True,
+            custom_field_id_to_definition={},
+            sync_report=build_secondbrain_sync_report(),
+        )
+
+        self.assertEqual(values[214], "2026-09-12")
+        self.assertEqual(values[215], "18:30")
+        self.assertEqual(values[216], 52)
+        self.assertEqual(values[217], "Elternabend Schule")
+        calendar_events = json.loads(values[218])
+        self.assertEqual(len(calendar_events), 2)
+        self.assertEqual(calendar_events[0]["date"], "2026-09-12")
+        self.assertEqual(calendar_events[0]["time"], "18:30")
+        self.assertEqual(calendar_events[1]["date"], "2026-09-19")
+        self.assertEqual(empty_ids, [])
+        self.assertEqual(remove_ids, [])
+
+    def test_rule_based_calendar_detection_finds_court_hearing(self) -> None:
+        suggestions = build_secondbrain_suggestions(
+            document={
+                "title": "Ladung Amtsgericht",
+                "content": (
+                    "Sie werden geladen zum Termin zur mündlichen Verhandlung "
+                    "am 15.08.2026 um 09:30 Uhr im Amtsgericht Musterstadt."
+                ),
+                "created": "2026-07-01",
+            },
+            prediction={
+                "document_type": "Schreiben",
+                "correspondent": "Amtsgericht Musterstadt",
+                "summary": "Ladung zu einer Gerichtsverhandlung.",
+                "rationale": "Gericht und Verhandlungstermin sind erkennbar.",
+                "confidence": 0.88,
+            },
+            tax_enrichment=None,
+        )
+
+        self.assertEqual(suggestions["sb_calendar_date"].value, "2026-08-15")
+        self.assertEqual(suggestions["sb_calendar_time"].value, "09:30")
+        self.assertEqual(suggestions["sb_calendar_type"].value, "Gericht")
+        self.assertTrue(suggestions["sb_requires_action"].value)
+        self.assertEqual(suggestions["sb_action_status"].value, "Offen")
+
+    def test_rule_based_calendar_detection_collects_general_events(self) -> None:
+        suggestions = build_secondbrain_suggestions(
+            document={
+                "title": "Terminbestätigung Praxis",
+                "content": (
+                    "Ihr Arzttermin findet am 05.09.2026 um 10:15 Uhr statt. "
+                    "Bitte senden Sie die Rückmeldung bis 01.09.2026."
+                ),
+                "created": "2026-08-20",
+            },
+            prediction={
+                "document_type": "Terminbestätigung",
+                "correspondent": "Praxis Musterstadt",
+                "summary": "Terminbestätigung mit Rückmeldefrist.",
+                "rationale": "Arzttermin und Rückmeldefrist sind im Text enthalten.",
+                "confidence": 0.90,
+            },
+            tax_enrichment=None,
+        )
+
+        self.assertEqual(suggestions["sb_calendar_date"].value, "2026-09-05")
+        self.assertEqual(suggestions["sb_calendar_time"].value, "10:15")
+        self.assertEqual(suggestions["sb_calendar_type"].value, "Termin")
+        calendar_events = json.loads(suggestions["sb_calendar_events"].value)
+        self.assertEqual(
+            [(event["date"], event.get("time"), event["type"]) for event in calendar_events],
+            [
+                ("2026-09-05", "10:15", "Termin"),
+                ("2026-09-01", None, "Frist"),
+            ],
+        )
+
+    def test_rule_based_calendar_detection_ignores_plain_document_date(self) -> None:
+        suggestions = build_secondbrain_suggestions(
+            document={
+                "title": "Allgemeines Schreiben",
+                "content": "Dieses Schreiben wurde am 15.08.2026 erstellt und enthält nur Informationen.",
+                "created": "2026-08-15",
+            },
+            prediction={
+                "document_type": "Schreiben",
+                "correspondent": "Muster GmbH",
+                "summary": "Informationsschreiben ohne Termin oder Frist.",
+                "rationale": "Kein Kalenderbezug im Inhalt.",
+                "confidence": 0.82,
+            },
+            tax_enrichment=None,
+        )
+
+        self.assertNotIn("sb_calendar_date", suggestions)
+        self.assertEqual(suggestions["sb_document_date"].value, "2026-08-15")
 
     def test_build_patch_payload_includes_secondbrain_values(self) -> None:
         client = _FakeClient()

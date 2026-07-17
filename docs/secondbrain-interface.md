@@ -185,6 +185,11 @@ Beispiel:
 ### Datumsfelder
 
 - `sb_due_date` (`date`)
+- `sb_calendar_date` (`date`)
+- `sb_calendar_time` (`string`)
+- `sb_calendar_type` (`select`)
+- `sb_calendar_title` (`string`)
+- `sb_calendar_events` (`string`, kompakter JSON-Array-String)
 - `sb_document_date` (`date`)
 - `sb_period_start` (`date`)
 - `sb_period_end` (`date`)
@@ -267,7 +272,10 @@ Beispiel:
 
 ```json
 {
-  "sb_due_date": "2026-05-15"
+  "sb_due_date": "2026-05-15",
+  "sb_calendar_date": "2026-08-15",
+  "sb_calendar_time": "09:30",
+  "sb_calendar_events": "[{\"date\":\"2026-08-15\",\"time\":\"09:30\",\"type\":\"Gericht\",\"title\":\"Gericht: Ladung Amtsgericht\"}]"
 }
 ```
 
@@ -338,6 +346,9 @@ Diese Felder sind für die Consumer-Logik besonders wichtig:
 - `sb_source_quality`
 - `sb_requires_action`
 - `sb_action_status`
+- `sb_calendar_date`
+- `sb_calendar_type`
+- `sb_calendar_events`
 
 Empfohlene Interpretation:
 
@@ -351,6 +362,19 @@ Empfohlene Interpretation:
   - Qualität und Herkunft der Quelle
 - `sb_requires_action = true`
   - Dokument erzeugt To-do, Review oder Fristbezug
+- `sb_calendar_date`
+  - explizites Datum, das `SecondBrain` als Kalender- oder Reminder-Kandidat
+    übernehmen kann
+- `sb_calendar_time`
+  - optionale Uhrzeit zu `sb_calendar_date`; fehlt, wenn im Dokument keine
+    eindeutige Uhrzeit erkennbar war
+- `sb_calendar_type`
+  - fachliche Art des Kalendereintrags, z. B. Gericht, Einladung oder Frist
+- `sb_calendar_title`
+  - kurzer Anzeigename für den möglichen Kalendereintrag
+- `sb_calendar_events`
+  - JSON-Liste aller erkannten Kalenderkandidaten; `SecondBrain` sollte daraus
+    mehrere Kalender- oder Reminder-Einträge erzeugen können
 
 ### Wichtiger fachlicher Hinweis
 
@@ -391,6 +415,16 @@ IDs verlassen.
 - Immobilie
 - Garantie
 - Kommunikation
+- Sonstiges
+
+### `sb_calendar_type`
+
+- Termin
+- Einladung
+- Frist
+- Gericht
+- Zahlung
+- Erinnerung
 - Sonstiges
 
 ### `sb_life_area`
@@ -568,6 +602,9 @@ SecondBrain-Felder:
 - sb_case_reference: ...
 - sb_amount_total: ...
 - sb_due_date: ...
+- sb_calendar_date: ...
+- sb_calendar_type: ...
+- sb_calendar_events: ...
 - sb_requires_action: ...
 - sb_action_status: ...
 - sb_confidence: ...
@@ -630,6 +667,28 @@ Metadaten neu gemischt werden.
       "amount": 123.45
     },
     "due_date": "2026-05-15",
+    "calendar": {
+      "date": "2026-08-15",
+      "time": "09:30",
+      "type": {
+        "raw": 54,
+        "label": "Gericht"
+      },
+      "title": "Gericht: Ladung Amtsgericht",
+      "events": [
+        {
+          "date": "2026-08-15",
+          "time": "09:30",
+          "type": "Gericht",
+          "title": "Gericht: Ladung Amtsgericht"
+        },
+        {
+          "date": "2026-09-01",
+          "type": "Frist",
+          "title": "Frist: Rückmeldung"
+        }
+      ]
+    },
     "requires_action": true,
     "action_status": {
       "raw": 31,

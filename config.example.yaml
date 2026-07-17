@@ -156,6 +156,13 @@ create_missing_custom_fields: true
 # Optional: Bereits in Paperless angelegte `sb_`-Custom-Fields für SecondBrain
 # aus der KI-Klassifikation befüllen. Diese Felder werden NICHT automatisch
 # angelegt, sondern nur genutzt, wenn sie in Paperless bereits vorhanden sind.
+# Für Kalenderübergaben an SecondBrain sind besonders relevant:
+# - sb_calendar_date (date): Termin-, Einladungs-, Frist- oder Verhandlungsdatum
+# - sb_calendar_time (string): optionale Uhrzeit im Format HH:MM
+# - sb_calendar_type (select): Termin, Einladung, Frist, Gericht, Zahlung,
+#   Erinnerung oder Sonstiges
+# - sb_calendar_title (string): kurzer Titel für den Kalendereintrag
+# - sb_calendar_events (string): kompakte JSON-Liste aller relevanten Termine
 enable_secondbrain_custom_fields: false
 
 # Bestehende `sb_`-Feldwerte standardmäßig NICHT überschreiben.
