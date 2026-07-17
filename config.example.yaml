@@ -162,6 +162,7 @@ create_missing_custom_fields: true
 # - sb_calendar_type (select): Termin, Einladung, Frist, Gericht, Zahlung,
 #   Erinnerung oder Sonstiges
 # - sb_calendar_title (string): kurzer Titel für den Kalendereintrag
+# - sb_calendar_location (string): Ort, Raum oder Adresse des Kalendereintrags
 # - sb_calendar_events (string): kompakte JSON-Liste aller relevanten Termine
 enable_secondbrain_custom_fields: false
 

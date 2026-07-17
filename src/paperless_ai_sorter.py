@@ -42,13 +42,36 @@ SELECT_OPTION_ID_SANITIZE_PATTERN = re.compile(r"[^a-z0-9]+")
 RETRY_AFTER_SECONDS_PATTERN = re.compile(r"Please try again in\s+([0-9]+(?:\.[0-9]+)?)s", re.IGNORECASE)
 CALENDAR_GERMAN_DATE_PATTERN = re.compile(r"\b([0-3]?\d)\.([01]?\d)\.((?:19|20)\d{2})\b")
 CALENDAR_COMPACT_GERMAN_DATE_PATTERN = re.compile(r"(?<!\d)([0-3]\d)([01]\d)((?:19|20)\d{2})(?!\d)")
+CALENDAR_GERMAN_TEXT_DATE_PATTERN = re.compile(
+    r"\b([0-3]?\d)\.\s*"
+    r"(januar|februar|märz|maerz|april|mai|juni|juli|august|september|oktober|november|dezember)"
+    r"\s+((?:19|20)\d{2})\b",
+    re.IGNORECASE,
+)
 CALENDAR_ISO_DATE_PATTERN = re.compile(r"\b((?:19|20)\d{2})-([01]?\d)-([0-3]?\d)\b")
 CALENDAR_TIME_PATTERN = re.compile(r"\b(?:um\s*)?([01]?\d|2[0-3])[:.]([0-5]\d)\s*(?:uhr)?\b", re.IGNORECASE)
+CALENDAR_KEYWORD_BOUNDARY_CHARS = "a-z0-9äöüß"
+GERMAN_MONTH_NAME_TO_NUMBER: Dict[str, int] = {
+    "januar": 1,
+    "februar": 2,
+    "märz": 3,
+    "maerz": 3,
+    "april": 4,
+    "mai": 5,
+    "juni": 6,
+    "juli": 7,
+    "august": 8,
+    "september": 9,
+    "oktober": 10,
+    "november": 11,
+    "dezember": 12,
+}
 CALENDAR_FIELD_KEYS: tuple[str, ...] = (
     "sb_calendar_date",
     "sb_calendar_time",
     "sb_calendar_type",
     "sb_calendar_title",
+    "sb_calendar_location",
     "sb_calendar_events",
 )
 CALENDAR_ACTION_CONTEXT_KEYWORDS: tuple[str, ...] = (
@@ -87,6 +110,15 @@ CALENDAR_BILLING_CONTEXT_NEGATIVE_KEYWORDS: tuple[str, ...] = (
     "betrag",
     "zahlbetrag",
     "kostenfestsetzung",
+)
+CALENDAR_LOCATION_LABEL_PATTERN = re.compile(
+    r"(?:\b(?:ort|adresse|anschrift|veranstaltungsort)|[o0©]rt)\s*[:\-]?\s*(.{3,180})",
+    re.IGNORECASE,
+)
+CALENDAR_LOCATION_LEADING_NOISE_PATTERN = re.compile(r"^\s*(?:uhr|ahr)\b\s*", re.IGNORECASE)
+CALENDAR_LOCATION_STOP_PATTERN = re.compile(
+    r"\b(?:ich|ihr|ihre|wir|bitte|zwecks|tel\.?|telefon|datum|zeit|uhrzeit|rückantwort|rueckantwort)\b",
+    re.IGNORECASE,
 )
 RUN_STATE_VERSION = 1
 RUN_STATE_FILE_DEFAULT = "paperless_kiplus_run_state.json"
@@ -133,8 +165,6 @@ CALENDAR_EVENT_KEYWORD_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         (
             "einladung",
             "eingeladen",
-            "terminbestätigung",
-            "terminbestaetigung",
             "besprechung",
             "veranstaltung",
             "webinar",
@@ -172,6 +202,8 @@ CALENDAR_EVENT_KEYWORD_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "Termin",
         (
             "termin",
+            "terminbestätigung",
+            "terminbestaetigung",
             "sprechstunde",
             "beratung",
             "untersuchung",
@@ -554,6 +586,11 @@ SECOND_BRAIN_CUSTOM_FIELD_DEFINITIONS: Dict[str, CustomFieldDefinition] = {
         "sb_calendar_title",
         "string",
         "Kurzer, kalendergeeigneter Titel ohne lange OCR-Auszüge.",
+    ),
+    "sb_calendar_location": _make_secondbrain_definition(
+        "sb_calendar_location",
+        "string",
+        "Ort oder Adresse eines kalenderrelevanten Termins, wenn eindeutig erkennbar.",
     ),
     "sb_calendar_events": _make_secondbrain_definition(
         "sb_calendar_events",
@@ -1802,11 +1839,12 @@ class AiClassifier:
                 "Termine, Einladungen, Fristen, Behörden- oder Gerichtstermine, medizinische Termine, "
                 "Meetings, Schulungen, Veranstaltungen, Zahlungsfristen oder konkrete Wiedervorlagen. "
                 "Wenn ja, setze `sb_calendar_events` als kompakten JSON-Array-String mit Objekten "
-                "im Schema `date`, optional `time`, `type`, `title`, `reason`. "
+                "im Schema `date`, optional `time`, `type`, `title`, `location`, `reason`. "
                 "Nutze pro Ereignis `date` im Format YYYY-MM-DD, `time` im Format HH:MM und "
                 "`type` als eines der Labels aus `sb_calendar_type`, wenn möglich. "
+                "`location` enthält Ort, Raum oder Adresse, wenn eindeutig erkennbar. "
                 "Setze zusätzlich `sb_calendar_date`; wenn eindeutig vorhanden auch "
-                "`sb_calendar_time`, `sb_calendar_type` und einen kurzen `sb_calendar_title` "
+                "`sb_calendar_time`, `sb_calendar_type`, `sb_calendar_location` und einen kurzen `sb_calendar_title` "
                 "für das wichtigste oder zeitlich nächste Ereignis. "
                 "`sb_calendar_date` ist nicht das Dokumentdatum und nicht der Leistungszeitraum; "
                 "nutze es nur, wenn SecondBrain daraus sinnvoll einen Kalender- oder "
@@ -2148,6 +2186,18 @@ def normalize_calendar_time(value: Any) -> Optional[str]:
     return f"{hour:02d}:{minute:02d}"
 
 
+def normalize_calendar_location(value: Any) -> Optional[str]:
+    """Normalisiert Orte/Adressen für Kalenderfelder auf eine kurze Zeile."""
+
+    if value in (None, ""):
+        return None
+    normalized = re.sub(r"\s+", " ", str(value).strip())
+    normalized = normalized.strip(" ,;:-|")
+    if len(normalized) < 3:
+        return None
+    return normalized[:160]
+
+
 def normalize_calendar_events_value(value: Any) -> Optional[str]:
     """Normalisiert alle Kalenderereignisse in einen kompakten JSON-String.
 
@@ -2179,7 +2229,7 @@ def normalize_calendar_events_value(value: Any) -> Optional[str]:
         return None
 
     normalized_events: List[Dict[str, str]] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    event_index_by_key: Dict[tuple[str, str, str], int] = {}
     allowed_types = set(SECOND_BRAIN_SELECT_FIELD_LABELS.get("sb_calendar_type", ()))
     for item in raw_items:
         if not isinstance(item, dict):
@@ -2192,12 +2242,8 @@ def normalize_calendar_events_value(value: Any) -> Optional[str]:
         if event_type not in allowed_types:
             event_type = "Termin"
         event_title = str(item.get("title") or event_type).strip()[:120] or event_type
+        event_location = normalize_calendar_location(item.get("location"))
         event_reason = str(item.get("reason") or "").strip()[:180]
-        dedupe_key = (event_date, event_time or "", event_type, event_title.lower())
-        if dedupe_key in seen:
-            continue
-        seen.add(dedupe_key)
-
         normalized_event = {
             "date": event_date,
             "type": event_type,
@@ -2205,8 +2251,22 @@ def normalize_calendar_events_value(value: Any) -> Optional[str]:
         }
         if event_time:
             normalized_event["time"] = event_time
+        if event_location:
+            normalized_event["location"] = event_location
         if event_reason:
             normalized_event["reason"] = event_reason
+        dedupe_key = (event_date, event_type, event_title.lower())
+        existing_index = event_index_by_key.get(dedupe_key)
+        if existing_index is not None:
+            existing_event = normalized_events[existing_index]
+            if event_time and not existing_event.get("time"):
+                existing_event["time"] = event_time
+            if event_location and not existing_event.get("location"):
+                existing_event["location"] = event_location
+            if event_reason and not existing_event.get("reason"):
+                existing_event["reason"] = event_reason
+            continue
+        event_index_by_key[dedupe_key] = len(normalized_events)
         normalized_events.append(normalized_event)
         if len(normalized_events) >= 10:
             break
@@ -2672,9 +2732,36 @@ def infer_calendar_event_type(context_text: str) -> Optional[str]:
     """Erkennt die grobe Art eines kalenderrelevanten Datums aus Schlagworten."""
 
     for label, keywords in CALENDAR_EVENT_KEYWORD_RULES:
-        if any(keyword in context_text for keyword in keywords):
+        if any(contains_calendar_keyword(context_text, keyword) for keyword in keywords):
             return label
     return None
+
+
+def contains_calendar_keyword(text: str, keyword: str) -> bool:
+    """Sucht Kalender-Schlagworte nur als eigene Wörter oder Phrasen.
+
+    Warum keine einfache Teilstring-Suche reicht:
+    - `ladung` darf eine gerichtliche Ladung erkennen.
+    - Dasselbe `ladung` darf aber nicht innerhalb von `Einladung` feuern,
+      sonst werden private Einladungen fälschlich als Gerichtstermin markiert.
+    """
+
+    normalized_text = str(text or "").lower()
+    normalized_keyword = str(keyword or "").strip().lower()
+    if not normalized_text or not normalized_keyword:
+        return False
+    pattern = (
+        rf"(?<![{CALENDAR_KEYWORD_BOUNDARY_CHARS}])"
+        rf"{re.escape(normalized_keyword)}"
+        rf"(?![{CALENDAR_KEYWORD_BOUNDARY_CHARS}])"
+    )
+    return re.search(pattern, normalized_text, flags=re.IGNORECASE) is not None
+
+
+def contains_any_calendar_keyword(text: str, keywords: Iterable[str]) -> bool:
+    """Prüft eine Keyword-Liste mit der kalendergerechten Wortgrenzenlogik."""
+
+    return any(contains_calendar_keyword(text, keyword) for keyword in keywords)
 
 
 def _normalize_calendar_match_to_iso(match: re.Match[str], *, german_date: bool) -> Optional[str]:
@@ -2699,10 +2786,25 @@ def _normalize_calendar_match_to_iso(match: re.Match[str], *, german_date: bool)
         return None
 
 
+def _normalize_calendar_text_match_to_iso(match: re.Match[str]) -> Optional[str]:
+    """Normalisiert deutsche Textdaten wie `4. Oktober 2026`."""
+
+    try:
+        day = int(match.group(1))
+        month_name = str(match.group(2) or "").strip().lower()
+        year = int(match.group(3))
+        month = GERMAN_MONTH_NAME_TO_NUMBER.get(month_name)
+        if month is None:
+            return None
+        return dt.date(year, month, day).isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
 def _extract_calendar_time_near(text: str, start: int, end: int) -> Optional[str]:
     """Sucht eine Uhrzeit direkt um das gefundene Datum herum."""
 
-    window = text[end : min(len(text), end + 120)]
+    window = text[end : min(len(text), end + 180)]
     match = CALENDAR_TIME_PATTERN.search(window)
     if match is None:
         return None
@@ -2712,6 +2814,45 @@ def _extract_calendar_time_near(text: str, start: int, end: int) -> Optional[str
     except (TypeError, ValueError):
         return None
     return f"{hour:02d}:{minute:02d}"
+
+
+def _trim_calendar_location_candidate(value: str) -> Optional[str]:
+    """Kürzt einen OCR-Ortskandidaten an typischen Folgesätzen."""
+
+    candidate = str(value or "").strip()
+    if not candidate:
+        return None
+    stop_match = CALENDAR_LOCATION_STOP_PATTERN.search(candidate)
+    if stop_match is not None and stop_match.start() > 0:
+        candidate = candidate[: stop_match.start()]
+    candidate = re.split(r"(?:\n| {2,})", candidate, maxsplit=1)[0]
+    return normalize_calendar_location(candidate)
+
+
+def _extract_calendar_location_near(text: str, start: int, end: int) -> Optional[str]:
+    """Sucht Ort, Raum oder Adresse im Umfeld eines Kalenderdatums."""
+
+    after_date = text[end : min(len(text), end + 420)]
+    time_match = CALENDAR_TIME_PATTERN.search(after_date)
+    if time_match is not None:
+        after_time = after_date[time_match.end() :]
+        after_time = CALENDAR_LOCATION_LEADING_NOISE_PATTERN.sub("", after_time)
+        labeled_after_time = CALENDAR_LOCATION_LABEL_PATTERN.search(after_time)
+        if labeled_after_time is not None:
+            labeled_location = _trim_calendar_location_candidate(labeled_after_time.group(1))
+            if labeled_location:
+                return labeled_location
+        # Tabellen wie "Datum Uhrzeit Anschrift ... 09:00 Richard-Wagner-Platz ..."
+        # haben kein explizites Ortslabel direkt vor dem eigentlichen Ort.
+        fallback_location = _trim_calendar_location_candidate(after_time)
+        if fallback_location:
+            return fallback_location
+
+    window = text[max(0, start - 120) : min(len(text), end + 420)]
+    labeled_match = CALENDAR_LOCATION_LABEL_PATTERN.search(window)
+    if labeled_match is not None:
+        return _trim_calendar_location_candidate(labeled_match.group(1))
+    return None
 
 
 def _calendar_event_type_near_date(text: str, start: int, end: int) -> Optional[str]:
@@ -2727,31 +2868,33 @@ def _calendar_event_type_near_date(text: str, start: int, end: int) -> Optional[
     window_start = max(0, start - 180)
     window = text[window_start : min(len(text), end + 180)].lower()
     date_center = ((start - window_start) + (end - window_start)) / 2
-    best_match: Optional[tuple[float, int, str]] = None
+    best_match: Optional[tuple[int, float, int, str]] = None
     for priority, (label, keywords) in enumerate(CALENDAR_EVENT_KEYWORD_RULES):
         for keyword in keywords:
-            search_from = 0
-            while True:
-                keyword_index = window.find(keyword, search_from)
-                if keyword_index < 0:
-                    break
+            pattern = (
+                rf"(?<![{CALENDAR_KEYWORD_BOUNDARY_CHARS}])"
+                rf"{re.escape(keyword)}"
+                rf"(?![{CALENDAR_KEYWORD_BOUNDARY_CHARS}])"
+            )
+            for keyword_match in re.finditer(pattern, window, flags=re.IGNORECASE):
+                keyword_index = keyword_match.start()
                 keyword_center = keyword_index + (len(keyword) / 2)
                 distance = abs(keyword_center - date_center)
-                candidate = (distance, priority, label)
+                specificity_rank = 0 if label in {"Gericht", "Einladung"} else 1
+                candidate = (specificity_rank, distance, priority, label)
                 if best_match is None or candidate < best_match:
                     best_match = candidate
-                search_from = keyword_index + 1
-    return best_match[2] if best_match is not None else None
+    return best_match[3] if best_match is not None else None
 
 
 def _is_plain_billing_calendar_context(text: str, start: int, end: int) -> bool:
     """Erkennt Datumsstellen, die eher Rechnungsdatum als Kalenderereignis sind."""
 
     window = text[max(0, start - 180) : min(len(text), end + 180)].lower()
-    has_billing_context = any(keyword in window for keyword in CALENDAR_BILLING_CONTEXT_NEGATIVE_KEYWORDS)
+    has_billing_context = contains_any_calendar_keyword(window, CALENDAR_BILLING_CONTEXT_NEGATIVE_KEYWORDS)
     if not has_billing_context:
         return False
-    has_action_context = any(keyword in window for keyword in CALENDAR_ACTION_CONTEXT_KEYWORDS)
+    has_action_context = contains_any_calendar_keyword(window, CALENDAR_ACTION_CONTEXT_KEYWORDS)
     return not has_action_context
 
 
@@ -2759,10 +2902,10 @@ def _calendar_context_supports_ai_event(document: Dict[str, Any], prediction: Di
     """Prüft, ob ein KI-Kalenderwert durch Textkontext plausibel gestützt wird."""
 
     context_text = _collect_document_context_text(document, prediction)
-    has_billing_context = any(keyword in context_text for keyword in CALENDAR_BILLING_CONTEXT_NEGATIVE_KEYWORDS)
+    has_billing_context = contains_any_calendar_keyword(context_text, CALENDAR_BILLING_CONTEXT_NEGATIVE_KEYWORDS)
     if not has_billing_context:
         return True
-    return any(keyword in context_text for keyword in CALENDAR_ACTION_CONTEXT_KEYWORDS)
+    return contains_any_calendar_keyword(context_text, CALENDAR_ACTION_CONTEXT_KEYWORDS)
 
 
 def _drop_calendar_suggestions(suggestions: Dict[str, SecondBrainFieldSuggestion]) -> None:
@@ -2868,7 +3011,7 @@ def infer_calendar_event_from_text(
         str(part).strip()
         for part in (
             document.get("title"),
-            str(document.get("content") or "")[:6000],
+            str(document.get("content") or "")[:20000],
             prediction.get("summary"),
             prediction.get("rationale"),
         )
@@ -2877,30 +3020,52 @@ def infer_calendar_event_from_text(
     if not text_parts:
         return {}
 
-    if not any(infer_calendar_event_type(part.lower()) for part in text_parts):
+    event_context_parts = [
+        str(part).strip()
+        for part in (
+            document.get("title"),
+            str(document.get("content") or "")[:20000],
+            prediction.get("document_type"),
+            prediction.get("correspondent"),
+        )
+        if str(part or "").strip()
+    ]
+    document_event_type = next(
+        (
+            event_type
+            for event_type in (infer_calendar_event_type(part.lower()) for part in event_context_parts)
+            if event_type is not None
+        ),
+        None,
+    )
+    if document_event_type is None:
         return {}
 
-    candidates: List[tuple[int, str, Optional[str], str]] = []
+    candidates: List[tuple[int, str, Optional[str], Optional[str], str]] = []
     for part_index, text_part in enumerate(text_parts):
-        for pattern, german_date in (
-            (CALENDAR_GERMAN_DATE_PATTERN, True),
-            (CALENDAR_COMPACT_GERMAN_DATE_PATTERN, True),
-            (CALENDAR_ISO_DATE_PATTERN, False),
+        for pattern, normalize_match in (
+            (CALENDAR_GERMAN_DATE_PATTERN, lambda match: _normalize_calendar_match_to_iso(match, german_date=True)),
+            (CALENDAR_COMPACT_GERMAN_DATE_PATTERN, lambda match: _normalize_calendar_match_to_iso(match, german_date=True)),
+            (CALENDAR_GERMAN_TEXT_DATE_PATTERN, _normalize_calendar_text_match_to_iso),
+            (CALENDAR_ISO_DATE_PATTERN, lambda match: _normalize_calendar_match_to_iso(match, german_date=False)),
         ):
             for match in pattern.finditer(text_part):
-                iso_date = _normalize_calendar_match_to_iso(match, german_date=german_date)
+                iso_date = normalize_match(match)
                 if iso_date is None:
                     continue
                 if _is_plain_billing_calendar_context(text_part, match.start(), match.end()):
                     continue
                 event_type = _calendar_event_type_near_date(text_part, match.start(), match.end())
                 if event_type is None:
-                    continue
+                    event_type = document_event_type
+                elif event_type == "Termin" and document_event_type in {"Gericht", "Einladung"}:
+                    event_type = document_event_type
                 candidates.append(
                     (
                         (part_index * 100000) + match.start(),
                         iso_date,
                         _extract_calendar_time_near(text_part, match.start(), match.end()),
+                        _extract_calendar_location_near(text_part, match.start(), match.end()),
                         event_type,
                     )
                 )
@@ -2910,15 +3075,13 @@ def infer_calendar_event_from_text(
 
     document_date = normalize_iso_date(prediction.get("document_date") or document.get("created"))
     if document_date is not None and len({candidate[1] for candidate in candidates}) > 1:
-        candidates_without_document_date = [
-            candidate for candidate in candidates if candidate[1] != document_date
-        ]
+        candidates_without_document_date = [candidate for candidate in candidates if candidate[1] != document_date]
         if candidates_without_document_date:
             candidates = candidates_without_document_date
 
     title = str(document.get("title") or prediction.get("summary") or "Kalenderrelevantes Dokument").strip()
     events: List[Dict[str, str]] = []
-    for _, event_date, event_time, event_type in sorted(candidates, key=lambda item: item[0]):
+    for _, event_date, event_time, event_location, event_type in sorted(candidates, key=lambda item: item[0]):
         if title:
             calendar_title = f"{event_type}: {title}"[:120]
         else:
@@ -2931,6 +3094,8 @@ def infer_calendar_event_from_text(
         }
         if event_time:
             event["time"] = event_time
+        if event_location:
+            event["location"] = event_location
         events.append(event)
 
     normalized_events_text = normalize_calendar_events_value(events)
@@ -2940,6 +3105,7 @@ def infer_calendar_event_from_text(
     first_event = normalized_events[0]
     event_date = str(first_event.get("date") or "")
     event_time = first_event.get("time")
+    event_location = first_event.get("location")
     event_type = str(first_event.get("type") or "Termin")
     title = str(document.get("title") or prediction.get("summary") or "Kalenderrelevantes Dokument").strip()
     if title:
@@ -2950,6 +3116,7 @@ def infer_calendar_event_from_text(
     return {
         "date": event_date,
         "time": event_time,
+        "location": event_location,
         "type": event_type,
         "title": calendar_title,
         "events": normalized_events,
@@ -3046,6 +3213,14 @@ def build_secondbrain_rule_based_suggestions(
             value=calendar_event.get("title"),
             confidence=0.78,
             reason="Kurzer Titel für einen möglichen SecondBrain-Kalendereintrag gebildet.",
+            source="rules",
+        )
+        set_secondbrain_suggestion_if_missing(
+            suggestions,
+            key="sb_calendar_location",
+            value=calendar_event.get("location"),
+            confidence=0.76,
+            reason="Ort oder Adresse im Umfeld des kalenderrelevanten Datums erkannt.",
             source="rules",
         )
         set_secondbrain_suggestion_if_missing(

@@ -332,6 +332,7 @@ Datumsfelder:
 - `sb_calendar_time`
 - `sb_calendar_type`
 - `sb_calendar_title`
+- `sb_calendar_location`
 - `sb_calendar_events`
 - `sb_document_date`
 - `sb_period_start`
@@ -380,7 +381,8 @@ Verknüpfungen:
   Meetings, Schulungen, Veranstaltungen und Zahlungsfristen. Alle erkannten
   Ereignisse landen als kompakte JSON-Liste in `sb_calendar_events`; der
   wichtigste Kalenderwert landet zusätzlich in `sb_calendar_date`. Optional
-  werden `sb_calendar_time`, `sb_calendar_type` und `sb_calendar_title` gesetzt.
+  werden `sb_calendar_time`, `sb_calendar_type`, `sb_calendar_location` und
+  `sb_calendar_title` gesetzt.
 - Werte unterhalb `secondbrain_custom_fields_confidence_threshold` werden nicht
   nach Paperless geschrieben.
 - Datumswerte werden auf `YYYY-MM-DD` normalisiert.
@@ -610,12 +612,18 @@ Beispiel einer KI-Antwort mit zusätzlichen SecondBrain-Feldern:
       "confidence": 0.82,
       "reason": "Datum bezieht sich auf eine Zahlungsfrist."
     },
+    "sb_calendar_location": {
+      "value": "Musterstraße 1, 26100 Musterstadt",
+      "confidence": 0.78,
+      "reason": "Ort oder Adresse im Dokument erkannt."
+    },
     "sb_calendar_events": {
       "value": [
         {
           "date": "2026-05-15",
           "type": "Zahlung",
           "title": "Zahlung: Rechnung Muster GmbH",
+          "location": "Musterstraße 1, 26100 Musterstadt",
           "reason": "Zahlungsfrist im Dokument erkannt."
         }
       ],
@@ -634,6 +642,7 @@ entstehen:
 - `sb_due_date` -> `2026-05-15`
 - `sb_calendar_date` -> `2026-05-15`
 - `sb_calendar_type` -> Select-Option-ID aus Paperless
+- `sb_calendar_location` -> `Musterstraße 1, 26100 Musterstadt`
 - `sb_calendar_events` -> JSON-String mit allen Kalenderkandidaten
 
 ### Standard-Katalog (Vertrag / Lohnabrechnung)

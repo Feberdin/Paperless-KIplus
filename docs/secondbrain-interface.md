@@ -189,6 +189,7 @@ Beispiel:
 - `sb_calendar_time` (`string`)
 - `sb_calendar_type` (`select`)
 - `sb_calendar_title` (`string`)
+- `sb_calendar_location` (`string`)
 - `sb_calendar_events` (`string`, kompakter JSON-Array-String)
 - `sb_document_date` (`date`)
 - `sb_period_start` (`date`)
@@ -275,7 +276,8 @@ Beispiel:
   "sb_due_date": "2026-05-15",
   "sb_calendar_date": "2026-08-15",
   "sb_calendar_time": "09:30",
-  "sb_calendar_events": "[{\"date\":\"2026-08-15\",\"time\":\"09:30\",\"type\":\"Gericht\",\"title\":\"Gericht: Ladung Amtsgericht\"}]"
+  "sb_calendar_location": "Amtsgericht Musterstadt, Saal 2",
+  "sb_calendar_events": "[{\"date\":\"2026-08-15\",\"time\":\"09:30\",\"type\":\"Gericht\",\"title\":\"Gericht: Ladung Amtsgericht\",\"location\":\"Amtsgericht Musterstadt, Saal 2\"}]"
 }
 ```
 
@@ -347,7 +349,9 @@ Diese Felder sind für die Consumer-Logik besonders wichtig:
 - `sb_requires_action`
 - `sb_action_status`
 - `sb_calendar_date`
+- `sb_calendar_time`
 - `sb_calendar_type`
+- `sb_calendar_location`
 - `sb_calendar_events`
 
 Empfohlene Interpretation:
@@ -372,9 +376,13 @@ Empfohlene Interpretation:
   - fachliche Art des Kalendereintrags, z. B. Gericht, Einladung oder Frist
 - `sb_calendar_title`
   - kurzer Anzeigename für den möglichen Kalendereintrag
+- `sb_calendar_location`
+  - Ort, Raum oder Adresse für den Kalendereintrag; fehlt, wenn der Ort nicht
+    eindeutig erkennbar war
 - `sb_calendar_events`
-  - JSON-Liste aller erkannten Kalenderkandidaten; `SecondBrain` sollte daraus
-    mehrere Kalender- oder Reminder-Einträge erzeugen können
+  - JSON-Liste aller erkannten Kalenderkandidaten inklusive optionaler Felder
+    `time` und `location`; `SecondBrain` sollte daraus mehrere Kalender- oder
+    Reminder-Einträge erzeugen können
 
 ### Wichtiger fachlicher Hinweis
 
@@ -603,7 +611,9 @@ SecondBrain-Felder:
 - sb_amount_total: ...
 - sb_due_date: ...
 - sb_calendar_date: ...
+- sb_calendar_time: ...
 - sb_calendar_type: ...
+- sb_calendar_location: ...
 - sb_calendar_events: ...
 - sb_requires_action: ...
 - sb_action_status: ...

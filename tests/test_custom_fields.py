@@ -157,6 +157,13 @@ class CustomFieldTests(unittest.TestCase):
                 "extra_data": {},
                 "select_options_by_label": {},
             },
+            "sb_calendar_location": {
+                "id": 219,
+                "name": "sb_calendar_location",
+                "data_type": "string",
+                "extra_data": {},
+                "select_options_by_label": {},
+            },
             "sb_calendar_events": {
                 "id": 218,
                 "name": "sb_calendar_events",
@@ -635,6 +642,11 @@ class CustomFieldTests(unittest.TestCase):
                         "confidence": 0.88,
                         "reason": "Kurzer Kalendertitel aus Dokumenttitel.",
                     },
+                    "sb_calendar_location": {
+                        "value": "Aula der Schule",
+                        "confidence": 0.87,
+                        "reason": "Ort klar genannt.",
+                    },
                     "sb_calendar_events": {
                         "value": [
                             {
@@ -642,6 +654,7 @@ class CustomFieldTests(unittest.TestCase):
                                 "time": "18:30",
                                 "type": "Einladung",
                                 "title": "Elternabend Schule",
+                                "location": "Aula der Schule",
                                 "reason": "Einladungstermin klar genannt.",
                             },
                             {
@@ -670,10 +683,12 @@ class CustomFieldTests(unittest.TestCase):
         self.assertEqual(values[215], "18:30")
         self.assertEqual(values[216], 52)
         self.assertEqual(values[217], "Elternabend Schule")
+        self.assertEqual(values[219], "Aula der Schule")
         calendar_events = json.loads(values[218])
         self.assertEqual(len(calendar_events), 2)
         self.assertEqual(calendar_events[0]["date"], "2026-09-12")
         self.assertEqual(calendar_events[0]["time"], "18:30")
+        self.assertEqual(calendar_events[0]["location"], "Aula der Schule")
         self.assertEqual(calendar_events[1]["date"], "2026-09-19")
         self.assertEqual(empty_ids, [])
         self.assertEqual(remove_ids, [])
@@ -760,7 +775,11 @@ class CustomFieldTests(unittest.TestCase):
         suggestions = build_secondbrain_suggestions(
             document={
                 "title": "2026_07_06_Landgericht Oldenburg_Rechtsanwalt_04092026_Akte",
-                "content": "Oldenburg, den 06.07.2026. Termin zur mündlichen Verhandlung ist bestimmt.",
+                "content": (
+                    "Oldenburg, den 06.07.2026. Termin zur mündlichen Verhandlung ist bestimmt. "
+                    "Datum Uhrzeit Anschrift Freitag, 4. September 2026 09:00 "
+                    "Richard-Wagner-Platz 1, Eingang 9 Oberlandesgericht."
+                ),
                 "created": "2026-07-06",
             },
             prediction={
@@ -787,10 +806,56 @@ class CustomFieldTests(unittest.TestCase):
         )
 
         self.assertEqual(suggestions["sb_calendar_date"].value, "2026-09-04")
+        self.assertEqual(suggestions["sb_calendar_time"].value, "09:00")
         self.assertEqual(suggestions["sb_calendar_date"].source, "rules")
         self.assertEqual(suggestions["sb_calendar_type"].value, "Gericht")
+        self.assertIn("Richard-Wagner-Platz", suggestions["sb_calendar_location"].value)
         calendar_events = json.loads(suggestions["sb_calendar_events"].value)
         self.assertEqual([event["date"] for event in calendar_events], ["2026-09-04"])
+        self.assertEqual(calendar_events[0]["time"], "09:00")
+        self.assertIn("Richard-Wagner-Platz", calendar_events[0]["location"])
+
+    def test_rule_based_calendar_detection_extracts_private_invitation_datetime(self) -> None:
+        suggestions = build_secondbrain_suggestions(
+            document={
+                "title": "2026_07_17_Erkhard Laumann_Einladung_17072026",
+                "content": (
+                    "Einladung. Diesen besonderen Tag möchte ich mit Euch feiern. "
+                    "Datum: 4. Oktober 2026 Zeit: 9.30 Uhr Ort: Hof Reck."
+                ),
+                "created": "2026-07-17",
+            },
+            prediction={
+                "document_type": "Einladung",
+                "correspondent": "Erkhard Laumann",
+                "document_date": "2026-07-17",
+                "summary": "Private Einladung zu einem Geburtstag.",
+                "rationale": "Einladung mit Datum und Uhrzeit.",
+                "confidence": 0.91,
+                "secondbrain_custom_fields": {
+                    "sb_calendar_date": {
+                        "value": "2026-07-17",
+                        "confidence": 0.90,
+                        "reason": "Falsch aus dem Dokumentdatum übernommen.",
+                    },
+                    "sb_calendar_type": {
+                        "value": "Gericht",
+                        "confidence": 0.90,
+                        "reason": "Falsch durch Teilstring 'ladung' in Einladung abgeleitet.",
+                    },
+                },
+            },
+            tax_enrichment=None,
+        )
+
+        self.assertEqual(suggestions["sb_calendar_date"].value, "2026-10-04")
+        self.assertEqual(suggestions["sb_calendar_time"].value, "09:30")
+        self.assertEqual(suggestions["sb_calendar_type"].value, "Einladung")
+        self.assertIn("Hof Reck", suggestions["sb_calendar_location"].value)
+        calendar_events = json.loads(suggestions["sb_calendar_events"].value)
+        self.assertEqual(calendar_events[0]["date"], "2026-10-04")
+        self.assertEqual(calendar_events[0]["time"], "09:30")
+        self.assertIn("Hof Reck", calendar_events[0]["location"])
 
     def test_rule_based_calendar_detection_ignores_court_invoice_date(self) -> None:
         suggestions = build_secondbrain_suggestions(
