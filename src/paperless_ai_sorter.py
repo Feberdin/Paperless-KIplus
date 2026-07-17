@@ -3151,6 +3151,37 @@ def sanitize_prediction(
     return sanitized
 
 
+def build_document_date_filter_params(
+    *,
+    added_on: Optional[str] = None,
+    created_on: Optional[str] = None,
+) -> Dict[str, str]:
+    """Baut Paperless-API-Filter für gezielte Tagesläufe.
+
+    Warum dieser Helper existiert:
+    - Backfill-Läufe dürfen bei "heute neu einlesen" nicht versehentlich den
+      kompletten Bestand anfassen.
+    - `added__date` meint den Import-/Upload-Tag in Paperless.
+    - `created__date` meint das fachliche Dokumentdatum.
+
+    Beispiel:
+    - `added_on="2026-07-17"` -> `{"added__date": "2026-07-17"}`
+    """
+
+    params: Dict[str, str] = {}
+    if added_on:
+        normalized = normalize_iso_date(added_on)
+        if normalized is None:
+            raise ConfigError(f"Ungültiger added_on Datumsfilter: {added_on!r}. Erwartet YYYY-MM-DD.")
+        params["added__date"] = normalized
+    if created_on:
+        normalized = normalize_iso_date(created_on)
+        if normalized is None:
+            raise ConfigError(f"Ungültiger created_on Datumsfilter: {created_on!r}. Erwartet YYYY-MM-DD.")
+        params["created__date"] = normalized
+    return params
+
+
 def extract_usage(prediction: Dict[str, Any]) -> tuple[int, int, int]:
     """Extrahiert API-Token-Usage aus internen Metadaten."""
 
@@ -4462,6 +4493,9 @@ def process_documents(
     config: AppConfig,
     process_all_documents: bool = False,
     backfill_existing_documents: bool = False,
+    force_secondbrain_backfill: bool = False,
+    added_on: Optional[str] = None,
+    created_on: Optional[str] = None,
     document_limit_override: Optional[int] = None,
     run_state_file: str = RUN_STATE_FILE_DEFAULT,
     stop_request_file: str = STOP_REQUEST_FILE_DEFAULT,
@@ -4665,6 +4699,11 @@ def process_documents(
         backfill_existing_documents = bool(
             resumed_mode.get("backfill_existing_documents", backfill_existing_documents)
         )
+        force_secondbrain_backfill = bool(
+            resumed_mode.get("force_secondbrain_backfill", force_secondbrain_backfill)
+        )
+        added_on = str(resumed_mode.get("added_on") or added_on or "").strip() or None
+        created_on = str(resumed_mode.get("created_on") or created_on or "").strip() or None
         if resumed_mode.get("document_limit_override") not in (None, ""):
             try:
                 document_limit_override = int(resumed_mode.get("document_limit_override"))
@@ -4675,6 +4714,11 @@ def process_documents(
     only_tag_id: Optional[int] = None
     only_tag_name = config.process_only_tag.strip()
     doc_query_params: Dict[str, Any] = {}
+    date_filter_params = build_document_date_filter_params(
+        added_on=added_on,
+        created_on=created_on,
+    )
+    doc_query_params.update(date_filter_params)
     if document_limit_override is not None and int(document_limit_override) > 0:
         target_documents: Optional[int] = max(1, int(document_limit_override))
     elif backfill_existing_documents:
@@ -4736,6 +4780,11 @@ def process_documents(
             "für neue Anreicherungen durchsucht. Bereits KI-getaggte Dokumente "
             "werden nur für Zusatzfunktionen aktualisiert."
         )
+        if force_secondbrain_backfill:
+            LOGGER.info(
+                "SecondBrain-Backfill wird erzwungen: bereits vorhandene `sb_`-Felder "
+                "verhindern die neue Anreicherung nicht."
+            )
         if target_documents is None:
             LOGGER.info(
                 "Backfill läuft ohne Dokumentlimit. Mit --max-documents lässt sich "
@@ -4759,6 +4808,8 @@ def process_documents(
         LOGGER.info("Tag-Filter aktiv: Verarbeite nur Dokumente mit Tag '%s'.", only_tag_name)
         # Direkter API-Filter: lädt nur passende Dokumente.
         doc_query_params["tags__id"] = only_tag_id
+    if date_filter_params:
+        LOGGER.info("Datumsfilter aktiv für Paperless-Abfrage: %s", date_filter_params)
 
     pending_ai_documents: List[PendingAiDocument] = []
     parallel_ai_enabled = bool(config.enable_parallel_ai and config.max_parallel_ai_jobs > 1)
@@ -4808,6 +4859,9 @@ def process_documents(
             "mode": {
                 "process_all_documents": bool(process_all_documents),
                 "backfill_existing_documents": bool(backfill_existing_documents),
+                "force_secondbrain_backfill": bool(force_secondbrain_backfill),
+                "added_on": added_on,
+                "created_on": created_on,
                 "document_limit_override": document_limit_override,
             },
             "progress": {
@@ -5624,7 +5678,11 @@ def process_documents(
         if doc_id is not None and int(doc_id) in completed_document_ids:
             continue
 
-        if backfill_existing_documents and secondbrain_sync_enabled:
+        if (
+            backfill_existing_documents
+            and secondbrain_sync_enabled
+            and not force_secondbrain_backfill
+        ):
             existing_secondbrain_fields = collect_populated_secondbrain_fields(
                 document,
                 custom_fields_map,
@@ -6416,6 +6474,29 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--force-secondbrain-backfill",
+        action="store_true",
+        help=(
+            "Im Backfill vorhandene `sb_`-Felder nicht als Skip-Grund verwenden. "
+            "Nützlich, wenn neue SecondBrain-Felder nachträglich ergänzt werden."
+        ),
+    )
+    parser.add_argument(
+        "--added-today",
+        action="store_true",
+        help="Nur Dokumente verarbeiten, die heute in Paperless hinzugefügt wurden.",
+    )
+    parser.add_argument(
+        "--added-on",
+        default=None,
+        help="Nur Dokumente verarbeiten, die an diesem Tag in Paperless hinzugefügt wurden (YYYY-MM-DD).",
+    )
+    parser.add_argument(
+        "--created-on",
+        default=None,
+        help="Nur Dokumente mit diesem fachlichen Paperless-Dokumentdatum verarbeiten (YYYY-MM-DD).",
+    )
+    parser.add_argument(
         "--max-documents",
         type=int,
         default=None,
@@ -6467,6 +6548,10 @@ def main() -> int:
     except ConfigError as exc:
         print(f"[CONFIG-ERROR] {exc}", file=sys.stderr)
         return 2
+    if args.added_today and args.added_on:
+        print("[CONFIG-ERROR] Nutze entweder --added-today oder --added-on, nicht beides.", file=sys.stderr)
+        return 2
+    added_on = dt.date.today().isoformat() if args.added_today else args.added_on
 
     logging.basicConfig(
         level=getattr(logging, config.log_level.upper(), logging.INFO),
@@ -6480,6 +6565,9 @@ def main() -> int:
             config,
             process_all_documents=args.all_documents,
             backfill_existing_documents=args.backfill_existing_documents,
+            force_secondbrain_backfill=args.force_secondbrain_backfill,
+            added_on=added_on,
+            created_on=args.created_on,
             document_limit_override=args.max_documents,
             run_state_file=args.run_state_file,
             stop_request_file=args.stop_request_file,

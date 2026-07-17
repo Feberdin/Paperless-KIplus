@@ -31,8 +31,10 @@ if "yaml" not in sys.modules:
 
 from paperless_ai_sorter import (
     AiClassifier,
+    ConfigError,
     PendingAiDocument,
     RUN_STATE_VERSION,
+    build_document_date_filter_params,
     extract_retry_after_seconds_from_error,
     finalize_limited_progress_total,
     load_run_state,
@@ -151,6 +153,16 @@ class RuntimeStateTests(unittest.TestCase):
             resolve_runtime_path("/tmp/absolute.json", Path("/tmp/base")),
             Path("/tmp/absolute.json"),
         )
+
+    def test_build_document_date_filter_params_uses_added_date(self) -> None:
+        self.assertEqual(
+            build_document_date_filter_params(added_on="2026-07-17"),
+            {"added__date": "2026-07-17"},
+        )
+
+    def test_build_document_date_filter_params_rejects_invalid_dates(self) -> None:
+        with self.assertRaises(ConfigError):
+            build_document_date_filter_params(created_on="17.07.2026")
 
     def test_http_429_quota_becomes_pause_error(self) -> None:
         response = requests.Response()

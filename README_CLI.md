@@ -12,6 +12,11 @@ python src/paperless_ai_sorter.py
 
 - `--dry-run`
 - `--all-documents`
+- `--backfill-existing-documents`
+- `--force-secondbrain-backfill`
+- `--added-today`
+- `--added-on <YYYY-MM-DD>`
+- `--created-on <YYYY-MM-DD>`
 - `--max-documents <n>`
 - `--config <pfad>`
 
@@ -19,6 +24,16 @@ python src/paperless_ai_sorter.py
 
 ```bash
 python src/paperless_ai_sorter.py --config config.yaml --dry-run --max-documents 10
+```
+
+Heute hinzugefügte Dokumente mit neuen SecondBrain-Regeln neu anreichern:
+
+```bash
+python src/paperless_ai_sorter.py \
+  --config config.yaml \
+  --backfill-existing-documents \
+  --force-secondbrain-backfill \
+  --added-today
 ```
 
 ## Hinweis

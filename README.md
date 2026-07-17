@@ -431,6 +431,23 @@ python3 /config/custom_components/paperless_kiplus/paperless_ai_sorter.py \
   --max-documents 200
 ```
 
+Wenn du nur die heute in Paperless hinzugefügten Dokumente mit neuen
+SecondBrain-Regeln neu anreichern möchtest:
+
+```bash
+python3 /config/custom_components/paperless_kiplus/paperless_ai_sorter.py \
+  --config config.yaml \
+  --backfill-existing-documents \
+  --force-secondbrain-backfill \
+  --added-today
+```
+
+Für einen festen Importtag nutze statt `--added-today`:
+
+```bash
+--added-on 2026-07-17
+```
+
 In Home Assistant kannst du den Backfill auf zwei Wegen starten:
 
 - Button `Paperless KIplus Bestandsdaten neu anreichern`
