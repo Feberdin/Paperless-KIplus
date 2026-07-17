@@ -39,7 +39,9 @@ from paperless_ai_sorter import (
     build_secondbrain_custom_fields_payload,
     build_secondbrain_sync_report,
     build_secondbrain_suggestions,
+    build_custom_field_extra_data,
     build_select_option_lookup,
+    build_select_option_id,
     filter_unchanged_patch_fields,
     normalize_custom_field_value,
     normalize_monetary_value,
@@ -295,6 +297,27 @@ class CustomFieldTests(unittest.TestCase):
         resolved, reason = resolve_custom_field_value(field, "Rechnung")
         self.assertIsNone(reason)
         self.assertEqual(resolved, 11)
+
+    def test_select_label_accepts_paperless_string_option_id(self) -> None:
+        field = {
+            "id": 999,
+            "name": "sb_confidence",
+            "data_type": "select",
+            "select_options_by_label": {"ki sicher": "ki_sicher"},
+        }
+        resolved, reason = resolve_custom_field_value(field, "KI sicher")
+        self.assertIsNone(reason)
+        self.assertEqual(resolved, "ki_sicher")
+
+    def test_select_option_extra_data_uses_stable_string_ids(self) -> None:
+        definition = SECOND_BRAIN_CUSTOM_FIELD_DEFINITIONS["sb_calendar_type"]
+        extra_data = build_custom_field_extra_data(definition)
+
+        self.assertEqual(build_select_option_id("KI sicher"), "ki_sicher")
+        self.assertIn(
+            {"label": "Gericht", "id": "gericht"},
+            extra_data["select_options"],
+        )
 
     def test_invalid_select_label_is_reported(self) -> None:
         field = self._secondbrain_field_map()["sb_document_category"]

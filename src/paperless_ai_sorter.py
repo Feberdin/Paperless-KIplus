@@ -13,6 +13,7 @@ import datetime as dt
 import json
 import logging
 import re
+import unicodedata
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from pathlib import Path
 import sys
@@ -37,6 +38,7 @@ UUID_TAG_PATTERN = re.compile(
     r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
 )
 MONETARY_SANITIZE_PATTERN = re.compile(r"[^0-9,.\-]")
+SELECT_OPTION_ID_SANITIZE_PATTERN = re.compile(r"[^a-z0-9]+")
 RETRY_AFTER_SECONDS_PATTERN = re.compile(r"Please try again in\s+([0-9]+(?:\.[0-9]+)?)s", re.IGNORECASE)
 CALENDAR_GERMAN_DATE_PATTERN = re.compile(r"\b([0-3]?\d)\.([01]?\d)\.((?:19|20)\d{2})\b")
 CALENDAR_ISO_DATE_PATTERN = re.compile(r"\b((?:19|20)\d{2})-([01]?\d)-([0-3]?\d)\b")
@@ -1248,13 +1250,17 @@ class PaperlessClient:
             raise PaperlessApiError(
                 f"Nicht unterstützter Custom-Field-Datentyp: {definition.data_type}"
             )
+        payload = {
+            "name": definition.paperless_name,
+            "data_type": definition.data_type,
+        }
+        extra_data = build_custom_field_extra_data(definition)
+        if extra_data:
+            payload["extra_data"] = extra_data
         created = self._request(
             "POST",
             "/api/custom_fields/",
-            payload={
-                "name": definition.paperless_name,
-                "data_type": definition.data_type,
-            },
+            payload=payload,
         )
         created_id = created.get("id")
         if created_id is None:
@@ -1265,6 +1271,7 @@ class PaperlessClient:
             "id": int(created_id),
             "name": definition.paperless_name,
             "data_type": definition.data_type,
+            "extra_data": created.get("extra_data") if isinstance(created.get("extra_data"), dict) else extra_data,
         }
 
     def patch_document_custom_fields(
@@ -2013,7 +2020,39 @@ def normalize_document_link_value(value: Any) -> Optional[List[int]]:
     return normalized or None
 
 
-def build_select_option_lookup(extra_data: Dict[str, Any]) -> Dict[str, int]:
+def build_select_option_id(label: str) -> str:
+    """Erzeugt stabile Paperless-Select-IDs aus sichtbaren Labels."""
+
+    normalized = str(label or "").strip().lower()
+    normalized = (
+        normalized.replace("ä", "ae")
+        .replace("ö", "oe")
+        .replace("ü", "ue")
+        .replace("ß", "ss")
+    )
+    normalized = unicodedata.normalize("NFKD", normalized)
+    normalized = normalized.encode("ascii", "ignore").decode("ascii")
+    normalized = SELECT_OPTION_ID_SANITIZE_PATTERN.sub("_", normalized).strip("_")
+    return normalized or "option"
+
+
+def build_custom_field_extra_data(definition: CustomFieldDefinition) -> Dict[str, Any]:
+    """Baut Paperless-`extra_data` für Feldtypen, die Zusatzdaten brauchen."""
+
+    if definition.data_type != "select" or not definition.allowed_labels:
+        return {}
+    return {
+        "select_options": [
+            {
+                "label": label,
+                "id": build_select_option_id(label),
+            }
+            for label in definition.allowed_labels
+        ]
+    }
+
+
+def build_select_option_lookup(extra_data: Dict[str, Any]) -> Dict[str, Any]:
     """Indexiert Select-Optionen tolerant nach sichtbarem Label.
 
     Paperless API v7 liefert laut offizieller Doku `select_options` als Liste
@@ -2026,13 +2065,12 @@ def build_select_option_lookup(extra_data: Dict[str, Any]) -> Dict[str, int]:
     if not isinstance(options, list):
         return {}
 
-    by_label: Dict[str, int] = {}
+    by_label: Dict[str, Any] = {}
     for option in options:
         if not isinstance(option, dict):
             continue
-        try:
-            option_id = int(option.get("id"))
-        except (TypeError, ValueError):
+        option_id = option.get("id")
+        if option_id in (None, ""):
             continue
         label = str(
             option.get("label")
@@ -2346,7 +2384,7 @@ def resolve_custom_field_value(
         option_id = select_lookup.get(label.lower())
         if option_id is None:
             return None, f"Select-Option nicht gefunden fuer '{label}' in Feld '{field_name}'"
-        return int(option_id), None
+        return option_id, None
     return None, f"nicht unterstützter Datentyp '{data_type}'"
 
 
