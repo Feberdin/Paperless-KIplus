@@ -2772,6 +2772,81 @@ def _drop_calendar_suggestions(suggestions: Dict[str, SecondBrainFieldSuggestion
         suggestions.pop(key, None)
 
 
+def correct_billing_calendar_document_date(
+    *,
+    document: Dict[str, Any],
+    prediction: Dict[str, Any],
+    suggestions: Dict[str, SecondBrainFieldSuggestion],
+) -> None:
+    """Verhindert, dass Rechnungsdaten als Kalendertermine gespeichert werden.
+
+    Wenn eine echte Fälligkeit vorhanden ist, wird sie als Zahlungsfrist in die
+    Kalenderfelder übernommen. Andernfalls werden die Kalenderfelder entfernt.
+    """
+
+    calendar_date = suggestions.get("sb_calendar_date")
+    if calendar_date is None or calendar_date.value in (None, "", []):
+        return
+
+    context_text = _collect_document_context_text(document, prediction)
+    if not any(keyword in context_text for keyword in CALENDAR_BILLING_CONTEXT_NEGATIVE_KEYWORDS):
+        return
+
+    normalized_calendar_date = normalize_iso_date(str(calendar_date.value))
+    document_date = normalize_iso_date(prediction.get("document_date") or document.get("created"))
+    if normalized_calendar_date is None or document_date is None or normalized_calendar_date != document_date:
+        return
+
+    due_date_suggestion = suggestions.get("sb_due_date")
+    due_date = normalize_iso_date(str(due_date_suggestion.value)) if due_date_suggestion is not None else None
+    if due_date is None or due_date == document_date:
+        _drop_calendar_suggestions(suggestions)
+        return
+
+    title = str(document.get("title") or prediction.get("summary") or "Zahlungsfrist").strip()
+    calendar_title = f"Zahlungsfrist: {title}"[:120] if title else "Zahlungsfrist"
+    calendar_events = normalize_calendar_events_value(
+        [
+            {
+                "date": due_date,
+                "type": "Zahlung",
+                "title": calendar_title,
+                "reason": "Fälligkeit aus Kosten-/Rechnungskontext statt Rechnungsdatum übernommen.",
+            }
+        ]
+    )
+    suggestions["sb_calendar_date"] = SecondBrainFieldSuggestion(
+        key="sb_calendar_date",
+        value=due_date,
+        confidence=0.84,
+        reason="Fälligkeit aus Kosten-/Rechnungskontext statt Rechnungsdatum übernommen.",
+        source="rules",
+    )
+    suggestions.pop("sb_calendar_time", None)
+    suggestions["sb_calendar_type"] = SecondBrainFieldSuggestion(
+        key="sb_calendar_type",
+        value="Zahlung",
+        confidence=0.82,
+        reason="Kalenderart aus Fälligkeitskontext abgeleitet.",
+        source="rules",
+    )
+    suggestions["sb_calendar_title"] = SecondBrainFieldSuggestion(
+        key="sb_calendar_title",
+        value=calendar_title,
+        confidence=0.78,
+        reason="Kurzer Titel für eine Zahlungsfrist gebildet.",
+        source="rules",
+    )
+    if calendar_events is not None:
+        suggestions["sb_calendar_events"] = SecondBrainFieldSuggestion(
+            key="sb_calendar_events",
+            value=calendar_events,
+            confidence=0.84,
+            reason="Fälligkeit als kompaktes Kalenderereignis gesammelt.",
+            source="rules",
+        )
+
+
 def infer_calendar_event_from_text(
     *,
     document: Dict[str, Any],
@@ -3243,7 +3318,17 @@ def build_secondbrain_suggestions(
             source=suggestion.source,
         )
     prefer_rule_based_calendar_suggestions(suggestions, rule_based)
-    if "sb_calendar_date" not in rule_based and not _calendar_context_supports_ai_event(document, prediction):
+    correct_billing_calendar_document_date(
+        document=document,
+        prediction=prediction,
+        suggestions=suggestions,
+    )
+    current_calendar_date = suggestions.get("sb_calendar_date")
+    if (
+        "sb_calendar_date" not in rule_based
+        and not _calendar_context_supports_ai_event(document, prediction)
+        and (current_calendar_date is None or current_calendar_date.source != "rules")
+    ):
         _drop_calendar_suggestions(suggestions)
 
     apply_tax_enrichment_to_secondbrain_suggestions(suggestions, tax_enrichment)
