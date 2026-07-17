@@ -760,7 +760,7 @@ class CustomFieldTests(unittest.TestCase):
         suggestions = build_secondbrain_suggestions(
             document={
                 "title": "2026_07_06_Landgericht Oldenburg_Rechtsanwalt_04092026_Akte",
-                "content": "",
+                "content": "Oldenburg, den 06.07.2026. Termin zur mündlichen Verhandlung ist bestimmt.",
                 "created": "2026-07-06",
             },
             prediction={
@@ -790,7 +790,40 @@ class CustomFieldTests(unittest.TestCase):
         self.assertEqual(suggestions["sb_calendar_date"].source, "rules")
         self.assertEqual(suggestions["sb_calendar_type"].value, "Gericht")
         calendar_events = json.loads(suggestions["sb_calendar_events"].value)
-        self.assertEqual(calendar_events[0]["date"], "2026-09-04")
+        self.assertEqual([event["date"] for event in calendar_events], ["2026-09-04"])
+
+    def test_rule_based_calendar_detection_ignores_court_invoice_date(self) -> None:
+        suggestions = build_secondbrain_suggestions(
+            document={
+                "title": "2026_06_17_Landgericht Oldenburg_Rechtsanwalt_17062026_Kostenrechnung",
+                "content": "Kostenrechnung vom 17.06.2026 mit Betrag und Gebühren.",
+                "created": "2026-06-17",
+            },
+            prediction={
+                "document_type": "Kostenrechnung",
+                "correspondent": "Landgericht Oldenburg",
+                "document_date": "2026-06-17",
+                "summary": "Kostenrechnung zu Gebühren.",
+                "rationale": "Es geht um einen Rechnungsbetrag.",
+                "confidence": 0.90,
+                "secondbrain_custom_fields": {
+                    "sb_calendar_date": {
+                        "value": "2026-06-17",
+                        "confidence": 0.88,
+                        "reason": "Falsch aus dem Rechnungsdatum übernommen.",
+                    },
+                    "sb_calendar_type": {
+                        "value": "Gericht",
+                        "confidence": 0.88,
+                        "reason": "Falsch aus dem Absender abgeleitet.",
+                    },
+                },
+            },
+            tax_enrichment=None,
+        )
+
+        self.assertNotIn("sb_calendar_date", suggestions)
+        self.assertNotIn("sb_calendar_events", suggestions)
 
     def test_build_patch_payload_includes_secondbrain_values(self) -> None:
         client = _FakeClient()

@@ -44,6 +44,50 @@ CALENDAR_GERMAN_DATE_PATTERN = re.compile(r"\b([0-3]?\d)\.([01]?\d)\.((?:19|20)\
 CALENDAR_COMPACT_GERMAN_DATE_PATTERN = re.compile(r"(?<!\d)([0-3]\d)([01]\d)((?:19|20)\d{2})(?!\d)")
 CALENDAR_ISO_DATE_PATTERN = re.compile(r"\b((?:19|20)\d{2})-([01]?\d)-([0-3]?\d)\b")
 CALENDAR_TIME_PATTERN = re.compile(r"\b(?:um\s*)?([01]?\d|2[0-3])[:.]([0-5]\d)\s*(?:uhr)?\b", re.IGNORECASE)
+CALENDAR_FIELD_KEYS: tuple[str, ...] = (
+    "sb_calendar_date",
+    "sb_calendar_time",
+    "sb_calendar_type",
+    "sb_calendar_title",
+    "sb_calendar_events",
+)
+CALENDAR_ACTION_CONTEXT_KEYWORDS: tuple[str, ...] = (
+    "gerichtsverhandlung",
+    "mündliche verhandlung",
+    "mündlichen verhandlung",
+    "muendliche verhandlung",
+    "muendlichen verhandlung",
+    "hauptverhandlung",
+    "verhandlungstermin",
+    "gerichtstermin",
+    "ladung",
+    "anhörung",
+    "anhoerung",
+    "termin",
+    "einladung",
+    "eingeladen",
+    "terminbestätigung",
+    "terminbestaetigung",
+    "frist",
+    "fristablauf",
+    "fällig",
+    "faellig",
+    "zahlbar bis",
+    "zahlung bis",
+    "rückmeldung bis",
+    "rueckmeldung bis",
+    "spätestens bis",
+    "spaetestens bis",
+)
+CALENDAR_BILLING_CONTEXT_NEGATIVE_KEYWORDS: tuple[str, ...] = (
+    "kostenrechnung",
+    "rechnung",
+    "gebühr",
+    "gebuehr",
+    "betrag",
+    "zahlbetrag",
+    "kostenfestsetzung",
+)
 RUN_STATE_VERSION = 1
 RUN_STATE_FILE_DEFAULT = "paperless_kiplus_run_state.json"
 STOP_REQUEST_FILE_DEFAULT = "paperless_kiplus_stop.request"
@@ -2503,14 +2547,7 @@ def prefer_rule_based_calendar_suggestions(
     if current_date is not None and current_date.value == rule_date.value:
         return
 
-    calendar_keys = (
-        "sb_calendar_date",
-        "sb_calendar_time",
-        "sb_calendar_type",
-        "sb_calendar_title",
-        "sb_calendar_events",
-    )
-    for key in calendar_keys:
+    for key in CALENDAR_FIELD_KEYS:
         rule_suggestion = rule_based.get(key)
         if rule_suggestion is not None and rule_suggestion.value not in (None, "", []):
             suggestions[key] = rule_suggestion
@@ -2707,6 +2744,34 @@ def _calendar_event_type_near_date(text: str, start: int, end: int) -> Optional[
     return best_match[2] if best_match is not None else None
 
 
+def _is_plain_billing_calendar_context(text: str, start: int, end: int) -> bool:
+    """Erkennt Datumsstellen, die eher Rechnungsdatum als Kalenderereignis sind."""
+
+    window = text[max(0, start - 180) : min(len(text), end + 180)].lower()
+    has_billing_context = any(keyword in window for keyword in CALENDAR_BILLING_CONTEXT_NEGATIVE_KEYWORDS)
+    if not has_billing_context:
+        return False
+    has_action_context = any(keyword in window for keyword in CALENDAR_ACTION_CONTEXT_KEYWORDS)
+    return not has_action_context
+
+
+def _calendar_context_supports_ai_event(document: Dict[str, Any], prediction: Dict[str, Any]) -> bool:
+    """Prüft, ob ein KI-Kalenderwert durch Textkontext plausibel gestützt wird."""
+
+    context_text = _collect_document_context_text(document, prediction)
+    has_billing_context = any(keyword in context_text for keyword in CALENDAR_BILLING_CONTEXT_NEGATIVE_KEYWORDS)
+    if not has_billing_context:
+        return True
+    return any(keyword in context_text for keyword in CALENDAR_ACTION_CONTEXT_KEYWORDS)
+
+
+def _drop_calendar_suggestions(suggestions: Dict[str, SecondBrainFieldSuggestion]) -> None:
+    """Entfernt zusammenhängende Kalenderwerte aus einer Vorschlagsmenge."""
+
+    for key in CALENDAR_FIELD_KEYS:
+        suggestions.pop(key, None)
+
+
 def infer_calendar_event_from_text(
     *,
     document: Dict[str, Any],
@@ -2751,6 +2816,8 @@ def infer_calendar_event_from_text(
                 iso_date = _normalize_calendar_match_to_iso(match, german_date=german_date)
                 if iso_date is None:
                     continue
+                if _is_plain_billing_calendar_context(text_part, match.start(), match.end()):
+                    continue
                 event_type = _calendar_event_type_near_date(text_part, match.start(), match.end())
                 if event_type is None:
                     continue
@@ -2765,6 +2832,14 @@ def infer_calendar_event_from_text(
 
     if not candidates:
         return {}
+
+    document_date = normalize_iso_date(prediction.get("document_date") or document.get("created"))
+    if document_date is not None and len({candidate[1] for candidate in candidates}) > 1:
+        candidates_without_document_date = [
+            candidate for candidate in candidates if candidate[1] != document_date
+        ]
+        if candidates_without_document_date:
+            candidates = candidates_without_document_date
 
     title = str(document.get("title") or prediction.get("summary") or "Kalenderrelevantes Dokument").strip()
     events: List[Dict[str, str]] = []
@@ -3168,6 +3243,8 @@ def build_secondbrain_suggestions(
             source=suggestion.source,
         )
     prefer_rule_based_calendar_suggestions(suggestions, rule_based)
+    if "sb_calendar_date" not in rule_based and not _calendar_context_supports_ai_event(document, prediction):
+        _drop_calendar_suggestions(suggestions)
 
     apply_tax_enrichment_to_secondbrain_suggestions(suggestions, tax_enrichment)
 
