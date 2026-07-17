@@ -857,6 +857,44 @@ class CustomFieldTests(unittest.TestCase):
         self.assertEqual(calendar_events[0]["time"], "09:30")
         self.assertIn("Hof Reck", calendar_events[0]["location"])
 
+    def test_rule_based_calendar_detection_replaces_generic_ai_type_for_same_date(self) -> None:
+        suggestions = build_secondbrain_suggestions(
+            document={
+                "title": "2026_07_06_Landgericht Oldenburg_Rechtsanwalt_04092026_Akte",
+                "content": (
+                    "Termin zur mündlichen Verhandlung. Datum Uhrzeit Anschrift "
+                    "Freitag, 4. September 2026 09:00 Richard-Wagner-Platz 1, Eingang 9."
+                ),
+                "created": "2026-07-06",
+            },
+            prediction={
+                "document_type": "Schreiben",
+                "correspondent": "Landgericht Oldenburg",
+                "document_date": "2026-07-06",
+                "summary": "Gerichtliches Schreiben mit Termin.",
+                "rationale": "Das Dokument betrifft einen Gerichtstermin.",
+                "confidence": 0.91,
+                "secondbrain_custom_fields": {
+                    "sb_calendar_date": {
+                        "value": "2026-09-04",
+                        "confidence": 0.90,
+                        "reason": "Datum korrekt, aber Details fehlen.",
+                    },
+                    "sb_calendar_type": {
+                        "value": "Termin",
+                        "confidence": 0.90,
+                        "reason": "Zu generisch.",
+                    },
+                },
+            },
+            tax_enrichment=None,
+        )
+
+        self.assertEqual(suggestions["sb_calendar_date"].value, "2026-09-04")
+        self.assertEqual(suggestions["sb_calendar_time"].value, "09:00")
+        self.assertEqual(suggestions["sb_calendar_type"].value, "Gericht")
+        self.assertIn("Richard-Wagner-Platz", suggestions["sb_calendar_location"].value)
+
     def test_rule_based_calendar_detection_ignores_court_invoice_date(self) -> None:
         suggestions = build_secondbrain_suggestions(
             document={

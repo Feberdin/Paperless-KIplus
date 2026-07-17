@@ -2604,7 +2604,25 @@ def prefer_rule_based_calendar_suggestions(
         return
 
     current_date = suggestions.get("sb_calendar_date")
-    if current_date is not None and current_date.value == rule_date.value:
+    current_time = suggestions.get("sb_calendar_time")
+    current_type = suggestions.get("sb_calendar_type")
+    current_location = suggestions.get("sb_calendar_location")
+    rule_time = rule_based.get("sb_calendar_time")
+    rule_type = rule_based.get("sb_calendar_type")
+    rule_location = rule_based.get("sb_calendar_location")
+    should_replace = current_date is None or current_date.value != rule_date.value
+    if not should_replace and rule_time is not None and rule_time.value not in (None, "", []):
+        should_replace = current_time is None or current_time.value != rule_time.value
+    if not should_replace and rule_location is not None and rule_location.value not in (None, "", []):
+        should_replace = current_location is None or current_location.value != rule_location.value
+    if (
+        not should_replace
+        and rule_type is not None
+        and rule_type.value in {"Gericht", "Einladung"}
+        and (current_type is None or current_type.value != rule_type.value)
+    ):
+        should_replace = True
+    if not should_replace:
         return
 
     for key in CALENDAR_FIELD_KEYS:
