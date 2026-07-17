@@ -33,6 +33,8 @@ from paperless_ai_sorter import (
     DEFAULT_CUSTOM_FIELD_DEFINITIONS,
     SECOND_BRAIN_CUSTOM_FIELD_DEFINITIONS,
     CustomFieldDefinition,
+    PaperlessApiError,
+    PaperlessClient,
     build_ai_note_entry,
     build_patch_payload,
     collect_populated_secondbrain_fields,
@@ -65,6 +67,44 @@ class _FakeClient:
             "name": definition.paperless_name,
             "data_type": definition.data_type,
         }
+
+
+class _PatchFallbackClient(PaperlessClient):
+    """Fake Paperless client for Custom-Field write fallback tests."""
+
+    def __init__(self, *, failing_field_ids: set[int] | None = None) -> None:
+        self.calls: List[Dict[str, Any]] = []
+        self.failing_field_ids = failing_field_ids or set()
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Dict[str, Any] | None = None,
+        payload: Dict[str, Any] | None = None,
+        retries: int = 3,
+    ) -> Dict[str, Any]:
+        self.calls.append(
+            {
+                "method": method,
+                "path": path,
+                "payload": payload,
+                "retries": retries,
+            }
+        )
+        if method == "PATCH":
+            raise PaperlessApiError("direct patch unsupported")
+
+        parameters = (payload or {}).get("parameters") or {}
+        add_fields = parameters.get("add_custom_fields")
+        if isinstance(add_fields, dict):
+            if len(add_fields) > 1:
+                raise PaperlessApiError("bulk package rejected")
+            for field_id in add_fields:
+                if int(field_id) in self.failing_field_ids:
+                    raise PaperlessApiError(f"field {field_id} rejected")
+        return {}
 
 
 class CustomFieldTests(unittest.TestCase):
@@ -325,6 +365,41 @@ class CustomFieldTests(unittest.TestCase):
             {"label": "Gericht", "id": "gericht"},
             extra_data["select_options"],
         )
+
+    def test_custom_field_patch_falls_back_to_single_field_writes(self) -> None:
+        client = _PatchFallbackClient()
+
+        client.patch_document_custom_fields(123, {10: "alpha", 11: "beta"})
+
+        bulk_payloads = [
+            call["payload"]
+            for call in client.calls
+            if call["method"] == "POST" and call["path"] == "/api/documents/bulk_edit/"
+        ]
+        self.assertEqual(
+            [payload["parameters"]["add_custom_fields"] for payload in bulk_payloads],
+            [{10: "alpha", 11: "beta"}, {10: "alpha"}, {11: "beta"}],
+        )
+
+    def test_custom_field_patch_keeps_successful_single_fields(self) -> None:
+        client = _PatchFallbackClient(failing_field_ids={11})
+
+        client.patch_document_custom_fields(123, {10: "alpha", 11: "beta"})
+
+        single_field_payloads = [
+            call["payload"]["parameters"]["add_custom_fields"]
+            for call in client.calls
+            if call["method"] == "POST"
+            and isinstance(call["payload"]["parameters"]["add_custom_fields"], dict)
+            and len(call["payload"]["parameters"]["add_custom_fields"]) == 1
+        ]
+        self.assertEqual(single_field_payloads, [{10: "alpha"}, {11: "beta"}])
+
+    def test_custom_field_patch_raises_when_all_single_fields_fail(self) -> None:
+        client = _PatchFallbackClient(failing_field_ids={10, 11})
+
+        with self.assertRaises(PaperlessApiError):
+            client.patch_document_custom_fields(123, {10: "alpha", 11: "beta"})
 
     def test_invalid_select_label_is_reported(self) -> None:
         field = self._secondbrain_field_map()["sb_document_category"]

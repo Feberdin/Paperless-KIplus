@@ -1390,6 +1390,21 @@ class PaperlessClient:
         if not values and not empty_ids and not remove_ids:
             return
 
+        def bulk_modify(add_values: Any, remove_values: List[int]) -> None:
+            self._request(
+                "POST",
+                "/api/documents/bulk_edit/",
+                payload={
+                    "documents": [int(document_id)],
+                    "method": "modify_custom_fields",
+                    "parameters": {
+                        "add_custom_fields": add_values,
+                        "remove_custom_fields": remove_values,
+                    },
+                },
+                retries=2,
+            )
+
         if not empty_ids and not remove_ids:
             try:
                 self._request(
@@ -1406,33 +1421,90 @@ class PaperlessClient:
                 )
 
         if values or remove_ids:
-            self._request(
-                "POST",
-                "/api/documents/bulk_edit/",
-                payload={
-                    "documents": [int(document_id)],
-                    "method": "modify_custom_fields",
-                    "parameters": {
-                        "add_custom_fields": values,
-                        "remove_custom_fields": remove_ids,
-                    },
-                },
-                retries=2,
-            )
+            try:
+                bulk_modify(values, remove_ids)
+            except PaperlessApiError as exc:
+                if len(values) + len(remove_ids) <= 1:
+                    raise
+                LOGGER.warning(
+                    "Bulk-Edit für Custom-Field-Paket fehlgeschlagen, schreibe Felder einzeln: %s",
+                    exc,
+                )
+                failed_fields: List[str] = []
+                successful_fields = 0
+                for custom_field_id, custom_field_value in sorted(
+                    values.items(),
+                    key=lambda item: int(item[0]),
+                ):
+                    try:
+                        bulk_modify({int(custom_field_id): custom_field_value}, [])
+                        successful_fields += 1
+                    except PaperlessApiError as field_exc:
+                        failed_fields.append(f"add:{int(custom_field_id)}")
+                        LOGGER.warning(
+                            "Custom Field %s konnte für Dokument %s nicht geschrieben werden: %s",
+                            custom_field_id,
+                            document_id,
+                            field_exc,
+                        )
+                for custom_field_id in remove_ids:
+                    try:
+                        bulk_modify({}, [int(custom_field_id)])
+                        successful_fields += 1
+                    except PaperlessApiError as field_exc:
+                        failed_fields.append(f"remove:{int(custom_field_id)}")
+                        LOGGER.warning(
+                            "Custom Field %s konnte für Dokument %s nicht entfernt werden: %s",
+                            custom_field_id,
+                            document_id,
+                            field_exc,
+                        )
+                if successful_fields == 0 and failed_fields:
+                    raise PaperlessApiError(
+                        "Custom-Field-Fallback konnte kein Feld schreiben: "
+                        + ", ".join(failed_fields[:10])
+                    ) from exc
+                if failed_fields:
+                    LOGGER.warning(
+                        "Dokument %s wurde teilweise aktualisiert; fehlgeschlagene Custom Fields: %s",
+                        document_id,
+                        ", ".join(failed_fields[:10]),
+                    )
         if empty_ids:
-            self._request(
-                "POST",
-                "/api/documents/bulk_edit/",
-                payload={
-                    "documents": [int(document_id)],
-                    "method": "modify_custom_fields",
-                    "parameters": {
-                        "add_custom_fields": empty_ids,
-                        "remove_custom_fields": [],
-                    },
-                },
-                retries=2,
-            )
+            try:
+                bulk_modify(empty_ids, [])
+            except PaperlessApiError as exc:
+                if len(empty_ids) <= 1:
+                    raise
+                LOGGER.warning(
+                    "Bulk-Edit für leere Custom Fields fehlgeschlagen, schreibe leere Felder einzeln: %s",
+                    exc,
+                )
+                failed_empty_fields: List[str] = []
+                successful_empty_fields = 0
+                for custom_field_id in empty_ids:
+                    try:
+                        bulk_modify([int(custom_field_id)], [])
+                        successful_empty_fields += 1
+                    except PaperlessApiError as field_exc:
+                        failed_empty_fields.append(str(int(custom_field_id)))
+                        LOGGER.warning(
+                            "Leeres Custom Field %s konnte für Dokument %s nicht geschrieben werden: %s",
+                            custom_field_id,
+                            document_id,
+                            field_exc,
+                        )
+                if successful_empty_fields == 0 and failed_empty_fields:
+                    raise PaperlessApiError(
+                        "Custom-Field-Fallback konnte kein leeres Feld schreiben: "
+                        + ", ".join(failed_empty_fields[:10])
+                    ) from exc
+                if failed_empty_fields:
+                    LOGGER.warning(
+                        "Dokument %s wurde teilweise aktualisiert; fehlgeschlagene leere Custom Fields: %s",
+                        document_id,
+                        ", ".join(failed_empty_fields[:10]),
+                    )
 
     def update_document_custom_fields(
         self,
