@@ -1425,7 +1425,13 @@ class PaperlessClient:
                 bulk_modify(values, remove_ids)
             except PaperlessApiError as exc:
                 if len(values) + len(remove_ids) <= 1:
-                    raise
+                    LOGGER.warning(
+                        "Einzelnes Custom Field konnte für Dokument %s nicht geschrieben werden "
+                        "und wird für diesen Lauf übersprungen: %s",
+                        document_id,
+                        exc,
+                    )
+                    return
                 LOGGER.warning(
                     "Bulk-Edit für Custom-Field-Paket fehlgeschlagen, schreibe Felder einzeln: %s",
                     exc,
@@ -1475,7 +1481,13 @@ class PaperlessClient:
                 bulk_modify(empty_ids, [])
             except PaperlessApiError as exc:
                 if len(empty_ids) <= 1:
-                    raise
+                    LOGGER.warning(
+                        "Einzelnes leeres Custom Field konnte für Dokument %s nicht geschrieben "
+                        "werden und wird für diesen Lauf übersprungen: %s",
+                        document_id,
+                        exc,
+                    )
+                    return
                 LOGGER.warning(
                     "Bulk-Edit für leere Custom Fields fehlgeschlagen, schreibe leere Felder einzeln: %s",
                     exc,

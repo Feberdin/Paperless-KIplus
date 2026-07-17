@@ -395,6 +395,18 @@ class CustomFieldTests(unittest.TestCase):
         ]
         self.assertEqual(single_field_payloads, [{10: "alpha"}, {11: "beta"}])
 
+    def test_custom_field_patch_skips_rejected_single_field(self) -> None:
+        client = _PatchFallbackClient(failing_field_ids={10})
+
+        client.patch_document_custom_fields(123, {10: "alpha"})
+
+        bulk_payloads = [
+            call["payload"]["parameters"]["add_custom_fields"]
+            for call in client.calls
+            if call["method"] == "POST"
+        ]
+        self.assertEqual(bulk_payloads, [{10: "alpha"}])
+
     def test_custom_field_patch_raises_when_all_single_fields_fail(self) -> None:
         client = _PatchFallbackClient(failing_field_ids={10, 11})
 
