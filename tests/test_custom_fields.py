@@ -756,6 +756,42 @@ class CustomFieldTests(unittest.TestCase):
         self.assertNotIn("sb_calendar_date", suggestions)
         self.assertEqual(suggestions["sb_document_date"].value, "2026-08-15")
 
+    def test_rule_based_calendar_detection_prefers_compact_court_date_over_ai_document_date(self) -> None:
+        suggestions = build_secondbrain_suggestions(
+            document={
+                "title": "2026_07_06_Landgericht Oldenburg_Rechtsanwalt_04092026_Akte",
+                "content": "",
+                "created": "2026-07-06",
+            },
+            prediction={
+                "document_type": "Schreiben",
+                "correspondent": "Landgericht Oldenburg",
+                "document_date": "2026-07-06",
+                "summary": "Gerichtliches Schreiben mit Termin.",
+                "rationale": "Das Dokument betrifft einen Gerichtstermin.",
+                "confidence": 0.91,
+                "secondbrain_custom_fields": {
+                    "sb_calendar_date": {
+                        "value": "2026-07-06",
+                        "confidence": 0.90,
+                        "reason": "Falsch aus dem Dokumentdatum übernommen.",
+                    },
+                    "sb_calendar_type": {
+                        "value": "Termin",
+                        "confidence": 0.90,
+                        "reason": "Falsch aus dem Dokumentdatum übernommen.",
+                    },
+                },
+            },
+            tax_enrichment=None,
+        )
+
+        self.assertEqual(suggestions["sb_calendar_date"].value, "2026-09-04")
+        self.assertEqual(suggestions["sb_calendar_date"].source, "rules")
+        self.assertEqual(suggestions["sb_calendar_type"].value, "Gericht")
+        calendar_events = json.loads(suggestions["sb_calendar_events"].value)
+        self.assertEqual(calendar_events[0]["date"], "2026-09-04")
+
     def test_build_patch_payload_includes_secondbrain_values(self) -> None:
         client = _FakeClient()
         custom_field_id_to_definition: Dict[int, CustomFieldDefinition] = {}

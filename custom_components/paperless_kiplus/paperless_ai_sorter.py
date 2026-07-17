@@ -41,6 +41,7 @@ MONETARY_SANITIZE_PATTERN = re.compile(r"[^0-9,.\-]")
 SELECT_OPTION_ID_SANITIZE_PATTERN = re.compile(r"[^a-z0-9]+")
 RETRY_AFTER_SECONDS_PATTERN = re.compile(r"Please try again in\s+([0-9]+(?:\.[0-9]+)?)s", re.IGNORECASE)
 CALENDAR_GERMAN_DATE_PATTERN = re.compile(r"\b([0-3]?\d)\.([01]?\d)\.((?:19|20)\d{2})\b")
+CALENDAR_COMPACT_GERMAN_DATE_PATTERN = re.compile(r"(?<!\d)([0-3]\d)([01]\d)((?:19|20)\d{2})(?!\d)")
 CALENDAR_ISO_DATE_PATTERN = re.compile(r"\b((?:19|20)\d{2})-([01]?\d)-([0-3]?\d)\b")
 CALENDAR_TIME_PATTERN = re.compile(r"\b(?:um\s*)?([01]?\d|2[0-3])[:.]([0-5]\d)\s*(?:uhr)?\b", re.IGNORECASE)
 RUN_STATE_VERSION = 1
@@ -66,6 +67,9 @@ CALENDAR_EVENT_KEYWORD_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "Gericht",
         (
             "gerichtsverhandlung",
+            "gericht",
+            "amtsgericht",
+            "landgericht",
             "mündliche verhandlung",
             "mündlichen verhandlung",
             "muendliche verhandlung",
@@ -2476,6 +2480,44 @@ def set_secondbrain_suggestion_if_missing(
     )
 
 
+def prefer_rule_based_calendar_suggestions(
+    suggestions: Dict[str, SecondBrainFieldSuggestion],
+    rule_based: Dict[str, SecondBrainFieldSuggestion],
+) -> None:
+    """Setzt regelbasierte Kalenderdaten als Plausibilitätsanker durch.
+
+    Warum diese Sonderregel existiert:
+    - Das Modell kann ein Dokumentdatum mit einem echten Termin verwechseln.
+    - Die Regelquelle akzeptiert nur Daten mit nahem Termin-/Fristkontext und
+      ist deshalb für `sb_calendar_*` oft der sicherere Primäranker.
+    - Alle zusammenhängenden Kalenderfelder werden gemeinsam ersetzt, damit
+      Datum, Typ, Titel und Event-JSON nicht aus unterschiedlichen Quellen
+      gemischt werden.
+    """
+
+    rule_date = rule_based.get("sb_calendar_date")
+    if rule_date is None or rule_date.value in (None, "", []):
+        return
+
+    current_date = suggestions.get("sb_calendar_date")
+    if current_date is not None and current_date.value == rule_date.value:
+        return
+
+    calendar_keys = (
+        "sb_calendar_date",
+        "sb_calendar_time",
+        "sb_calendar_type",
+        "sb_calendar_title",
+        "sb_calendar_events",
+    )
+    for key in calendar_keys:
+        rule_suggestion = rule_based.get(key)
+        if rule_suggestion is not None and rule_suggestion.value not in (None, "", []):
+            suggestions[key] = rule_suggestion
+        elif key in suggestions:
+            suggestions.pop(key, None)
+
+
 def _collect_document_context_text(document: Dict[str, Any], prediction: Dict[str, Any]) -> str:
     """Baut einen robusten Volltext für regelbasierte SecondBrain-Heuristiken."""
 
@@ -2702,6 +2744,7 @@ def infer_calendar_event_from_text(
     for part_index, text_part in enumerate(text_parts):
         for pattern, german_date in (
             (CALENDAR_GERMAN_DATE_PATTERN, True),
+            (CALENDAR_COMPACT_GERMAN_DATE_PATTERN, True),
             (CALENDAR_ISO_DATE_PATTERN, False),
         ):
             for match in pattern.finditer(text_part):
@@ -3124,6 +3167,7 @@ def build_secondbrain_suggestions(
             reason=suggestion.reason,
             source=suggestion.source,
         )
+    prefer_rule_based_calendar_suggestions(suggestions, rule_based)
 
     apply_tax_enrichment_to_secondbrain_suggestions(suggestions, tax_enrichment)
 
