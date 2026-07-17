@@ -3161,11 +3161,12 @@ def build_document_date_filter_params(
     Warum dieser Helper existiert:
     - Backfill-Läufe dürfen bei "heute neu einlesen" nicht versehentlich den
       kompletten Bestand anfassen.
-    - `added__date` meint den Import-/Upload-Tag in Paperless.
-    - `created__date` meint das fachliche Dokumentdatum.
+    - `added__gte`/`added__lt` meint den Import-/Upload-Tag in Paperless.
+    - `created__gte`/`created__lt` meint das fachliche Dokumentdatum.
 
     Beispiel:
-    - `added_on="2026-07-17"` -> `{"added__date": "2026-07-17"}`
+    - `added_on="2026-07-17"` ->
+      `{"added__gte": "2026-07-17", "added__lt": "2026-07-18"}`
     """
 
     params: Dict[str, str] = {}
@@ -3173,12 +3174,16 @@ def build_document_date_filter_params(
         normalized = normalize_iso_date(added_on)
         if normalized is None:
             raise ConfigError(f"Ungültiger added_on Datumsfilter: {added_on!r}. Erwartet YYYY-MM-DD.")
-        params["added__date"] = normalized
+        next_day = (dt.date.fromisoformat(normalized) + dt.timedelta(days=1)).isoformat()
+        params["added__gte"] = normalized
+        params["added__lt"] = next_day
     if created_on:
         normalized = normalize_iso_date(created_on)
         if normalized is None:
             raise ConfigError(f"Ungültiger created_on Datumsfilter: {created_on!r}. Erwartet YYYY-MM-DD.")
-        params["created__date"] = normalized
+        next_day = (dt.date.fromisoformat(normalized) + dt.timedelta(days=1)).isoformat()
+        params["created__gte"] = normalized
+        params["created__lt"] = next_day
     return params
 
 

@@ -157,7 +157,7 @@ class RuntimeStateTests(unittest.TestCase):
     def test_build_document_date_filter_params_uses_added_date(self) -> None:
         self.assertEqual(
             build_document_date_filter_params(added_on="2026-07-17"),
-            {"added__date": "2026-07-17"},
+            {"added__gte": "2026-07-17", "added__lt": "2026-07-18"},
         )
 
     def test_build_document_date_filter_params_rejects_invalid_dates(self) -> None:
