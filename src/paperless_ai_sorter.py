@@ -1369,10 +1369,10 @@ class PaperlessClient:
     ) -> None:
         """Schreibt Custom-Field-Werte auf ein Dokument.
 
-        Primär versuchen wir ein normales Dokument-PATCH. Falls die lokale
-        Paperless-Version das nicht akzeptiert, fällt die Methode auf den
-        dokumentierten Bulk-Edit-Weg `modify_custom_fields` für genau ein
-        Dokument zurück.
+        Paperless-Versionen unterscheiden sich beim direkten Dokument-PATCH für
+        `custom_fields`. Der dokumentierte Bulk-Edit-Weg `modify_custom_fields`
+        funktioniert stabil für einzelne Dokumente und ist deshalb hier der
+        Primärweg.
         """
 
         empty_ids = sorted(
@@ -1404,21 +1404,6 @@ class PaperlessClient:
                 },
                 retries=2,
             )
-
-        if not empty_ids and not remove_ids:
-            try:
-                self._request(
-                    "PATCH",
-                    f"/api/documents/{document_id}/",
-                    payload={"custom_fields": values},
-                    retries=2,
-                )
-                return
-            except PaperlessApiError as exc:
-                LOGGER.warning(
-                    "Direktes PATCH für Custom Fields fehlgeschlagen, nutze Bulk-Edit-Fallback: %s",
-                    exc,
-                )
 
         if values or remove_ids:
             try:
