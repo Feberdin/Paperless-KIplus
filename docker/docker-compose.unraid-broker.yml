@@ -28,7 +28,6 @@ x-broker:
 services:
   paperless-kiplus-worker:
     image: ghcr.io/feberdin/paperless-kiplus-worker:latest
-    container_name: paperless-kiplus-worker
     restart: unless-stopped
     labels:
       unraid-deploy-broker.heimdall.enabled: "true"
