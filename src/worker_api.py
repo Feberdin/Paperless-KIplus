@@ -42,15 +42,26 @@ import time
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import yaml
 
+from entity_review import (
+    EntityRecord,
+    build_ai_prompt_context,
+    filter_candidates_by_rules,
+    find_duplicate_candidates,
+    load_review_store,
+    review_rules_from_store,
+    upsert_review_rule,
+)
 from paperless_ai_sorter import (
     RUN_PAUSE_EXIT_CODE,
     RUN_STATE_FILE_DEFAULT,
     STOP_REQUEST_FILE_DEFAULT,
     ConfigError,
+    PaperlessApiError,
+    PaperlessClient,
     load_config,
 )
 
@@ -243,6 +254,7 @@ WORKER_WEB_UI_HTML = """<!DOCTYPE html>
       <div class="links" style="margin-top: 16px;">
         <a id="current-link" class="button secondary" target="_blank" rel="noreferrer">Aktuelles Dokument öffnen</a>
         <a id="last-link" class="button secondary" target="_blank" rel="noreferrer">Letztes fertiges Dokument öffnen</a>
+        <a class="button warn" href="/review">Dopplungen reviewen</a>
         <a id="download-log-link" class="button secondary" target="_blank" rel="noreferrer">Log herunterladen</a>
         <a id="download-config-link" class="button secondary" target="_blank" rel="noreferrer">Config herunterladen</a>
       </div>
@@ -483,6 +495,545 @@ WORKER_WEB_UI_HTML = """<!DOCTYPE html>
 </html>
 """
 
+ENTITY_REVIEW_HTML = """<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Paperless KIplus Entity Review</title>
+  <style>
+    :root {
+      --bg: #f7f5f1;
+      --panel: #fffefa;
+      --line: #d7d0c4;
+      --text: #24211d;
+      --muted: #6f675d;
+      --accent: #0f766e;
+      --accent-2: #9a5b00;
+      --danger: #a83232;
+      --ok: #0b6e4f;
+      --shadow: 0 8px 24px rgba(36,33,29,0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Avenir Next", "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding: 18px 24px;
+      background: rgba(255,254,250,0.96);
+      border-bottom: 1px solid var(--line);
+      position: sticky;
+      top: 0;
+      z-index: 5;
+    }
+    h1 { margin: 0; font-size: 22px; }
+    h2 { margin: 0 0 12px; font-size: 17px; }
+    p { margin: 0; color: var(--muted); }
+    main {
+      display: grid;
+      grid-template-columns: minmax(360px, 1.1fr) minmax(360px, 0.9fr);
+      gap: 18px;
+      padding: 18px;
+      align-items: start;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      padding: 16px;
+    }
+    .wide { grid-column: 1 / -1; }
+    .toolbar {
+      display: grid;
+      grid-template-columns: 1fr 130px 140px auto;
+      gap: 10px;
+      align-items: end;
+      margin-bottom: 12px;
+    }
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 5px;
+    }
+    input, select, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 9px 10px;
+      font: inherit;
+      background: #fff;
+      color: var(--text);
+    }
+    textarea {
+      min-height: 150px;
+      resize: vertical;
+      line-height: 1.4;
+    }
+    button, a.button {
+      border: 0;
+      border-radius: 6px;
+      padding: 9px 12px;
+      background: var(--accent);
+      color: white;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      white-space: nowrap;
+    }
+    button.secondary, a.button.secondary { background: #52677a; }
+    button.warn { background: var(--accent-2); }
+    button.danger { background: var(--danger); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+    .stat {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      background: #fff;
+    }
+    .stat small { display: block; color: var(--muted); margin-bottom: 4px; }
+    .stat strong { font-size: 20px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      border-bottom: 1px solid var(--line);
+      padding: 9px 8px;
+    }
+    th {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+      background: #faf8f4;
+      position: sticky;
+      top: 69px;
+      z-index: 2;
+    }
+    tbody tr { cursor: pointer; }
+    tbody tr:hover, tbody tr.selected { background: #eef8f5; }
+    .pill {
+      display: inline-block;
+      padding: 3px 7px;
+      border-radius: 999px;
+      background: #e8eee9;
+      color: var(--ok);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .muted { color: var(--muted); }
+    .grid2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .message {
+      margin-top: 12px;
+      padding: 10px 12px;
+      border-radius: 6px;
+      border: 1px solid #ead1a4;
+      background: #fff8e8;
+      color: #654400;
+      display: none;
+      white-space: pre-wrap;
+    }
+    .message.error {
+      border-color: #e5b1b1;
+      background: #fff0f0;
+      color: #7a1b1b;
+    }
+    pre {
+      max-height: 260px;
+      overflow: auto;
+      margin: 0;
+      padding: 12px;
+      border-radius: 6px;
+      background: #211e1a;
+      color: #f7f5f1;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    @media (max-width: 980px) {
+      main { grid-template-columns: 1fr; }
+      .toolbar { grid-template-columns: 1fr 1fr; }
+      .stats { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Entity Review</h1>
+      <p>Dokumenttypen und Korrespondenten auf Dopplungen prüfen, zusammenführen und als KI-Regel speichern.</p>
+    </div>
+    <a class="button secondary" href="/">Worker</a>
+  </header>
+  <main>
+    <section class="panel">
+      <div class="toolbar">
+        <div>
+          <label for="search-input">Suche</label>
+          <input id="search-input" placeholder="Name, Typ, Grund …" />
+        </div>
+        <div>
+          <label for="type-filter">Typ</label>
+          <select id="type-filter">
+            <option value="all">Alle</option>
+            <option value="document_type">Dokumenttypen</option>
+            <option value="correspondent">Korrespondenten</option>
+          </select>
+        </div>
+        <div>
+          <label for="threshold-input">Ähnlichkeit</label>
+          <input id="threshold-input" type="number" min="0.5" max="1" step="0.01" value="0.84" />
+        </div>
+        <button id="refresh-btn">Aktualisieren</button>
+      </div>
+      <div class="stats">
+        <div class="stat"><small>Kandidaten</small><strong id="stat-candidates">0</strong></div>
+        <div class="stat"><small>Regeln</small><strong id="stat-rules">0</strong></div>
+        <div class="stat"><small>Dokumenttypen</small><strong id="stat-doc-types">0</strong></div>
+        <div class="stat"><small>Korrespondenten</small><strong id="stat-correspondents">0</strong></div>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Typ</th>
+            <th>Dopplung</th>
+            <th>Ziel</th>
+            <th>Score</th>
+          </tr>
+        </thead>
+        <tbody id="candidate-body"></tbody>
+      </table>
+      <div id="list-message" class="message"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Entscheidung</h2>
+      <p id="selection-hint">Wähle links einen Kandidaten aus.</p>
+      <div id="decision-form" style="display: none;">
+        <div class="grid2">
+          <div>
+            <label for="alias-select">Dopplung / Alias</label>
+            <select id="alias-select"></select>
+          </div>
+          <div>
+            <label for="canonical-select">Zielwert</label>
+            <select id="canonical-select"></select>
+          </div>
+        </div>
+        <div class="grid2" style="margin-top: 10px;">
+          <div>
+            <label for="selected-type">Entity-Typ</label>
+            <input id="selected-type" disabled />
+          </div>
+          <div>
+            <label for="delete-alias">Alias nach Merge löschen</label>
+            <select id="delete-alias">
+              <option value="true">Ja</option>
+              <option value="false">Nein</option>
+            </select>
+          </div>
+        </div>
+        <div style="margin-top: 10px;">
+          <label for="context-input">Zusätzlicher Kontext für die KI</label>
+          <textarea id="context-input" placeholder="Warum sind diese Namen gleich? Wann soll die KI den Zielwert verwenden?"></textarea>
+        </div>
+        <div class="actions">
+          <button id="swap-btn" class="secondary">Alias/Ziel tauschen</button>
+          <button id="save-rule-btn">Nur KI-Regel speichern</button>
+          <button id="dry-run-btn" class="warn">Merge planen</button>
+          <button id="merge-btn" class="danger">Merge anwenden</button>
+          <button id="ignore-btn" class="secondary">Kein Duplikat</button>
+        </div>
+        <div id="action-message" class="message"></div>
+      </div>
+    </section>
+
+    <section class="panel wide">
+      <h2>KI-Kontext aus geprüften Regeln</h2>
+      <pre id="ai-context">Noch keine Regeln geladen.</pre>
+    </section>
+  </main>
+
+  <script>
+    const state = {
+      payload: null,
+      candidates: [],
+      filtered: [],
+      selected: null
+    };
+
+    const candidateBody = document.getElementById('candidate-body');
+    const actionMessage = document.getElementById('action-message');
+    const listMessage = document.getElementById('list-message');
+    const decisionForm = document.getElementById('decision-form');
+    const selectionHint = document.getElementById('selection-hint');
+    const aliasSelect = document.getElementById('alias-select');
+    const canonicalSelect = document.getElementById('canonical-select');
+    const contextInput = document.getElementById('context-input');
+    const selectedTypeInput = document.getElementById('selected-type');
+
+    function apiHeaders() {
+      const headers = { 'Accept': 'application/json' };
+      const token = localStorage.getItem('paperless_kiplus_worker_token') || '';
+      if (token.trim()) {
+        headers.Authorization = `Bearer ${token.trim()}`;
+      }
+      return headers;
+    }
+
+    async function apiJson(path, method = 'GET', payload = null) {
+      const options = { method, headers: apiHeaders() };
+      if (payload !== null) {
+        options.headers['Content-Type'] = 'application/json';
+        options.body = JSON.stringify(payload);
+      }
+      const response = await fetch(path, options);
+      const text = await response.text();
+      const data = text.trim() ? JSON.parse(text) : {};
+      if (!response.ok) {
+        throw new Error(data.message || text || `HTTP ${response.status}`);
+      }
+      return data;
+    }
+
+    function showMessage(element, text, isError = false) {
+      element.style.display = 'block';
+      element.classList.toggle('error', Boolean(isError));
+      element.textContent = text;
+    }
+
+    function hideMessage(element) {
+      element.style.display = 'none';
+      element.textContent = '';
+    }
+
+    function entityLabel(type) {
+      return type === 'document_type' ? 'Dokumenttyp' : 'Korrespondent';
+    }
+
+    function entityOptions(type) {
+      const group = state.payload?.entities?.[type] || [];
+      return group.slice().sort((a, b) => String(a.name).localeCompare(String(b.name), 'de'));
+    }
+
+    function fillSelect(select, type, selectedId) {
+      select.innerHTML = '';
+      for (const item of entityOptions(type)) {
+        const option = document.createElement('option');
+        option.value = String(item.id);
+        option.textContent = `${item.name} (${item.document_count || 0})`;
+        option.dataset.name = item.name;
+        select.appendChild(option);
+      }
+      select.value = String(selectedId);
+    }
+
+    function selectedEntity(select) {
+      const option = select.options[select.selectedIndex];
+      return {
+        id: Number(select.value),
+        name: option ? option.dataset.name || option.textContent : ''
+      };
+    }
+
+    function renderStats(payload) {
+      document.getElementById('stat-candidates').textContent = payload.candidates.length;
+      document.getElementById('stat-rules').textContent = payload.rules.length;
+      document.getElementById('stat-doc-types').textContent = payload.entities.document_type.length;
+      document.getElementById('stat-correspondents').textContent = payload.entities.correspondent.length;
+      document.getElementById('ai-context').textContent = payload.ai_context || 'Noch keine gespeicherten Prefer-/Merge-Regeln vorhanden.';
+    }
+
+    function candidateMatches(candidate, query, typeFilter) {
+      if (typeFilter !== 'all' && candidate.entity_type !== typeFilter) {
+        return false;
+      }
+      if (!query) {
+        return true;
+      }
+      const haystack = [
+        candidate.entity_type,
+        candidate.alias_name,
+        candidate.canonical_name,
+        candidate.reason,
+        String(candidate.similarity)
+      ].join(' ').toLowerCase();
+      return haystack.includes(query);
+    }
+
+    function renderCandidates() {
+      const query = document.getElementById('search-input').value.trim().toLowerCase();
+      const typeFilter = document.getElementById('type-filter').value;
+      state.filtered = state.candidates.filter(candidate => candidateMatches(candidate, query, typeFilter));
+      candidateBody.innerHTML = '';
+      for (const candidate of state.filtered) {
+        const row = document.createElement('tr');
+        row.dataset.pairKey = candidate.pair_key;
+        if (state.selected && state.selected.pair_key === candidate.pair_key) {
+          row.classList.add('selected');
+        }
+        row.innerHTML = `
+          <td><span class="pill">${entityLabel(candidate.entity_type)}</span><br><span class="muted">${candidate.reason}</span></td>
+          <td>${escapeHtml(candidate.alias_name)}<br><span class="muted">${candidate.alias_document_count || 0} Dokumente</span></td>
+          <td>${escapeHtml(candidate.canonical_name)}<br><span class="muted">${candidate.canonical_document_count || 0} Dokumente</span></td>
+          <td><strong>${Number(candidate.similarity || 0).toFixed(2)}</strong></td>
+        `;
+        row.addEventListener('click', () => selectCandidate(candidate));
+        candidateBody.appendChild(row);
+      }
+      if (!state.filtered.length) {
+        showMessage(listMessage, 'Keine Kandidaten für diese Filter gefunden.');
+      } else {
+        hideMessage(listMessage);
+      }
+    }
+
+    function escapeHtml(value) {
+      return String(value || '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+    function selectCandidate(candidate) {
+      state.selected = candidate;
+      selectionHint.style.display = 'none';
+      decisionForm.style.display = 'block';
+      selectedTypeInput.value = entityLabel(candidate.entity_type);
+      fillSelect(aliasSelect, candidate.entity_type, candidate.alias_id);
+      fillSelect(canonicalSelect, candidate.entity_type, candidate.canonical_id);
+      contextInput.value = '';
+      hideMessage(actionMessage);
+      renderCandidates();
+    }
+
+    function buildDecisionPayload(action = 'prefer') {
+      if (!state.selected) {
+        throw new Error('Kein Kandidat ausgewählt.');
+      }
+      const alias = selectedEntity(aliasSelect);
+      const canonical = selectedEntity(canonicalSelect);
+      if (alias.id === canonical.id) {
+        throw new Error('Alias und Ziel dürfen nicht identisch sein.');
+      }
+      return {
+        entity_type: state.selected.entity_type,
+        alias_id: alias.id,
+        alias_name: alias.name,
+        canonical_id: canonical.id,
+        canonical_name: canonical.name,
+        context: contextInput.value,
+        action,
+        delete_alias: document.getElementById('delete-alias').value === 'true'
+      };
+    }
+
+    async function refresh() {
+      hideMessage(listMessage);
+      const threshold = Number(document.getElementById('threshold-input').value || 0.84);
+      const payload = await apiJson(`/api/review/entities?threshold=${encodeURIComponent(threshold)}`);
+      state.payload = payload;
+      state.candidates = payload.candidates || [];
+      renderStats(payload);
+      renderCandidates();
+    }
+
+    document.getElementById('refresh-btn').addEventListener('click', async () => {
+      try {
+        await refresh();
+      } catch (error) {
+        showMessage(listMessage, `Review konnte nicht geladen werden: ${error.message}`, true);
+      }
+    });
+    document.getElementById('search-input').addEventListener('input', renderCandidates);
+    document.getElementById('type-filter').addEventListener('change', renderCandidates);
+
+    document.getElementById('swap-btn').addEventListener('click', () => {
+      const aliasValue = aliasSelect.value;
+      aliasSelect.value = canonicalSelect.value;
+      canonicalSelect.value = aliasValue;
+    });
+
+    document.getElementById('save-rule-btn').addEventListener('click', async () => {
+      try {
+        const result = await apiJson('/api/review/rules', 'POST', buildDecisionPayload('prefer'));
+        showMessage(actionMessage, result.message || 'KI-Regel gespeichert.');
+        await refresh();
+      } catch (error) {
+        showMessage(actionMessage, error.message, true);
+      }
+    });
+
+    document.getElementById('dry-run-btn').addEventListener('click', async () => {
+      try {
+        const result = await apiJson('/api/review/merge', 'POST', { ...buildDecisionPayload('merge'), dry_run: true });
+        showMessage(actionMessage, `Merge-Plan: ${result.affected_count || 0} Dokumente würden umgehängt. Vorschau-IDs: ${(result.affected_document_ids_preview || []).join(', ') || '-'}\n${result.message || ''}`);
+      } catch (error) {
+        showMessage(actionMessage, error.message, true);
+      }
+    });
+
+    document.getElementById('merge-btn').addEventListener('click', async () => {
+      try {
+        const payload = buildDecisionPayload('merge');
+        const ok = confirm(`Wirklich zusammenführen?\n\n${payload.alias_name}\n→ ${payload.canonical_name}`);
+        if (!ok) {
+          return;
+        }
+        const result = await apiJson('/api/review/merge', 'POST', { ...payload, dry_run: false });
+        showMessage(actionMessage, result.message || `Merge angewendet: ${result.updated_count || 0} Dokumente aktualisiert.`);
+        await refresh();
+      } catch (error) {
+        showMessage(actionMessage, error.message, true);
+      }
+    });
+
+    document.getElementById('ignore-btn').addEventListener('click', async () => {
+      try {
+        const result = await apiJson('/api/review/rules', 'POST', buildDecisionPayload('ignore'));
+        showMessage(actionMessage, result.message || 'Als kein Duplikat gespeichert.');
+        await refresh();
+      } catch (error) {
+        showMessage(actionMessage, error.message, true);
+      }
+    });
+
+    refresh().catch(error => showMessage(listMessage, `Review konnte nicht geladen werden: ${error.message}`, true));
+  </script>
+</body>
+</html>
+"""
+
 
 def build_paperless_document_url(base_url: str, document_id: int | None) -> str:
     """Build a Paperless document detail URL from base URL and document id."""
@@ -506,6 +1057,7 @@ class WorkerPaths:
     run_state_file: Path
     stop_request_file: Path
     metrics_file: Path
+    entity_review_rules_file: Path
     worker_meta_file: Path
     log_file: Path
 
@@ -530,6 +1082,7 @@ class WorkerManager:
             run_state_file=data_dir / "state" / "run_state.json",
             stop_request_file=data_dir / "state" / "stop.request",
             metrics_file=data_dir / "state" / "run_metrics.json",
+            entity_review_rules_file=data_dir / "state" / "entity_review_rules.json",
             worker_meta_file=data_dir / "state" / "worker_meta.json",
             log_file=data_dir / "logs" / "worker.log",
         )
@@ -951,6 +1504,8 @@ class WorkerManager:
             args.extend(["--run-state-file", str(self.paths.run_state_file)])
         if "--stop-request-file" not in args:
             args.extend(["--stop-request-file", str(self.paths.stop_request_file)])
+        if "--entity-review-rules-file" not in args:
+            args.extend(["--entity-review-rules-file", str(self.paths.entity_review_rules_file)])
         return args
 
     def _stream_reader(self, pipe: Any, *, stream_name: str) -> None:
@@ -1272,6 +1827,282 @@ class WorkerManager:
             self.last_message = f"failed/quarantine documents reset ({deleted_count} files)"
             return self.status_payload()
 
+    @staticmethod
+    def _entity_endpoint(entity_type: str) -> str:
+        endpoints = {
+            "document_type": "/api/document_types/",
+            "correspondent": "/api/correspondents/",
+        }
+        endpoint = endpoints.get(str(entity_type or "").strip())
+        if not endpoint:
+            raise ValueError(f"Nicht unterstützter Entity-Typ: {entity_type}")
+        return endpoint
+
+    @staticmethod
+    def _document_field_for_entity(entity_type: str) -> str:
+        fields = {
+            "document_type": "document_type",
+            "correspondent": "correspondent",
+        }
+        field = fields.get(str(entity_type or "").strip())
+        if not field:
+            raise ValueError(f"Nicht unterstützter Entity-Typ: {entity_type}")
+        return field
+
+    def _load_paperless_client(self) -> PaperlessClient:
+        self._refresh_config_state()
+        if not self.config_validation_ok:
+            raise ValueError(self.config_validation_message)
+        config = load_config(str(self.paths.config_file), False)
+        return PaperlessClient(config)
+
+    def _list_entity_records(
+        self,
+        client: PaperlessClient,
+        *,
+        entity_type: str,
+    ) -> list[EntityRecord]:
+        """Read Paperless entity metadata without exposing document contents."""
+
+        endpoint = self._entity_endpoint(entity_type)
+        records: list[EntityRecord] = []
+        next_url = endpoint
+        params: dict[str, Any] | None = {"page_size": 100}
+        while next_url:
+            page = client._request("GET", next_url, params=params)
+            params = None
+            for item in page.get("results", []) or []:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name") or item.get("path") or "").strip()
+                if not name:
+                    continue
+                try:
+                    entity_id = int(item.get("id"))
+                except (TypeError, ValueError):
+                    continue
+                records.append(
+                    EntityRecord(
+                        entity_type=entity_type,
+                        entity_id=entity_id,
+                        name=name,
+                        document_count=self._safe_int(
+                            item.get("document_count")
+                            or item.get("documents_count")
+                            or item.get("count")
+                        ),
+                    )
+                )
+            next_url = str(page.get("next") or "")
+        return records
+
+    @staticmethod
+    def _entity_payload(records: list[EntityRecord]) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": record.entity_id,
+                "name": record.name,
+                "document_count": record.document_count,
+            }
+            for record in sorted(records, key=lambda item: item.name.casefold())
+        ]
+
+    def _load_review_rules(self) -> list[Any]:
+        store = load_review_store(self.paths.entity_review_rules_file)
+        return review_rules_from_store(store)
+
+    def entity_review_rules_payload(self) -> dict[str, Any]:
+        rules = self._load_review_rules()
+        return {
+            "ok": True,
+            "rules_file": str(self.paths.entity_review_rules_file),
+            "rules": [rule.to_payload() for rule in rules],
+            "ai_context": build_ai_prompt_context(rules),
+        }
+
+    def entity_review_payload(self, *, threshold: float = 0.84) -> dict[str, Any]:
+        """Build the safe JSON payload behind `/review`.
+
+        Why this endpoint does live API calls:
+        - Review candidates must reflect current Paperless metadata.
+        - We only load entity lists, not OCR content.
+        - The response intentionally contains no Paperless token or config text.
+        """
+
+        client = self._load_paperless_client()
+        document_type_records = self._list_entity_records(client, entity_type="document_type")
+        correspondent_records = self._list_entity_records(client, entity_type="correspondent")
+        rules = self._load_review_rules()
+        candidates = []
+        for records in (document_type_records, correspondent_records):
+            candidates.extend(
+                find_duplicate_candidates(
+                    records,
+                    min_similarity=threshold,
+                    max_candidates=250,
+                )
+            )
+        candidates = filter_candidates_by_rules(candidates, rules)
+        candidates.sort(
+            key=lambda candidate: (
+                -candidate.similarity,
+                candidate.entity_type,
+                candidate.canonical_name.casefold(),
+                candidate.alias_name.casefold(),
+            )
+        )
+
+        return {
+            "ok": True,
+            "rules_file": str(self.paths.entity_review_rules_file),
+            "threshold": threshold,
+            "entities": {
+                "document_type": self._entity_payload(document_type_records),
+                "correspondent": self._entity_payload(correspondent_records),
+            },
+            "candidates": [candidate.to_payload() for candidate in candidates],
+            "rules": [rule.to_payload() for rule in rules],
+            "ai_context": build_ai_prompt_context(rules),
+        }
+
+    def save_entity_review_rule(self, payload: dict[str, Any]) -> dict[str, Any]:
+        rule = upsert_review_rule(
+            self.paths.entity_review_rules_file,
+            entity_type=str(payload.get("entity_type") or ""),
+            alias_id=int(payload.get("alias_id")),
+            alias_name=str(payload.get("alias_name") or ""),
+            canonical_id=int(payload.get("canonical_id")),
+            canonical_name=str(payload.get("canonical_name") or ""),
+            action=str(payload.get("action") or "prefer"),
+            context=str(payload.get("context") or ""),
+        )
+        action_label = "Kein Duplikat gespeichert." if rule.action == "ignore" else "KI-Regel gespeichert."
+        return {
+            "ok": True,
+            "message": action_label,
+            "rule": rule.to_payload(),
+            "rules_file": str(self.paths.entity_review_rules_file),
+            "ai_context": build_ai_prompt_context(self._load_review_rules()),
+        }
+
+    @staticmethod
+    def _document_matches_entity(document: dict[str, Any], field: str, entity_id: int) -> bool:
+        try:
+            return int(document.get(field) or 0) == int(entity_id)
+        except (TypeError, ValueError):
+            return False
+
+    def _document_ids_for_entity(
+        self,
+        client: PaperlessClient,
+        *,
+        entity_type: str,
+        entity_id: int,
+    ) -> list[int]:
+        """Find document ids assigned to one entity with a safe fallback scan."""
+
+        field = self._document_field_for_entity(entity_type)
+        safe_entity_id = int(entity_id)
+        filter_candidates = (
+            {f"{field}__id": safe_entity_id},
+            {field: safe_entity_id},
+        )
+
+        for params in filter_candidates:
+            document_ids: list[int] = []
+            filter_looked_supported = True
+            try:
+                for document in client.iter_documents(None, extra_params=params):
+                    if self._document_matches_entity(document, field, safe_entity_id):
+                        try:
+                            document_ids.append(int(document.get("id")))
+                        except (TypeError, ValueError):
+                            continue
+                    else:
+                        filter_looked_supported = False
+                        break
+            except PaperlessApiError:
+                continue
+            if filter_looked_supported:
+                return sorted(set(document_ids))
+
+        document_ids = []
+        for document in client.iter_documents(None):
+            if self._document_matches_entity(document, field, safe_entity_id):
+                try:
+                    document_ids.append(int(document.get("id")))
+                except (TypeError, ValueError):
+                    continue
+        return sorted(set(document_ids))
+
+    def merge_review_entities(self, payload: dict[str, Any]) -> dict[str, Any]:
+        entity_type = str(payload.get("entity_type") or "").strip()
+        alias_id = int(payload.get("alias_id"))
+        canonical_id = int(payload.get("canonical_id"))
+        if alias_id == canonical_id:
+            raise ValueError("Alias und Ziel dürfen nicht identisch sein.")
+        alias_name = str(payload.get("alias_name") or "")
+        canonical_name = str(payload.get("canonical_name") or "")
+        dry_run = bool(payload.get("dry_run", True))
+        delete_alias = bool(payload.get("delete_alias", True))
+        field = self._document_field_for_entity(entity_type)
+        endpoint = self._entity_endpoint(entity_type)
+        client = self._load_paperless_client()
+        document_ids = self._document_ids_for_entity(
+            client,
+            entity_type=entity_type,
+            entity_id=alias_id,
+        )
+
+        if dry_run:
+            return {
+                "ok": True,
+                "dry_run": True,
+                "message": "Dry-Run abgeschlossen. Es wurden keine Paperless-Daten geändert.",
+                "affected_count": len(document_ids),
+                "affected_document_ids_preview": document_ids[:25],
+                "delete_alias": delete_alias,
+            }
+
+        updated_count = 0
+        for document_id in document_ids:
+            client.update_document(document_id, {field: canonical_id})
+            updated_count += 1
+
+        deleted_alias = False
+        delete_warning = ""
+        if delete_alias:
+            try:
+                client._request("DELETE", f"{endpoint}{alias_id}/", retries=2)
+                deleted_alias = True
+            except PaperlessApiError as exc:
+                delete_warning = (
+                    "Dokumente wurden umgehängt, aber der alte Paperless-Eintrag "
+                    f"konnte nicht gelöscht werden: {exc}"
+                )
+
+        rule = upsert_review_rule(
+            self.paths.entity_review_rules_file,
+            entity_type=entity_type,
+            alias_id=alias_id,
+            alias_name=alias_name,
+            canonical_id=canonical_id,
+            canonical_name=canonical_name,
+            action="merge",
+            context=str(payload.get("context") or ""),
+        )
+        return {
+            "ok": True,
+            "dry_run": False,
+            "message": delete_warning or "Merge angewendet und KI-Regel gespeichert.",
+            "affected_count": len(document_ids),
+            "updated_count": updated_count,
+            "deleted_alias": deleted_alias,
+            "affected_document_ids_preview": document_ids[:25],
+            "rule": rule.to_payload(),
+            "ai_context": build_ai_prompt_context(self._load_review_rules()),
+        }
+
     def status_payload(self) -> dict[str, Any]:
         return {
             "status": self.last_status,
@@ -1447,6 +2278,9 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
             if path == "/":
                 self._text_response(WORKER_WEB_UI_HTML, content_type="text/html; charset=utf-8")
                 return
+            if path == "/review":
+                self._text_response(ENTITY_REVIEW_HTML, content_type="text/html; charset=utf-8")
+                return
             if not path.startswith("/api/"):
                 self._json_response({"ok": False, "message": "Not found"}, status=HTTPStatus.NOT_FOUND)
                 return
@@ -1484,6 +2318,18 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
                     self.manager._load_config_text(),
                     content_type="application/x-yaml; charset=utf-8",
                 )
+                return
+            if path == "/api/review/entities":
+                query = parse_qs(parsed.query)
+                threshold_raw = (query.get("threshold") or ["0.84"])[0]
+                try:
+                    threshold = float(threshold_raw)
+                except (TypeError, ValueError):
+                    threshold = 0.84
+                self._json_response(self.manager.entity_review_payload(threshold=threshold))
+                return
+            if path == "/api/review/rules":
+                self._json_response(self.manager.entity_review_rules_payload())
                 return
             self._json_response({"ok": False, "message": "Not found"}, status=HTTPStatus.NOT_FOUND)
         except Exception as exc:  # noqa: BLE001
@@ -1543,6 +2389,14 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
                     source=str(payload.get("source") or "api"),
                 )
                 self._json_response({"ok": True, **result, "status": self.manager.status_payload()})
+                return
+            if path == "/api/review/rules":
+                result = self.manager.save_entity_review_rule(payload)
+                self._json_response(result)
+                return
+            if path == "/api/review/merge":
+                result = self.manager.merge_review_entities(payload)
+                self._json_response(result)
                 return
             self._json_response({"ok": False, "message": "Not found"}, status=HTTPStatus.NOT_FOUND)
         except ValueError as exc:

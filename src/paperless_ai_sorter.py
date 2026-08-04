@@ -24,6 +24,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import requests
 import yaml
 
+from entity_review import build_ai_prompt_context, load_review_store, review_rules_from_store
 from tax_enrichment import (
     TaxEnrichmentError,
     TaxPauseRequested,
@@ -781,6 +782,7 @@ class AppConfig:
     secondbrain_custom_fields_attach_empty_when_unknown: bool
     secondbrain_custom_fields_confidence_threshold: float
     secondbrain_custom_fields_log_missing_fields: bool
+    entity_review_rules_file: str
 
 
 @dataclass
@@ -877,7 +879,12 @@ def finalize_limited_progress_total(
     return safe_total
 
 
-def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | None = None) -> AppConfig:
+def load_config(
+    config_path: str,
+    cli_dry_run: bool,
+    cli_max_documents: int | None = None,
+    entity_review_rules_file: str | None = None,
+) -> AppConfig:
     """Lädt YAML-Konfiguration und validiert Pflichtfelder.
 
     Wir werfen bewusst klare Fehlermeldungen, damit Setup-Probleme
@@ -1047,6 +1054,10 @@ def load_config(config_path: str, cli_dry_run: bool, cli_max_documents: int | No
             ),
             True,
         ),
+        entity_review_rules_file=str(
+            entity_review_rules_file
+            or raw.get("entity_review_rules_file", "entity_review_rules.json")
+        ).strip(),
     )
 
 
@@ -1405,6 +1416,26 @@ class PaperlessClient:
                 retries=2,
             )
 
+        overlapping_ids = sorted(
+            {
+                int(custom_field_id)
+                for custom_field_id in values.keys()
+                if int(custom_field_id) in remove_ids
+            }
+        )
+        if overlapping_ids:
+            # Paperless kann leere Custom-Field-Zuordnungen als `value=None`
+            # speichern. Ein reines `add_custom_fields` meldet dann zwar OK,
+            # setzt den Wert aber nicht zuverlässig. Deshalb entfernen wir die
+            # leere Zuordnung vor dem erneuten Setzen explizit.
+            bulk_modify({}, overlapping_ids)
+            overlapping_id_set = set(overlapping_ids)
+            remove_ids = [
+                custom_field_id
+                for custom_field_id in remove_ids
+                if custom_field_id not in overlapping_id_set
+            ]
+
         if values or remove_ids:
             try:
                 bulk_modify(values, remove_ids)
@@ -1739,6 +1770,12 @@ class AiClassifier:
         self.include_existing_entities_in_prompt = config.include_existing_entities_in_prompt
         self.enable_custom_field_enrichment = config.enable_custom_field_enrichment
         self.enable_secondbrain_custom_fields = config.enable_secondbrain_custom_fields
+        self.entity_review_prompt_context = ""
+        if config.entity_review_rules_file:
+            review_store = load_review_store(Path(config.entity_review_rules_file))
+            self.entity_review_prompt_context = build_ai_prompt_context(
+                review_rules_from_store(review_store)
+            )
         self.known_document_types: List[str] = []
         self.known_correspondents: List[str] = []
         self.known_storage_paths: List[str] = []
@@ -1925,6 +1962,12 @@ class AiClassifier:
             prompt += (
                 "\n\nZusätzliche projektspezifische Regeln (hoch priorisiert):\n"
                 f"{self.custom_prompt_instructions}"
+            )
+        if self.entity_review_prompt_context:
+            prompt += (
+                "\n\nGeprüfte Review-Regeln für Dokumenttypen und Korrespondenten "
+                "(hoch priorisiert):\n"
+                f"{self.entity_review_prompt_context}"
             )
         if self.basis_config:
             prompt += (
@@ -4140,6 +4183,49 @@ def ensure_custom_field_id(
     return created_id
 
 
+def build_custom_field_candidate_keys(
+    field: Dict[str, Any],
+    definition: Optional[CustomFieldDefinition] = None,
+) -> List[str]:
+    """Liefert alle bekannten Schlüsselvarianten für ein Custom Field.
+
+    Warum diese Hilfsfunktion existiert:
+    - Paperless liefert Dokument-Custom-Fields teils mit Feld-ID (`field: 15`),
+      teils mit Namen (`sb_life_area`).
+    - Prüfungen auf vorhandene Werte, leere Anhänge und Diff-Filter müssen
+      dieselbe tolerant gebaute Kandidatenliste verwenden.
+    """
+
+    candidate_keys = [
+        str(field.get("id") or ""),
+        str(field.get("name") or ""),
+        str(field.get("name") or "").lower(),
+    ]
+    if definition is not None:
+        candidate_keys.extend(
+            [
+                definition.paperless_name,
+                definition.paperless_name.lower(),
+                definition.key,
+            ]
+        )
+    return [candidate_key for candidate_key in candidate_keys if candidate_key]
+
+
+def custom_field_entry_exists(
+    document: Dict[str, Any],
+    field: Dict[str, Any],
+    definition: Optional[CustomFieldDefinition] = None,
+) -> bool:
+    """Prüft, ob ein Custom Field am Dokument hängt, auch wenn der Wert leer ist."""
+
+    current_custom_fields = extract_document_custom_field_values(document)
+    return any(
+        candidate_key in current_custom_fields
+        for candidate_key in build_custom_field_candidate_keys(field, definition)
+    )
+
+
 def get_existing_custom_field_value(
     document: Dict[str, Any],
     field: Dict[str, Any],
@@ -4154,21 +4240,8 @@ def get_existing_custom_field_value(
     """
 
     current_custom_fields = extract_document_custom_field_values(document)
-    candidate_keys = [
-        str(field.get("id") or ""),
-        str(field.get("name") or ""),
-        str(field.get("name") or "").lower(),
-    ]
-    if definition is not None:
-        candidate_keys.extend(
-            [
-                definition.paperless_name,
-                definition.paperless_name.lower(),
-                definition.key,
-            ]
-        )
-    for candidate_key in candidate_keys:
-        if candidate_key and candidate_key in current_custom_fields:
+    for candidate_key in build_custom_field_candidate_keys(field, definition):
+        if candidate_key in current_custom_fields:
             return current_custom_fields[candidate_key]
     return None
 
@@ -4284,6 +4357,8 @@ def build_secondbrain_custom_fields_payload(
                     "reason": error_reason,
                 }
             continue
+        if custom_field_entry_exists(document, field, definition) and not current_has_value:
+            remove_field_ids.append(field_id)
         values[field_id] = resolved_value
         if sync_report is not None:
             sync_report["written"][key] = {
@@ -4549,12 +4624,12 @@ def filter_unchanged_patch_fields(
             candidate_keys = [str(custom_field_id)]
             if definition is not None:
                 candidate_keys.extend([definition.paperless_name, definition.paperless_name.lower()])
-            current_value = None
+            key_found = False
             for candidate_key in candidate_keys:
                 if candidate_key in current_custom_fields:
-                    current_value = current_custom_fields[candidate_key]
+                    key_found = True
                     break
-            if has_meaningful_custom_field_value(current_value):
+            if key_found:
                 remaining_remove_ids.append(int(custom_field_id))
         if remaining_remove_ids:
             filtered["custom_fields_remove"] = remaining_remove_ids
@@ -7033,6 +7108,15 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--entity-review-rules-file",
+        default=None,
+        help=(
+            "JSON-Datei mit geprüften Dokumenttyp-/Korrespondenten-Regeln aus "
+            "der Worker-Review-Seite. Relative Pfade werden zum aktuellen "
+            "Arbeitsverzeichnis aufgelöst."
+        ),
+    )
+    parser.add_argument(
         "--resume-run",
         action="store_true",
         help="Setzt einen pausierten Lauf anhand der Run-State-Datei fort.",
@@ -7055,7 +7139,12 @@ def main() -> int:
         return 0
 
     try:
-        config = load_config(args.config, args.dry_run, args.max_documents)
+        config = load_config(
+            args.config,
+            args.dry_run,
+            args.max_documents,
+            args.entity_review_rules_file,
+        )
     except ConfigError as exc:
         print(f"[CONFIG-ERROR] {exc}", file=sys.stderr)
         return 2

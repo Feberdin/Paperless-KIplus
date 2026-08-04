@@ -296,6 +296,52 @@ class WorkerManagerTests(unittest.TestCase):
             )
             self.assertEqual(status["progress_completed_documents"], 15)
 
+    def test_sorter_command_receives_entity_review_rules_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = WorkerManager(
+                data_dir=Path(tmp_dir),
+                sorter_command=["python3", "-c", "print('ok')"],
+                auth_token="",
+            )
+
+            command = manager._build_command(
+                dry_run=False,
+                all_documents=False,
+                max_documents=0,
+                backfill_existing_documents=False,
+                resume_run=False,
+            )
+
+            self.assertIn("--entity-review-rules-file", command)
+            rule_path = command[command.index("--entity-review-rules-file") + 1]
+            self.assertTrue(str(rule_path).endswith("state/entity_review_rules.json"))
+
+    def test_save_entity_review_rule_returns_safe_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = WorkerManager(
+                data_dir=Path(tmp_dir),
+                sorter_command=["python3", "-c", "print('ok')"],
+                auth_token="",
+            )
+
+            payload = manager.save_entity_review_rule(
+                {
+                    "entity_type": "correspondent",
+                    "alias_id": 2,
+                    "alias_name": "Finanzbehoerde",
+                    "canonical_id": 1,
+                    "canonical_name": "Finanzamt",
+                    "action": "prefer",
+                    "context": "Immer den bestehenden Korrespondenten Finanzamt verwenden.",
+                }
+            )
+            payload_keys = _collect_json_keys(payload)
+
+            self.assertTrue(payload["ok"])
+            self.assertIn("ai_context", payload)
+            self.assertNotIn("paperless_token", payload_keys)
+            self.assertNotIn("ai_api_key", payload_keys)
+
     def test_heimdall_endpoint_returns_public_happy_path_payload(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             manager = WorkerManager(

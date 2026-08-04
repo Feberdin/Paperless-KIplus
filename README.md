@@ -16,6 +16,7 @@ komplett ausgeschaltet.
 Neu dazugekommen:
 
 - eigenständiger Docker-/Unraid-Worker mit Weboberfläche und JSON-API
+- Review-Seite für doppelte Dokumenttypen/Korrespondenten inklusive KI-Regeln
 - Remote-Ausführungsmodus in Home Assistant (`local` oder `remote_worker`)
 - Konfig-Export aus Home Assistant direkt zum Worker
 - optionaler eigener Tax-KI-Provider, z. B. lokales Ollama/vLLM für kleinere Aufgaben
@@ -906,6 +907,7 @@ Was der Worker mitbringt:
 
 - vollständige Ausführung ohne Home Assistant
 - eingebaute Weboberfläche unter `/`
+- Entity-Review-Seite unter `/review` für Dopplungen und KI-Lernhinweise
 - JSON-API für Run / Stop / Resume / Restart / Backfill
 - Log-Download, Status und Konfigurationsverwaltung
 - persistente Dateien für Config, Metriken und Resume-State unter `/data`
@@ -927,6 +929,7 @@ docker compose -f docker/docker-compose.example.yml up -d
 Danach:
 
 - Weboberfläche: `http://<server>:8787/`
+- Dopplungsreview: `http://<server>:8787/review`
 - Status-API: `http://<server>:8787/api/status`
 
 ### Robuste Unraid-Installation

@@ -115,6 +115,12 @@ process_only_tag: ""
 # als Kontext an die KI übergeben, damit bestehende Werte bevorzugt werden.
 include_existing_entities_in_prompt: true
 
+# Optional: Von der Worker-Review-Seite gepflegte Alias-/Merge-Regeln für
+# Dokumenttypen und Korrespondenten. Der Worker übergibt diese Datei beim Lauf
+# automatisch an den Sorter. In CLI-/Standalone-Setups kann der Pfad hier
+# gesetzt oder per --entity-review-rules-file überschrieben werden.
+entity_review_rules_file: "entity_review_rules.json"
+
 # KI-Notizen in Paperless-Notizfeld aktivieren
 enable_ai_notes: true
 

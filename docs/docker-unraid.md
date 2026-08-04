@@ -160,17 +160,28 @@ Wichtig:
 ## Wichtige Endpunkte
 
 - `GET /` -> Weboberflaeche
+- `GET /review` -> Review-Seite fuer doppelte Dokumenttypen/Korrespondenten
 - `GET /api/status` -> aktueller Status fuer UI und Home Assistant
 - `GET /api/logs` -> kurzer JSON-Logausschnitt
 - `GET /api/logs/download` -> kompletter Log als Text
 - `GET /api/config/export` -> aktuelle Worker-Konfiguration als JSON-Payload
 - `GET /api/config/download` -> aktuelle Worker-YAML als Download
+- `GET /api/review/entities` -> Dopplungskandidaten und gespeicherte KI-Regeln
+- `GET /api/review/rules` -> gespeicherte KI-Regeln fuer Entity-Zuordnungen
+- `POST /api/review/rules` -> Alias-/Ziel-Regel oder "kein Duplikat" speichern
+- `POST /api/review/merge` -> Merge planen oder anwenden
 - `POST /api/config/import` -> neue YAML speichern
 - `POST /api/run` -> neuen Lauf starten
 - `POST /api/resume` -> pausierten Lauf fortsetzen
 - `POST /api/restart` -> frischen Neustart machen
 - `POST /api/stop` -> sicher pausieren
 - `POST /api/stop_now` -> sofort stoppen
+
+Die Review-Regeln liegen im Worker standardmaessig unter
+`/data/state/entity_review_rules.json`. Der Worker uebergibt diese Datei beim
+Start automatisch an den Sorter. Dadurch bevorzugt die KI beim naechsten Lauf
+die geprueften Zielwerte und legt sinngleiche Dokumenttypen oder
+Korrespondenten nicht erneut an.
 
 ## Debugging
 

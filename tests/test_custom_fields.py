@@ -381,6 +381,28 @@ class CustomFieldTests(unittest.TestCase):
             [{10: "alpha", 11: "beta"}, {10: "alpha"}, {11: "beta"}],
         )
 
+    def test_custom_field_patch_removes_empty_entry_before_setting_same_field(self) -> None:
+        client = _PatchFallbackClient()
+
+        client.patch_document_custom_fields(
+            123,
+            {10: "alpha"},
+            remove_custom_field_ids=[10],
+        )
+
+        bulk_payloads = [
+            call["payload"]["parameters"]
+            for call in client.calls
+            if call["method"] == "POST" and call["path"] == "/api/documents/bulk_edit/"
+        ]
+        self.assertEqual(
+            bulk_payloads,
+            [
+                {"add_custom_fields": {}, "remove_custom_fields": [10]},
+                {"add_custom_fields": {10: "alpha"}, "remove_custom_fields": []},
+            ],
+        )
+
     def test_custom_field_patch_keeps_successful_single_fields(self) -> None:
         client = _PatchFallbackClient(failing_field_ids={11})
 
@@ -418,6 +440,54 @@ class CustomFieldTests(unittest.TestCase):
         resolved, reason = resolve_custom_field_value(field, "Nicht vorhanden")
         self.assertIsNone(resolved)
         self.assertIn("Select-Option nicht gefunden", reason or "")
+
+    def test_secondbrain_payload_replaces_empty_existing_custom_field(self) -> None:
+        field_map = {
+            "sb_document_category": self._secondbrain_field_map()["sb_document_category"]
+        }
+        document = {"custom_fields": [{"field": 201, "value": None}]}
+        prediction = {
+            "confidence": 0.92,
+            "secondbrain_custom_fields": {
+                "sb_document_category": {
+                    "value": "Rechnung",
+                    "confidence": 0.92,
+                    "reason": "Testwert",
+                }
+            },
+        }
+
+        values, empty_ids, remove_ids = build_secondbrain_custom_fields_payload(
+            document=document,
+            prediction=prediction,
+            tax_enrichment=None,
+            custom_fields_map=field_map,
+            overwrite_existing=False,
+            attach_empty_when_unknown=False,
+            confidence_threshold=0.70,
+            log_missing_fields=False,
+        )
+
+        self.assertEqual(values, {201: 11})
+        self.assertEqual(empty_ids, [])
+        self.assertEqual(remove_ids, [201])
+
+    def test_filter_keeps_remove_for_empty_custom_field_entry(self) -> None:
+        definition = SECOND_BRAIN_CUSTOM_FIELD_DEFINITIONS["sb_document_category"]
+        patch_payload = {
+            "custom_fields": {201: 11},
+            "custom_fields_remove": [201],
+        }
+        document = {"custom_fields": [{"field": 201, "value": None}]}
+
+        filtered = filter_unchanged_patch_fields(
+            document=document,
+            patch_payload=patch_payload,
+            custom_field_id_to_definition={201: definition},
+        )
+
+        self.assertEqual(filtered["custom_fields"], {201: 11})
+        self.assertEqual(filtered["custom_fields_remove"], [201])
 
     def test_date_normalization_uses_iso_format(self) -> None:
         definition = SECOND_BRAIN_CUSTOM_FIELD_DEFINITIONS["sb_due_date"]
