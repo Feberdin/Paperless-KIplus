@@ -186,8 +186,8 @@ class PaperlessRunner:
         self.default_max_documents = max_documents
         self.managed_config_enabled = managed_config_enabled
         self.managed_config_yaml = managed_config_yaml
-        self.input_cost_per_1k_tokens_eur = input_cost_per_1k_tokens_eur
-        self.output_cost_per_1k_tokens_eur = output_cost_per_1k_tokens_eur
+        self._input_cost_eur = input_cost_per_1k_tokens_eur
+        self._output_cost_eur = output_cost_per_1k_tokens_eur
         self.already_classified_skip = already_classified_skip
         self.already_classified_require_ki_tag = already_classified_require_ki_tag
         self.precheck_min_content_chars = precheck_min_content_chars
@@ -294,6 +294,18 @@ class PaperlessRunner:
         """Exposes the resolved stop-request path for diagnostics."""
 
         return str(self._stop_request_path())
+
+    @property
+    def input_cost_per_1k_tokens_eur(self) -> float:
+        """Backward-compatible alias for the configured input cost value."""
+
+        return self._input_cost_eur
+
+    @property
+    def output_cost_per_1k_tokens_eur(self) -> float:
+        """Backward-compatible alias for the configured output cost value."""
+
+        return self._output_cost_eur
 
     def _run_state_path(self) -> Path:
         """Returns the persisted resume-state path for this config entry."""
@@ -1206,8 +1218,8 @@ class PaperlessRunner:
         export_path = Path("/config/www/paperless_kiplus_worker_config.yaml")
         yaml_text = build_effective_managed_config_yaml(
             self.managed_config_yaml,
-            input_cost_per_1k_tokens_eur=self.input_cost_per_1k_tokens_eur,
-            output_cost_per_1k_tokens_eur=self.output_cost_per_1k_tokens_eur,
+            input_cost_per_1k_tokens_eur=self._input_cost_eur,
+            output_cost_per_1k_tokens_eur=self._output_cost_eur,
             already_classified_skip=self.already_classified_skip,
             already_classified_require_ki_tag=self.already_classified_require_ki_tag,
             precheck_min_content_chars=self.precheck_min_content_chars,
@@ -1293,8 +1305,8 @@ class PaperlessRunner:
             path.parent.mkdir(parents=True, exist_ok=True)
             content = build_effective_managed_config_yaml(
                 self.managed_config_yaml,
-                input_cost_per_1k_tokens_eur=self.input_cost_per_1k_tokens_eur,
-                output_cost_per_1k_tokens_eur=self.output_cost_per_1k_tokens_eur,
+                input_cost_per_1k_tokens_eur=self._input_cost_eur,
+                output_cost_per_1k_tokens_eur=self._output_cost_eur,
                 already_classified_skip=self.already_classified_skip,
                 already_classified_require_ki_tag=self.already_classified_require_ki_tag,
                 precheck_min_content_chars=self.precheck_min_content_chars,

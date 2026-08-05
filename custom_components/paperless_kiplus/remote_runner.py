@@ -112,8 +112,8 @@ class RemotePaperlessRunner:
         self.default_max_documents = max_documents
         self.managed_config_enabled = managed_config_enabled
         self.managed_config_yaml = managed_config_yaml
-        self.input_cost_per_1k_tokens_eur = input_cost_per_1k_tokens_eur
-        self.output_cost_per_1k_tokens_eur = output_cost_per_1k_tokens_eur
+        self._input_cost_eur = input_cost_per_1k_tokens_eur
+        self._output_cost_eur = output_cost_per_1k_tokens_eur
         self.already_classified_skip = already_classified_skip
         self.already_classified_require_ki_tag = already_classified_require_ki_tag
         self.precheck_min_content_chars = precheck_min_content_chars
@@ -215,6 +215,18 @@ class RemotePaperlessRunner:
     @property
     def stop_request_path(self) -> str:
         return self._stop_request_path_text
+
+    @property
+    def input_cost_per_1k_tokens_eur(self) -> float:
+        """Backward-compatible alias for the configured input cost value."""
+
+        return self._input_cost_eur
+
+    @property
+    def output_cost_per_1k_tokens_eur(self) -> float:
+        """Backward-compatible alias for the configured output cost value."""
+
+        return self._output_cost_eur
 
     def _notify(self) -> None:
         async_dispatcher_send(self.hass, SIGNAL_STATUS_UPDATED)
@@ -423,8 +435,8 @@ class RemotePaperlessRunner:
             raise ValueError("Keine managed YAML verfügbar und config_file nicht lesbar.")
         return build_effective_managed_config_yaml(
             self.managed_config_yaml,
-            input_cost_per_1k_tokens_eur=self.input_cost_per_1k_tokens_eur,
-            output_cost_per_1k_tokens_eur=self.output_cost_per_1k_tokens_eur,
+            input_cost_per_1k_tokens_eur=self._input_cost_eur,
+            output_cost_per_1k_tokens_eur=self._output_cost_eur,
             already_classified_skip=self.already_classified_skip,
             already_classified_require_ki_tag=self.already_classified_require_ki_tag,
             precheck_min_content_chars=self.precheck_min_content_chars,
