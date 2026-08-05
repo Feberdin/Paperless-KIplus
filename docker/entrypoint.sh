@@ -8,4 +8,9 @@ set -eu
 DATA_DIR="${PAPERLESS_KIPLUS_DATA_DIR:-/data}"
 mkdir -p "$DATA_DIR/config" "$DATA_DIR/state" "$DATA_DIR/logs" "$DATA_DIR/exports"
 
+if [ ! -w "$DATA_DIR" ]; then
+  echo "Paperless KIplus cannot write to $DATA_DIR. Check the mounted directory ownership and the container UID/GID." >&2
+  exit 1
+fi
+
 exec "$@"

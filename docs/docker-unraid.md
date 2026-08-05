@@ -189,6 +189,10 @@ Korrespondenten nicht erneut an.
 - `docker logs paperless-kiplus-worker`
 - Pruefe, ob `/data/config/config.yaml` gueltiges YAML ist.
 - Pruefe, ob `paperless_url`, `paperless_token`, `ai_api_key` und `ai_model` gesetzt sind.
+- Der produktive Broker-Stack startet den Worker bewusst ohne Root-Rechte als
+  Unraid-Benutzer `99:100`. Meldet der Start fehlende Schreibrechte fuer
+  `/data`, muss das bestehende Appdata-Verzeichnis diesem Benutzer bzw. der
+  Gruppe gehoeren; die Anwendung darf dafuer nicht als Root gestartet werden.
 
 ### Weboberflaeche ist da, aber Start scheitert
 - `GET /api/status` oeffnen und auf `config_validation_message` achten.
