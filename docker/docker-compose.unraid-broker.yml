@@ -12,6 +12,8 @@
 # Important invariants:
 # - Do not replace the /data mount with a fresh relative directory; it contains
 #   worker config, state, logs, metrics and exports.
+# - Keep the worker image pinned to the reviewed multi-architecture manifest
+#   digest; update it only after the matching GitHub workflow succeeds.
 # - Secrets stay as secret:// references and are injected only by the broker at
 #   deploy_apply time.
 # - Heimdall labels expose only the dedicated safe metadata endpoint.
@@ -27,7 +29,7 @@ x-broker:
 
 services:
   paperless-kiplus-worker:
-    image: ghcr.io/feberdin/paperless-kiplus-worker:latest
+    image: ghcr.io/feberdin/paperless-kiplus-worker@sha256:d0c05b82d2b9c7b0175405405951bef5fcec6668dd8e3004c32af482afa4aac7
     restart: unless-stopped
     labels:
       unraid-deploy-broker.heimdall.enabled: "true"
