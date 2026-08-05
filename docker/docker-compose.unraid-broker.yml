@@ -29,7 +29,7 @@ x-broker:
 
 services:
   paperless-kiplus-worker:
-    image: ghcr.io/feberdin/paperless-kiplus-worker@sha256:d0c05b82d2b9c7b0175405405951bef5fcec6668dd8e3004c32af482afa4aac7
+    image: ghcr.io/feberdin/paperless-kiplus-worker@sha256:04fc422c3025235ef5bd70742f2f9932521a32bfbfc487f2e0f45d5b7777eb96
     # Unraid appdata uses nobody:users by default. Keep the worker non-root
     # while preserving write access to the existing /data directory.
     user: "99:100"
