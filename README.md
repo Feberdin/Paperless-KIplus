@@ -21,19 +21,12 @@ Neu dazugekommen:
 - Konfig-Export aus Home Assistant direkt zum Worker
 - optionaler eigener Tax-KI-Provider, z. B. lokales Ollama/vLLM für kleinere Aufgaben
 
-### Bilder
+### Oberflächen
 
-#### Geräteansicht in Home Assistant
-![Home Assistant Geräteansicht](./docs/images/ha-geraeteansicht.png)
-
-#### Dokument mit KI-Notiz in Paperless-ngx
-![Paperless Dokumentansicht mit KI-Notiz](./docs/images/paperless-ki-notiz.png)
-
-#### Optionen in Home Assistant (Teil 1)
-![Home Assistant Optionen Teil 1](./docs/images/ha-optionen-teil1.png)
-
-#### Optionen in Home Assistant (Teil 2)
-![Home Assistant Optionen Teil 2](./docs/images/ha-optionen-teil2.png)
+Die Integration stellt in Home Assistant Entitäten und Buttons für Status,
+Kosten, Protokolle, Laufsteuerung und Konfigurationsoptionen bereit. Screenshots
+werden bewusst nicht im Repository gepflegt, weil UI-Aufnahmen leicht private
+Dokumentdaten, URLs oder Token-Felder enthalten können.
 
 ## Wie installiere ich die Integration?
 
