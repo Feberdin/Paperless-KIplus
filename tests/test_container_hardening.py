@@ -2,7 +2,7 @@
 Purpose: Guard the production worker image against accidental root execution.
 Input/Output: Reads the committed Dockerfile and Broker Compose YAML; performs no network access.
 Important invariants: The image has a non-root default and Unraid keeps its established UID/GID.
-Debugging: If this fails, inspect docker/Dockerfile USER and the production Compose user setting.
+Debugging: If this fails, inspect Dockerfile USER plus the production Compose user and port settings.
 """
 
 from pathlib import Path
@@ -39,3 +39,12 @@ def test_broker_compose_preserves_unraid_appdata_identity() -> None:
 
     assert worker["user"] == "99:100"
     assert "/mnt/user/appdata/paperless-kiplus:/data" in worker["volumes"]
+
+
+def test_broker_compose_uses_stable_review_port() -> None:
+    """Redeployments must keep the documented review URL on host port 8788."""
+
+    compose = yaml.safe_load(BROKER_COMPOSE_PATH.read_text(encoding="utf-8"))
+    worker = compose["services"]["paperless-kiplus-worker"]
+
+    assert worker["ports"] == ["8788:8788"]
