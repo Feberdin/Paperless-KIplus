@@ -22,3 +22,5 @@
 - Jobfehler und Worker-Logs maskieren Zugangsdaten und Providerdetails.
 - Unterbrochene Schreibjobs werden nicht automatisch wiederholt.
 - Python-Basisimage und Runtime-Abhängigkeiten sind reproduzierbar gepinnt.
+- Produktion baut commitgebunden im Broker und benötigt keinen privaten
+  Registry-Pull.

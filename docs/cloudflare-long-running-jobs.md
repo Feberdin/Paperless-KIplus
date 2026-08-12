@@ -144,7 +144,8 @@ Metrik-, Log- und Resume-Dateien werden nicht verschoben.
 
 Rollback:
 
-1. Im Broker den vorherigen Git-Commit und dessen Image-Digest planen.
+1. Im Broker den vorherigen GitOps-Commit planen; er enthält den zugehörigen
+   commitgebundenen Image-Build.
 2. Plan prüfen und anwenden.
 3. Die neue SQLite-Datei darf liegen bleiben; ältere Worker-Versionen ignorieren
    sie. Für einen späteren Roll-forward bleibt dadurch die Diagnose erhalten.

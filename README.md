@@ -945,9 +945,13 @@ Der Stack erhält `PAPERLESS_KIPLUS_TOKEN` zur Laufzeit über
 in Chat, Logs oder Compose. Das bestehende Appdata-Verzeichnis
 `/mnt/user/appdata/paperless-kiplus` wird unverändert als `/data` eingebunden.
 
-Ein Rollback verwendet denselben Broker-Ablauf mit dem vorherigen Commit und
-Image-Digest. Direkte SSH-, Docker-CLI- oder Unraid-Shell-Deployments sind für
-diese Produktionsumgebung nicht vorgesehen.
+Der Broker baut das Worker-Image aus dem commitgebundenen Checkout. Dockerfile,
+Basisimage, Python-Abhängigkeiten, App-Version und geprüfter App-Commit sind
+festgelegt; damit ist kein privater Registry-Pull für die Produktion nötig.
+
+Ein Rollback verwendet denselben Broker-Ablauf mit dem vorherigen GitOps-Commit.
+Direkte SSH-, Docker-CLI- oder Unraid-Shell-Deployments sind für diese
+Produktionsumgebung nicht vorgesehen.
 
 ### Logging und Fehlersuche
 

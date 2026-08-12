@@ -51,9 +51,10 @@ Sicherer Ablauf:
 
 Das Compose referenziert das Secret ausschließlich als
 `secret://PAPERLESS_KIPLUS_TOKEN`; der Broker injiziert es erst beim Apply. Das
-Image ist auf einen geprüften Manifest-Digest festgelegt. Nach einem neuen
-Image-Build muss zuerst der veröffentlichte Digest in Git aktualisiert und die
-CI für diesen Commit geprüft werden.
+Worker-Image wird lokal aus dem brokergebundenen Git-Checkout gebaut. Der
+Dockerfile pinnt Basisimage und Python-Abhängigkeiten; die Compose-Build-Args
+halten den erfolgreich geprüften App-Commit und die App-Version fest. Damit
+benötigt die Produktion keinen privaten Registry-Pull.
 
 ## Welche Datei ist die produktive Konfiguration?
 

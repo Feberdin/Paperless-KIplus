@@ -12,8 +12,8 @@
 # Important invariants:
 # - Do not replace the /data mount with a fresh relative directory; it contains
 #   worker config, state, logs, metrics and exports.
-# - Keep the worker image pinned to the reviewed multi-architecture manifest
-#   digest; update it only after the matching GitHub workflow succeeds.
+# - Build only from this broker-bound Git checkout. APP_COMMIT names the exact
+#   source commit whose Docker build, tests, HACS, and Hassfest checks passed.
 # - Secrets stay as secret:// references and are injected only by the broker at
 #   deploy_apply time.
 # - Heimdall labels expose only the dedicated safe metadata endpoint.
@@ -29,7 +29,13 @@ x-broker:
 
 services:
   paperless-kiplus-worker:
-    image: ghcr.io/feberdin/paperless-kiplus-worker@sha256:8f279e10b3b63c8ed8e49482aebd1f87d9bcb2aa990874e0ec2c33a59b703e12
+    image: paperless-kiplus-worker:1.4.21-e155328
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      args:
+        APP_COMMIT: e15532882f58a02e2a033d0f79e6b965eaad39a7
+        APP_VERSION: 1.4.21
     # Unraid appdata uses nobody:users by default. Keep the worker non-root
     # while preserving write access to the existing /data directory.
     user: "99:100"
