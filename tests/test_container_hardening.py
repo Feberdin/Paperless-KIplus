@@ -9,7 +9,6 @@ from pathlib import Path
 
 import yaml
 
-
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DOCKERFILE_PATH = REPOSITORY_ROOT / "docker" / "Dockerfile"
 BROKER_COMPOSE_PATH = REPOSITORY_ROOT / "docker" / "docker-compose.unraid-broker.yml"
@@ -26,7 +25,9 @@ def test_worker_dockerfile_uses_specific_base_and_non_root_user() -> None:
     from_instructions = [line for line in dockerfile_lines if line.upper().startswith("FROM ")]
     user_instructions = [line for line in dockerfile_lines if line.upper().startswith("USER ")]
 
-    assert from_instructions == ["FROM python:3.12.13-slim-trixie"]
+    assert from_instructions == [
+        "FROM python:3.12.13-slim-trixie@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36"
+    ]
     assert user_instructions
     assert user_instructions[-1].split(maxsplit=1)[1].lower() not in {"root", "0", "0:0"}
 

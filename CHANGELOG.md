@@ -21,3 +21,4 @@
 - API-, Log- und Konfigurationsantworten sind nicht cachebar.
 - Jobfehler und Worker-Logs maskieren Zugangsdaten und Providerdetails.
 - Unterbrochene Schreibjobs werden nicht automatisch wiederholt.
+- Python-Basisimage und Runtime-Abhängigkeiten sind reproduzierbar gepinnt.

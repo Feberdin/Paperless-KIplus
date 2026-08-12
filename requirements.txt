@@ -1,2 +1,6 @@
-requests>=2.34.2
-PyYAML>=6.0.3
+# Purpose: Exact runtime dependency lock for CI, GHCR, and Broker-local builds.
+# Input/Output: pip resolves only these reviewed versions into the worker image.
+# Invariants: Update versions deliberately and verify tests plus Docker build.
+# Debugging: Run `python3 -m pip install -r requirements.txt` in a fresh venv.
+requests==2.34.2
+PyYAML==6.0.3
