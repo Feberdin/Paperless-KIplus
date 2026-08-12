@@ -58,7 +58,7 @@ def test_broker_compose_build_is_commit_bound() -> None:
     worker = compose["services"]["paperless-kiplus-worker"]
 
     assert worker["image"] == "paperless-kiplus-worker:1.4.21-e155328"
-    assert worker["build"]["context"] == ".."
+    assert worker["build"]["context"] == "."
     assert worker["build"]["dockerfile"] == "docker/Dockerfile"
     assert worker["build"]["args"] == {
         "APP_COMMIT": "e15532882f58a02e2a033d0f79e6b965eaad39a7",
