@@ -901,13 +901,15 @@ Was der Worker mitbringt:
 - vollständige Ausführung ohne Home Assistant
 - eingebaute Weboberfläche unter `/`
 - Entity-Review-Seite unter `/review` für Dopplungen und KI-Lernhinweise
-- JSON-API für Run / Stop / Resume / Restart / Backfill
+- persistente HTTP-202-Jobs für Run / Resume / Restart / Backfill und Review
+- Idempotency-Keys, sichere Request-IDs und Reload-Recovery mit Backoff
 - Log-Download, Status und Konfigurationsverwaltung
 - persistente Dateien für Config, Metriken und Resume-State unter `/data`
 
 Dokumentation:
 
 - [Docker- und Unraid-Betrieb](./docs/docker-unraid.md)
+- [Cloudflare-sichere Langläufer](./docs/cloudflare-long-running-jobs.md)
 - [Migration von Home Assistant zum Remote-Worker](./docs/migration-ha-to-worker.md)
 - [Lokale LLMs für kleinere Aufgaben](./docs/local-llm-routing.md)
 
@@ -925,76 +927,34 @@ Danach:
 - Dopplungsreview: `http://<server>:8787/review`
 - Status-API: `http://<server>:8787/api/status`
 
-### Robuste Unraid-Installation
+### Sichere Unraid-Installation in der Feberdin-Umgebung
 
-Für Unraid gibt es jetzt zwei klare Wege:
+Die produktive Compose-Quelle liegt unter
+`docker/docker-compose.unraid-broker.yml`. Deployments erfolgen ausschließlich
+über den Unraid Deployment Broker und einen vollständigen Git-Commit-SHA:
 
-1. Von macOS/Linux per SSH auf einen entfernten Unraid-Server deployen
-2. Direkt im Unraid-Terminal ohne Repo-Checkout installieren
-3. Direkt auf dem Unraid-Server mit vorhandenem Repo installieren
+1. `stack_source_status`
+2. `stack_validate`
+3. `deploy_plan`
+4. `approval_request`, falls der Plan dies verlangt
+5. `deploy_apply`
+6. `deployment_status`, `docker_list` und `logs_tail`
 
-#### Empfohlen: Remote-Deploy von macOS/Linux nach Unraid
+Der Stack erhält `PAPERLESS_KIPLUS_TOKEN` zur Laufzeit über
+`secret://PAPERLESS_KIPLUS_TOKEN`. Echte Tokenwerte gehören weder in Git noch
+in Chat, Logs oder Compose. Das bestehende Appdata-Verzeichnis
+`/mnt/user/appdata/paperless-kiplus` wird unverändert als `/data` eingebunden.
 
-```bash
-bash docker/deploy-to-unraid.sh \
-  --unraid-host 192.168.178.30 \
-  --paperless-url http://192.168.178.20:8000 \
-  --paperless-token PAPERLESS_TOKEN \
-  --ai-api-key OPENAI_KEY \
-  --ai-model gpt-4.1-mini
-```
+Ein Rollback verwendet denselben Broker-Ablauf mit dem vorherigen Commit und
+Image-Digest. Direkte SSH-, Docker-CLI- oder Unraid-Shell-Deployments sind für
+diese Produktionsumgebung nicht vorgesehen.
 
-Das Remote-Skript:
+### Logging und Fehlersuche
 
-- verbindet sich per SSH mit Unraid
-- kopiert den eigentlichen Host-Installer auf den Server
-- überträgt optional eine lokale `config.yaml`
-- führt die Installation direkt auf Unraid aus
-
-#### Direkte Ausführung auf dem Unraid-Server
-
-Wenn du direkt im Unraid-Terminal bist und das Repo dort nicht lokal liegen
-hast, kannst du jetzt den Bootstrap-Weg nutzen. Er legt zuerst den passenden
-Ordner an, lädt den Installer herunter und startet ihn direkt:
-
-```bash
-mkdir -p /boot/config/custom/paperless-kiplus && \
-curl -fsSL https://raw.githubusercontent.com/Feberdin/Paperless-KIplus/v1.4.6/docker/bootstrap-unraid-worker.sh \
-  -o /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh && \
-chmod +x /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh && \
-bash /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh \
-  --ref v1.4.6 \
-  --paperless-url http://192.168.178.20:8000 \
-  --paperless-token PAPERLESS_TOKEN \
-  --ai-api-key OPENAI_KEY \
-  --ai-model gpt-4.1-mini
-```
-
-Dabei wird der Installer standardmäßig hier abgelegt:
-
-```text
-/boot/config/custom/paperless-kiplus/install-unraid-worker.sh
-```
-
-Wenn du bereits ein Repo-Checkout auf Unraid hast, kannst du weiterhin direkt
-das Host-Skript verwenden:
-
-```bash
-bash /pfad/zum/repo/docker/install-unraid-worker.sh \
-  --paperless-url http://192.168.178.20:8000 \
-  --paperless-token PAPERLESS_TOKEN \
-  --ai-api-key OPENAI_KEY \
-  --ai-model gpt-4.1-mini
-```
-
-Das Host-Skript:
-
-- legt die Appdata-Verzeichnisse an
-- sichert bestehende Dateien
-- erzeugt eine startfähige `config.yaml`
-- schreibt einen Compose-Stack mit GHCR-Image
-- startet oder aktualisiert den Worker
-- prüft die API per Health-Check
+Der Standard-Level ist `INFO`. Für einen zeitlich begrenzten Diagnose-Lauf kann
+im Broker-Stack `PAPERLESS_KIPLUS_LOG_LEVEL=DEBUG` gesetzt werden. Logs werden
+über `logs_tail` abgerufen; Zugangsdaten werden vor Datei-, Speicher- und
+UI-Ausgabe maskiert. Jobfehler lassen sich über ihre `request_id` zuordnen.
 
 ### Remote-Steuerung aus Home Assistant
 

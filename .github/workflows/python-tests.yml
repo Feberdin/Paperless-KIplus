@@ -1,0 +1,48 @@
+# Purpose: Run the local Python, manifest, Compose, and image checks in CI.
+# Input/Output: Reads the repository at the pushed commit and publishes only test results.
+# Invariants: No deployment, production secret, or remote Paperless access is required.
+# Debugging: Re-run the first failed command locally from the repository root.
+
+name: Python + Docker Tests
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python 3.12
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install test dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pytest
+
+      - name: Compile Python sources
+        run: >-
+          python -m py_compile
+          src/*.py
+          custom_components/paperless_kiplus/*.py
+          tests/*.py
+
+      - name: Run unit and integration tests
+        run: python -m pytest -q
+
+      - name: Validate production Compose
+        run: docker compose -f docker/docker-compose.unraid-broker.yml config --quiet
+
+      - name: Build production worker image
+        run: docker build --file docker/Dockerfile --tag paperless-kiplus-worker:test .

@@ -17,12 +17,30 @@ Vielen Dank für dein Interesse an Beiträgen zu **Paperless KIplus**.
 
 ## Lokale Checks
 
-Vor einem PR bitte mindestens:
+Vor einem PR bitte aus dem Repository-Root ausführen:
 
-1. Syntax prüfen:
-   - `python3 -m py_compile custom_components/paperless_kiplus/*.py src/paperless_ai_sorter.py`
-2. Integration laden und einen Testlauf in Home Assistant durchführen
-3. Prüfen, dass README/Docs bei neuen Features aktualisiert sind
+```bash
+python3 -m pip install -r requirements.txt pytest
+python3 -m pytest -q
+docker compose -f docker/docker-compose.unraid-broker.yml config --quiet
+docker build -f docker/Dockerfile -t paperless-kiplus-worker:test .
+```
+
+Bei Änderungen an Hintergrundjobs zusätzlich mindestens einen Happy Path,
+einen ungültigen Input, Restart-Recovery und fünf wiederholte parallele
+Admission-Läufe testen. Echte Paperless- oder API-Token dürfen nie in Fixtures,
+Logs oder Fehlermeldungen erscheinen.
+
+Für gezieltes Debugging:
+
+```bash
+PAPERLESS_KIPLUS_LOG_LEVEL=DEBUG python3 src/worker_api.py --data-dir ./worker-data
+python3 -m unittest tests.test_background_jobs -v
+```
+
+Anschließend die Integration in Home Assistant laden und einen kleinen Dry-Run
+gegen eine Testinstanz durchführen. README und Betriebsdoku müssen das neue
+Verhalten erklären.
 
 ## Pull-Request Ablauf
 

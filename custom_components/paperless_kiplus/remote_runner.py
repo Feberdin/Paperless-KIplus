@@ -31,10 +31,11 @@ How to debug:
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 import json
 import logging
+import uuid
+from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -140,6 +141,8 @@ class RemotePaperlessRunner:
         self.last_config_sync_status: str = "idle"
 
         self._poll_task: asyncio.Task | None = None
+        self._active_job_status_url: str = ""
+        self._active_job_request_id: str = ""
         self._lock = asyncio.Lock()
         self._session = async_get_clientsession(hass)
 
@@ -259,17 +262,21 @@ class RemotePaperlessRunner:
         path: str,
         *,
         payload: dict[str, Any] | None = None,
+        idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         """Executes a JSON API request against the remote worker."""
 
         if not self.remote_worker_url:
             raise ValueError("remote_worker_url ist nicht konfiguriert.")
 
+        headers = self._headers()
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
         timeout = aiohttp.ClientTimeout(total=60)
         async with self._session.request(
             method,
             self._worker_url(path),
-            headers=self._headers(),
+            headers=headers,
             json=payload,
             ssl=self.remote_worker_verify_ssl,
             timeout=timeout,
@@ -284,7 +291,7 @@ class RemotePaperlessRunner:
                 return {}
             parsed = json.loads(text)
             if not isinstance(parsed, dict):
-                raise RuntimeError(f"Remote-Worker API Antwort für {path} ist kein JSON-Objekt.")
+                raise TypeError(f"Remote-Worker API Antwort für {path} ist kein JSON-Objekt.")
             return parsed
 
     async def _api_text(self, path: str) -> str:
@@ -373,10 +380,32 @@ class RemotePaperlessRunner:
         self.last_log_export_path = str(payload.get("last_log_export_path") or self.last_log_export_path or "")
         worker_export_url = str(payload.get("last_log_export_url") or "").strip()
         if worker_export_url:
-            if worker_export_url.startswith("http://") or worker_export_url.startswith("https://"):
+            if worker_export_url.startswith(("http://", "https://")):
                 self.last_log_export_url = worker_export_url
             else:
                 self.last_log_export_url = self._worker_url(worker_export_url)
+
+    def _apply_action_response(self, payload: dict[str, Any]) -> None:
+        """Accept both legacy immediate responses and new HTTP-202 job admissions."""
+
+        status_url = str(payload.get("status_url") or "").strip()
+        if payload.get("job_id") and status_url:
+            self._active_job_status_url = status_url
+            self._active_job_request_id = str(payload.get("request_id") or "")
+            self.last_status = str(payload.get("status") or "queued")
+            self.last_message = (
+                "Remote-Job angenommen"
+                + (
+                    f" (Request-ID: {self._active_job_request_id})"
+                    if self._active_job_request_id
+                    else ""
+                )
+            )
+            # The sorter process may need a short scheduling window. Keeping
+            # ``running`` true ensures HA polling does not stop before it starts.
+            self.running = True
+            return
+        self._apply_status_payload(payload.get("status") or payload)
 
     async def _refresh_status(self) -> None:
         payload = await self._api_json("GET", "/api/status")
@@ -388,8 +417,33 @@ class RemotePaperlessRunner:
 
         try:
             while True:
+                active_job = bool(self._active_job_status_url)
+                terminal_failure: tuple[str, str] | None = None
+                job_status = ""
+                if active_job:
+                    job = await self._api_json("GET", self._active_job_status_url)
+                    job_status = str(job.get("status") or "")
+                    if job_status in {"failed", "interrupted", "cancelled"}:
+                        error = job.get("error") or {}
+                        terminal_failure = (
+                            f"remote_job_{job_status}",
+                            str(error.get("message") or "Remote-Hintergrundjob fehlgeschlagen."),
+                        )
+                        self._active_job_status_url = ""
+                        self._active_job_request_id = ""
+                    elif job_status == "succeeded":
+                        self._active_job_status_url = ""
+                        self._active_job_request_id = ""
                 await self._refresh_status()
-                if not self.running and not self.resume_available and self.last_status not in {
+                if terminal_failure:
+                    self.running = False
+                    self.last_status, self.last_message = terminal_failure
+                    self.last_stderr_tail = self.last_message
+                    self._notify()
+                if active_job and self._active_job_status_url and not self.running:
+                    self.running = True
+                    self.last_status = job_status or "queued"
+                if not self._active_job_status_url and not self.running and not self.resume_available and self.last_status not in {
                     "waiting_auto_resume",
                     "paused",
                 }:
@@ -398,9 +452,18 @@ class RemotePaperlessRunner:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
+            request_hint = (
+                f" Request-ID: {self._active_job_request_id}."
+                if self._active_job_request_id
+                else ""
+            )
             self.last_status = "remote_poll_error"
-            self.last_message = str(exc)
-            self.last_stderr_tail = str(exc)
+            self.last_message = (
+                "Remote-Jobstatus konnte nicht geladen werden; Worker-Verbindung prüfen."
+                + request_hint
+            )
+            self.last_stderr_tail = self.last_message
+            _LOGGER.error("Remote-Jobstatus fehlgeschlagen: %s", type(exc).__name__)
             self._notify()
 
     def _ensure_polling(self) -> None:
@@ -527,8 +590,9 @@ class RemotePaperlessRunner:
                     "max_documents": self.default_max_documents if max_documents is None else int(max_documents),
                     "backfill_existing_documents": bool(backfill_existing_documents),
                 },
+                idempotency_key=uuid.uuid4().hex,
             )
-            self._apply_status_payload(payload.get("status") or payload)
+            self._apply_action_response(payload)
             if self.running or self.last_status in {"waiting_auto_resume", "paused"}:
                 self._ensure_polling()
             self._notify()
@@ -549,8 +613,13 @@ class RemotePaperlessRunner:
         return RunResult(self.last_status, self.last_exit_code, self.last_message)
 
     async def async_resume(self, *, force: bool = True) -> RunResult:
-        payload = await self._api_json("POST", "/api/resume", payload={"force": force})
-        self._apply_status_payload(payload.get("status") or payload)
+        payload = await self._api_json(
+            "POST",
+            "/api/resume",
+            payload={"force": force},
+            idempotency_key=uuid.uuid4().hex,
+        )
+        self._apply_action_response(payload)
         self._ensure_polling()
         self._notify()
         return RunResult(self.last_status, self.last_exit_code, self.last_message)
@@ -570,8 +639,9 @@ class RemotePaperlessRunner:
                 "force": force,
                 "backfill_existing_documents": backfill_existing_documents,
             },
+            idempotency_key=uuid.uuid4().hex,
         )
-        self._apply_status_payload(payload.get("status") or payload)
+        self._apply_action_response(payload)
         self._ensure_polling()
         self._notify()
         return RunResult(self.last_status, self.last_exit_code, self.last_message)
