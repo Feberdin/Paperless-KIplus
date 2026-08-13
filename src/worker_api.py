@@ -28,24 +28,34 @@ How to debug:
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
 import json
 import logging
 import os
-from pathlib import Path
+import re
+import secrets
 import shlex
 import subprocess
 import sys
 import threading
 import time
+import uuid
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Optional
-from urllib.parse import parse_qs, urlparse
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
 
 import yaml
 
+from background_jobs import (
+    JobConflictError,
+    PersistentJobStore,
+    ProgressCallback,
+    admission_payload,
+)
 from entity_review import (
     EntityRecord,
     build_ai_prompt_context,
@@ -57,8 +67,6 @@ from entity_review import (
 )
 from paperless_ai_sorter import (
     RUN_PAUSE_EXIT_CODE,
-    RUN_STATE_FILE_DEFAULT,
-    STOP_REQUEST_FILE_DEFAULT,
     ConfigError,
     PaperlessApiError,
     PaperlessClient,
@@ -71,6 +79,30 @@ TAIL_LIMIT_CHARS = 20000
 FORCE_STOP_GRACE_SECONDS = 5.0
 DEFAULT_PORT = 8787
 DEFAULT_HOST = "0.0.0.0"
+APP_VERSION = (
+    str(os.getenv("PAPERLESS_KIPLUS_APP_VERSION", "dev")).strip()[:40] or "dev"
+)
+_raw_image_commit = str(
+    os.getenv("PAPERLESS_KIPLUS_IMAGE_COMMIT", "unknown")
+).strip().lower()
+APP_COMMIT = (
+    _raw_image_commit
+    if re.fullmatch(r"[0-9a-f]{40}", _raw_image_commit)
+    else "unknown"
+)
+_SENSITIVE_LOG_PATTERNS = (
+    re.compile(r"(?i)(authorization\s*[:=]\s*bearer\s+)[^\s,;]+"),
+    re.compile(r"(?i)((?:api[_-]?key|token|secret|password|cookie)\s*[:=]\s*)[^\s,;]+"),
+)
+
+
+def redact_worker_text(value: Any) -> str:
+    """Mask common credentials before text reaches files, memory, or the UI."""
+
+    text = str(value or "")
+    for pattern in _SENSITIVE_LOG_PATTERNS:
+        text = pattern.sub(r"\1[REDACTED]", text)
+    return text
 
 WORKER_WEB_UI_HTML = """<!DOCTYPE html>
 <html lang="de">
@@ -330,10 +362,19 @@ WORKER_WEB_UI_HTML = """<!DOCTYPE html>
     const maxDocumentsInput = document.getElementById('max-documents');
     const dryRunSelect = document.getElementById('dry-run');
 
-    const savedToken = localStorage.getItem('paperless_kiplus_worker_token') || '';
+    // Why sessionStorage: bearer tokens must survive a page reload, but they
+    // should not remain on disk after the browser tab is closed.
+    const legacyToken = localStorage.getItem('paperless_kiplus_worker_token') || '';
+    const savedToken = sessionStorage.getItem('paperless_kiplus_worker_token') || legacyToken;
+    localStorage.removeItem('paperless_kiplus_worker_token');
     tokenInput.value = savedToken;
     tokenInput.addEventListener('change', () => {
-      localStorage.setItem('paperless_kiplus_worker_token', tokenInput.value.trim());
+      const token = tokenInput.value.trim();
+      if (token) {
+        sessionStorage.setItem('paperless_kiplus_worker_token', token);
+      } else {
+        sessionStorage.removeItem('paperless_kiplus_worker_token');
+      }
     });
 
     function apiHeaders() {
@@ -345,8 +386,8 @@ WORKER_WEB_UI_HTML = """<!DOCTYPE html>
       return headers;
     }
 
-    async function apiJson(path, method = 'GET', payload = null) {
-      const options = { method, headers: apiHeaders() };
+    async function apiJson(path, method = 'GET', payload = null, extraHeaders = {}) {
+      const options = { method, headers: { ...apiHeaders(), ...extraHeaders } };
       if (payload !== null) {
         options.headers['Content-Type'] = 'application/json';
         options.body = JSON.stringify(payload);
@@ -358,9 +399,89 @@ WORKER_WEB_UI_HTML = """<!DOCTYPE html>
         data = JSON.parse(text);
       }
       if (!response.ok) {
-        throw new Error(data.message || text || `HTTP ${response.status}`);
+        const error = new Error(data.message || text || `HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
       }
       return data;
+    }
+
+    const activeJobsKey = 'paperless_kiplus_active_jobs';
+
+    function storedJobs() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(activeJobsKey) || '[]');
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (_error) {
+        return [];
+      }
+    }
+
+    function rememberJob(job) {
+      const jobs = storedJobs().filter(item => item.job_id !== job.job_id);
+      jobs.push({ job_id: job.job_id, request_id: job.request_id, status_url: job.status_url });
+      localStorage.setItem(activeJobsKey, JSON.stringify(jobs.slice(-10)));
+    }
+
+    function forgetJob(jobId) {
+      localStorage.setItem(
+        activeJobsKey,
+        JSON.stringify(storedJobs().filter(item => item.job_id !== jobId))
+      );
+    }
+
+    function wait(milliseconds) {
+      return new Promise(resolve => setTimeout(resolve, milliseconds));
+    }
+
+    async function monitorJob(admission) {
+      rememberJob(admission);
+      let delayMs = 750;
+      let transientFailures = 0;
+      while (true) {
+        try {
+          const job = await apiJson(admission.status_url);
+          transientFailures = 0;
+          const percent = job.progress_percent;
+          const progressText = percent === null || percent === undefined
+            ? `Phase: ${job.phase || job.status}; Fortschritt noch nicht bestimmbar.`
+            : `Fortschritt: ${Number(percent).toFixed(2)}%.`;
+          showMessage(`${progressText} Request-ID: ${job.request_id}`);
+          await refreshStatus();
+          if (['succeeded', 'failed', 'interrupted', 'cancelled'].includes(job.status)) {
+            forgetJob(job.job_id);
+            if (job.status !== 'succeeded') {
+              const error = job.error || {};
+              throw new Error(`${error.message || 'Job fehlgeschlagen.'} Request-ID: ${error.request_id || job.request_id}`);
+            }
+            const result = job.result || {};
+            showMessage(`${result.message || 'Hintergrundjob abgeschlossen.'} Request-ID: ${job.request_id}`);
+            await refreshLog();
+            return result;
+          }
+          delayMs = Math.min(10000, Math.round(delayMs * 1.7));
+        } catch (error) {
+          if (String(error.message || '').includes('Request-ID:')) {
+            showMessage(error.message, true);
+            throw error;
+          }
+          if (error.status === 404) {
+            forgetJob(admission.job_id);
+            const message = `Jobstatus ist abgelaufen oder nicht mehr vorhanden. Request-ID: ${admission.request_id}`;
+            showMessage(message, true);
+            throw new Error(message);
+          }
+          transientFailures += 1;
+          if (transientFailures >= 12) {
+            const message = `Jobstatus nach 12 Versuchen nicht erreichbar. Der Job bleibt für einen späteren Reload gespeichert. Request-ID: ${admission.request_id}`;
+            showMessage(message, true);
+            throw new Error(message);
+          }
+          showMessage(`Jobstatus vorübergehend nicht erreichbar; erneuter Versuch. Request-ID: ${admission.request_id}`, true);
+          delayMs = Math.min(10000, Math.round(delayMs * 2));
+        }
+        await wait(delayMs);
+      }
     }
 
     function showMessage(text, isError = false) {
@@ -435,7 +556,21 @@ WORKER_WEB_UI_HTML = """<!DOCTYPE html>
 
     async function callAction(path, payload = {}) {
       try {
-        const data = await apiJson(path, 'POST', payload);
+        const isLongOperation = ['/api/run', '/api/resume', '/api/restart'].includes(path);
+        const idempotencyKey = isLongOperation && globalThis.crypto?.randomUUID
+          ? globalThis.crypto.randomUUID()
+          : `${Date.now()}-${Math.random()}`;
+        const data = await apiJson(
+          path,
+          'POST',
+          payload,
+          isLongOperation ? { 'Idempotency-Key': idempotencyKey } : {}
+        );
+        if (data.job_id && data.status_url) {
+          showMessage(`Job angenommen. Request-ID: ${data.request_id}`);
+          monitorJob(data).catch(() => {});
+          return;
+        }
         if (data.status) {
           renderStatus(data.status);
         }
@@ -489,6 +624,9 @@ WORKER_WEB_UI_HTML = """<!DOCTYPE html>
 
     refreshConfig();
     tick();
+    for (const job of storedJobs()) {
+      monitorJob(job).catch(() => {});
+    }
     setInterval(tick, 5000);
   </script>
 </body>
@@ -802,15 +940,15 @@ ENTITY_REVIEW_HTML = """<!DOCTYPE html>
 
     function apiHeaders() {
       const headers = { 'Accept': 'application/json' };
-      const token = localStorage.getItem('paperless_kiplus_worker_token') || '';
+      const token = sessionStorage.getItem('paperless_kiplus_worker_token') || '';
       if (token.trim()) {
         headers.Authorization = `Bearer ${token.trim()}`;
       }
       return headers;
     }
 
-    async function apiJson(path, method = 'GET', payload = null) {
-      const options = { method, headers: apiHeaders() };
+    async function apiJson(path, method = 'GET', payload = null, extraHeaders = {}) {
+      const options = { method, headers: { ...apiHeaders(), ...extraHeaders } };
       if (payload !== null) {
         options.headers['Content-Type'] = 'application/json';
         options.body = JSON.stringify(payload);
@@ -819,9 +957,103 @@ ENTITY_REVIEW_HTML = """<!DOCTYPE html>
       const text = await response.text();
       const data = text.trim() ? JSON.parse(text) : {};
       if (!response.ok) {
-        throw new Error(data.message || text || `HTTP ${response.status}`);
+        const error = new Error(data.message || text || `HTTP ${response.status}`);
+        error.status = response.status;
+        throw error;
       }
       return data;
+    }
+
+    const reviewJobsKey = 'paperless_kiplus_review_jobs';
+
+    function storedReviewJobs() {
+      try {
+        const parsed = JSON.parse(localStorage.getItem(reviewJobsKey) || '[]');
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (_error) {
+        return [];
+      }
+    }
+
+    function rememberReviewJob(job, purpose) {
+      const jobs = storedReviewJobs().filter(item => item.job_id !== job.job_id);
+      jobs.push({
+        job_id: job.job_id,
+        request_id: job.request_id,
+        status_url: job.status_url,
+        purpose
+      });
+      localStorage.setItem(reviewJobsKey, JSON.stringify(jobs.slice(-10)));
+    }
+
+    function forgetReviewJob(jobId) {
+      localStorage.setItem(
+        reviewJobsKey,
+        JSON.stringify(storedReviewJobs().filter(item => item.job_id !== jobId))
+      );
+    }
+
+    function wait(milliseconds) {
+      return new Promise(resolve => setTimeout(resolve, milliseconds));
+    }
+
+    async function monitorReviewJob(admission, purpose) {
+      rememberReviewJob(admission, purpose);
+      let delayMs = 750;
+      let transientFailures = 0;
+      while (true) {
+        try {
+          const job = await apiJson(admission.status_url);
+          transientFailures = 0;
+          const percent = job.progress_percent;
+          const progressText = percent === null || percent === undefined
+            ? `Phase: ${job.phase || job.status}; Fortschritt noch nicht bestimmbar.`
+            : `Fortschritt: ${Number(percent).toFixed(2)}%.`;
+          showMessage(listMessage, `${progressText} Request-ID: ${job.request_id}`);
+          if (['succeeded', 'failed', 'interrupted', 'cancelled'].includes(job.status)) {
+            forgetReviewJob(job.job_id);
+            if (job.status !== 'succeeded') {
+              const error = job.error || {};
+              throw new Error(`${error.message || 'Job fehlgeschlagen.'} Request-ID: ${error.request_id || job.request_id}`);
+            }
+            return job.result || {};
+          }
+          delayMs = Math.min(10000, Math.round(delayMs * 1.7));
+        } catch (error) {
+          if (String(error.message || '').includes('Request-ID:')) {
+            throw error;
+          }
+          if (error.status === 404) {
+            forgetReviewJob(admission.job_id);
+            throw new Error(`Jobstatus ist abgelaufen oder nicht mehr vorhanden. Request-ID: ${admission.request_id}`);
+          }
+          transientFailures += 1;
+          if (transientFailures >= 12) {
+            throw new Error(`Jobstatus nach 12 Versuchen nicht erreichbar. Der Job bleibt für einen späteren Reload gespeichert. Request-ID: ${admission.request_id}`);
+          }
+          showMessage(
+            listMessage,
+            `Jobstatus vorübergehend nicht erreichbar; erneuter Versuch. Request-ID: ${admission.request_id}`,
+            true
+          );
+          delayMs = Math.min(10000, Math.round(delayMs * 2));
+        }
+        await wait(delayMs);
+      }
+    }
+
+    async function submitReviewJob(path, payload, purpose) {
+      const idempotencyKey = globalThis.crypto?.randomUUID
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now()}-${Math.random()}`;
+      const admission = await apiJson(
+        path,
+        'POST',
+        payload,
+        { 'Idempotency-Key': idempotencyKey }
+      );
+      showMessage(listMessage, `Job angenommen. Request-ID: ${admission.request_id}`);
+      return monitorReviewJob(admission, purpose);
     }
 
     function showMessage(element, text, isError = false) {
@@ -869,7 +1101,10 @@ ENTITY_REVIEW_HTML = """<!DOCTYPE html>
       document.getElementById('stat-rules').textContent = payload.rules.length;
       document.getElementById('stat-doc-types').textContent = payload.entities.document_type.length;
       document.getElementById('stat-correspondents').textContent = payload.entities.correspondent.length;
-      document.getElementById('ai-context').textContent = payload.ai_context || 'Noch keine gespeicherten Prefer-/Merge-Regeln vorhanden.';
+      const contextLines = (payload.rules || [])
+        .filter(rule => ['prefer', 'merge'].includes(rule.action))
+        .map(rule => `${rule.alias_name} → ${rule.canonical_name}${rule.context ? `: ${rule.context}` : ''}`);
+      document.getElementById('ai-context').textContent = contextLines.join('\n') || 'Noch keine gespeicherten Prefer-/Merge-Regeln vorhanden.';
     }
 
     function candidateMatches(candidate, query, typeFilter) {
@@ -961,7 +1196,11 @@ ENTITY_REVIEW_HTML = """<!DOCTYPE html>
     async function refresh() {
       hideMessage(listMessage);
       const threshold = Number(document.getElementById('threshold-input').value || 0.84);
-      const payload = await apiJson(`/api/review/entities?threshold=${encodeURIComponent(threshold)}`);
+      const payload = await submitReviewJob(
+        '/api/review/entities/jobs',
+        { threshold },
+        'scan'
+      );
       state.payload = payload;
       state.candidates = payload.candidates || [];
       renderStats(payload);
@@ -996,8 +1235,12 @@ ENTITY_REVIEW_HTML = """<!DOCTYPE html>
 
     document.getElementById('dry-run-btn').addEventListener('click', async () => {
       try {
-        const result = await apiJson('/api/review/merge', 'POST', { ...buildDecisionPayload('merge'), dry_run: true });
-        showMessage(actionMessage, `Merge-Plan: ${result.affected_count || 0} Dokumente würden umgehängt. Vorschau-IDs: ${(result.affected_document_ids_preview || []).join(', ') || '-'}\n${result.message || ''}`);
+        const result = await submitReviewJob(
+          '/api/review/merge',
+          { ...buildDecisionPayload('merge'), dry_run: true },
+          'merge_plan'
+        );
+        showMessage(actionMessage, `Merge-Plan: ${result.affected_count || 0} Dokumente würden umgehängt.\n${result.message || ''}`);
       } catch (error) {
         showMessage(actionMessage, error.message, true);
       }
@@ -1010,7 +1253,11 @@ ENTITY_REVIEW_HTML = """<!DOCTYPE html>
         if (!ok) {
           return;
         }
-        const result = await apiJson('/api/review/merge', 'POST', { ...payload, dry_run: false });
+        const result = await submitReviewJob(
+          '/api/review/merge',
+          { ...payload, dry_run: false },
+          'merge_apply'
+        );
         showMessage(actionMessage, result.message || `Merge angewendet: ${result.updated_count || 0} Dokumente aktualisiert.`);
         await refresh();
       } catch (error) {
@@ -1028,7 +1275,23 @@ ENTITY_REVIEW_HTML = """<!DOCTYPE html>
       }
     });
 
-    refresh().catch(error => showMessage(listMessage, `Review konnte nicht geladen werden: ${error.message}`, true));
+    const pendingReviewJob = storedReviewJobs().at(-1);
+    if (pendingReviewJob) {
+      monitorReviewJob(pendingReviewJob, pendingReviewJob.purpose)
+        .then(payload => {
+          if (pendingReviewJob.purpose === 'scan') {
+            state.payload = payload;
+            state.candidates = payload.candidates || [];
+            renderStats(payload);
+            renderCandidates();
+          } else {
+            showMessage(actionMessage, payload.message || 'Hintergrundjob abgeschlossen.');
+          }
+        })
+        .catch(error => showMessage(listMessage, error.message, true));
+    } else {
+      refresh().catch(error => showMessage(listMessage, `Review konnte nicht geladen werden: ${error.message}`, true));
+    }
   </script>
 </body>
 </html>
@@ -1059,6 +1322,7 @@ class WorkerPaths:
     metrics_file: Path
     entity_review_rules_file: Path
     worker_meta_file: Path
+    jobs_file: Path
     log_file: Path
 
 
@@ -1084,6 +1348,7 @@ class WorkerManager:
             metrics_file=data_dir / "state" / "run_metrics.json",
             entity_review_rules_file=data_dir / "state" / "entity_review_rules.json",
             worker_meta_file=data_dir / "state" / "worker_meta.json",
+            jobs_file=data_dir / "state" / "background_jobs.sqlite3",
             log_file=data_dir / "logs" / "worker.log",
         )
         self.sorter_command = list(sorter_command)
@@ -1156,6 +1421,15 @@ class WorkerManager:
 
         self._ensure_directories()
         self._restore_state_on_startup()
+        self.jobs = PersistentJobStore(self.paths.jobs_file, max_workers=3)
+        recovery = self.jobs.reconcile_startup(
+            read_only_runners={"review_scan": self._recovered_review_scan_runner},
+        )
+        LOGGER.info(
+            "background_jobs_reconciled resumed_read_only=%s interrupted_mutations=%s",
+            recovery["resumed_read_only"],
+            recovery["interrupted_mutations"],
+        )
 
     def _ensure_directories(self) -> None:
         for path in (
@@ -1201,7 +1475,7 @@ class WorkerManager:
             return default
 
     def _append_log_line(self, stream_name: str, line: str) -> None:
-        stripped = line.rstrip("\n")
+        stripped = redact_worker_text(line.rstrip("\n"))
         prefixed = f"[{stream_name}] {stripped}"
         self.log_lines.append(prefixed)
         self.log_lines = self.log_lines[-1500:]
@@ -1329,7 +1603,7 @@ class WorkerManager:
             self.config_validation_message = "Konfiguration ist gültig."
         except ConfigError as exc:
             self.config_validation_ok = False
-            self.config_validation_message = str(exc)
+            self.config_validation_message = redact_worker_text(str(exc))[:500]
 
     def import_config_yaml(self, yaml_text: str, *, source: str) -> dict[str, Any]:
         raw = str(yaml_text or "")
@@ -1338,7 +1612,7 @@ class WorkerManager:
         except yaml.YAMLError as exc:
             raise ValueError(f"YAML ist ungültig: {exc}") from exc
         if not isinstance(parsed, dict):
-            raise ValueError("Die Worker-Konfiguration muss ein YAML-Objekt sein.")
+            raise TypeError("Die Worker-Konfiguration muss ein YAML-Objekt sein.")
         self.paths.config_file.parent.mkdir(parents=True, exist_ok=True)
         self.paths.config_file.write_text(raw, encoding="utf-8")
         self.config_source = source
@@ -1518,8 +1792,8 @@ class WorkerManager:
         finally:
             try:
                 pipe.close()
-            except Exception:
-                pass
+            except (OSError, ValueError) as exc:
+                LOGGER.debug("Prozess-Stream konnte nicht geschlossen werden: %s", type(exc).__name__)
 
     def _persist_force_stop_resume_state(self) -> None:
         if self.paths.run_state_file.exists():
@@ -1563,7 +1837,7 @@ class WorkerManager:
             try:
                 self.resume_run(force=True)
             except Exception as exc:  # noqa: BLE001
-                LOGGER.error("Auto-Resume fehlgeschlagen: %s", exc)
+                LOGGER.error("Auto-Resume fehlgeschlagen: %s", type(exc).__name__)
 
         self.auto_resume_timer = threading.Timer(delay, _resume)
         self.auto_resume_timer.daemon = True
@@ -1705,10 +1979,14 @@ class WorkerManager:
         resume_run: bool = False,
     ) -> dict[str, Any]:
         with self.lock:
-            if self.running and not force:
-                self.last_status = "skipped_running"
-                self.last_message = "run skipped because another run is active"
-                return self.status_payload()
+            if self.running:
+                if not force:
+                    self.last_status = "skipped_running"
+                    self.last_message = "run skipped because another run is active"
+                    return self.status_payload()
+                raise ValueError(
+                    "Ein Lauf ist bereits aktiv. Für einen kontrollierten Wechsel /api/restart verwenden."
+                )
             self._start_process(
                 dry_run=dry_run,
                 all_documents=all_documents,
@@ -1769,6 +2047,9 @@ class WorkerManager:
         force: bool = True,
         backfill_existing_documents: bool | None = None,
     ) -> dict[str, Any]:
+        # Why the lock is released while waiting: process finalization happens
+        # in another thread and must acquire the same lock to mark ``running``
+        # false. Holding it here would turn every restart into a 45s deadlock.
         with self.lock:
             base_payload: dict[str, Any] = {}
             if self.paths.run_state_file.exists():
@@ -1782,19 +2063,23 @@ class WorkerManager:
             restart_backfill = bool(mode.get("backfill_existing_documents", False))
             if backfill_existing_documents is not None:
                 restart_backfill = bool(backfill_existing_documents)
+            was_running = self.running
+
+        if was_running:
+            self.force_stop()
+            deadline = time.time() + 45.0
+            while self.running and time.time() < deadline:
+                time.sleep(0.25)
             if self.running:
-                self.force_stop()
-                deadline = time.time() + 45.0
-                while self.running and time.time() < deadline:
-                    time.sleep(0.25)
-                if self.running:
-                    raise RuntimeError("Vorheriger Prozess konnte nicht rechtzeitig beendet werden.")
+                raise RuntimeError("Vorheriger Prozess konnte nicht rechtzeitig beendet werden.")
+
+        with self.lock:
             self._clear_restart_state_files()
             self.latest_runtime_payload = {}
             self.resume_available = False
             self.pause_reason = ""
             self.auto_resume_at = None
-            return self.start_run(force=force, backfill_existing_documents=restart_backfill)
+        return self.start_run(force=force, backfill_existing_documents=restart_backfill)
 
     def reset_metrics(self) -> dict[str, Any]:
         with self.lock:
@@ -1821,7 +2106,11 @@ class WorkerManager:
                         path.unlink()
                         deleted_count += 1
                     except OSError as exc:
-                        LOGGER.warning("Konnte Failed-Datei nicht löschen (%s): %s", path, exc)
+                        LOGGER.warning(
+                            "Konnte Failed-Datei nicht löschen (%s): %s",
+                            path.name,
+                            type(exc).__name__,
+                        )
             self._refresh_failed_state_counts()
             self.last_status = "failed_docs_reset"
             self.last_message = f"failed/quarantine documents reset ({deleted_count} files)"
@@ -2035,7 +2324,12 @@ class WorkerManager:
                     continue
         return sorted(set(document_ids))
 
-    def merge_review_entities(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def merge_review_entities(
+        self,
+        payload: dict[str, Any],
+        *,
+        progress_callback: ProgressCallback | None = None,
+    ) -> dict[str, Any]:
         entity_type = str(payload.get("entity_type") or "").strip()
         alias_id = int(payload.get("alias_id"))
         canonical_id = int(payload.get("canonical_id"))
@@ -2047,12 +2341,31 @@ class WorkerManager:
         delete_alias = bool(payload.get("delete_alias", True))
         field = self._document_field_for_entity(entity_type)
         endpoint = self._entity_endpoint(entity_type)
+        if progress_callback:
+            progress_callback(
+                {
+                    "phase": "discovering_documents",
+                    "progress_percent": None,
+                    "estimated_seconds_remaining": None,
+                    "completed": 0,
+                }
+            )
         client = self._load_paperless_client()
         document_ids = self._document_ids_for_entity(
             client,
             entity_type=entity_type,
             entity_id=alias_id,
         )
+        if progress_callback:
+            progress_callback(
+                {
+                    "phase": "planning" if dry_run else "updating_documents",
+                    "progress_percent": 100.0 if dry_run else (0.0 if document_ids else 100.0),
+                    "estimated_seconds_remaining": None,
+                    "total": len(document_ids),
+                    "completed": 0,
+                }
+            )
 
         if dry_run:
             return {
@@ -2060,7 +2373,6 @@ class WorkerManager:
                 "dry_run": True,
                 "message": "Dry-Run abgeschlossen. Es wurden keine Paperless-Daten geändert.",
                 "affected_count": len(document_ids),
-                "affected_document_ids_preview": document_ids[:25],
                 "delete_alias": delete_alias,
             }
 
@@ -2068,6 +2380,17 @@ class WorkerManager:
         for document_id in document_ids:
             client.update_document(document_id, {field: canonical_id})
             updated_count += 1
+            if progress_callback:
+                progress_callback(
+                    {
+                        "phase": "updating_documents",
+                        "progress_percent": round(updated_count * 100 / len(document_ids), 2),
+                        "estimated_seconds_remaining": None,
+                        "total": len(document_ids),
+                        "completed": updated_count,
+                        "updated": updated_count,
+                    }
+                )
 
         deleted_alias = False
         delete_warning = ""
@@ -2076,9 +2399,15 @@ class WorkerManager:
                 client._request("DELETE", f"{endpoint}{alias_id}/", retries=2)
                 deleted_alias = True
             except PaperlessApiError as exc:
+                LOGGER.warning(
+                    "review_alias_delete_failed entity_type=%s alias_id=%s error_type=%s",
+                    entity_type,
+                    alias_id,
+                    type(exc).__name__,
+                )
                 delete_warning = (
                     "Dokumente wurden umgehängt, aber der alte Paperless-Eintrag "
-                    f"konnte nicht gelöscht werden: {exc}"
+                    "konnte nicht gelöscht werden. request_id im Jobstatus für die Logs verwenden."
                 )
 
         rule = upsert_review_rule(
@@ -2098,13 +2427,241 @@ class WorkerManager:
             "affected_count": len(document_ids),
             "updated_count": updated_count,
             "deleted_alias": deleted_alias,
-            "affected_document_ids_preview": document_ids[:25],
             "rule": rule.to_payload(),
             "ai_context": build_ai_prompt_context(self._load_review_rules()),
         }
 
+    def _sorter_progress_payload(self) -> dict[str, Any]:
+        """Return exact sorter counters without document titles or URLs."""
+
+        with self.lock:
+            percent = (
+                round(self.progress_percent, 2)
+                if self.progress_total_documents > 0
+                else None
+            )
+            return {
+                "phase": "running" if self.running else str(self.last_status or "completed"),
+                "progress_percent": percent,
+                "estimated_seconds_remaining": None,
+                "total": self.progress_total_documents,
+                "completed": self.progress_completed_documents,
+                "scanned": self.progress_scanned,
+                "updated": self.progress_updated,
+                "skipped": self.progress_skipped,
+                "failed": self.progress_failed,
+            }
+
+    def _sorter_result_payload(self) -> dict[str, Any]:
+        """Return the minimal persistent result needed after a page reload."""
+
+        with self.lock:
+            return {
+                "status": self.last_status,
+                "message": self.last_message,
+                "last_exit_code": self.last_exit_code,
+                "resume_available": self.resume_available,
+                "scanned": self.progress_scanned,
+                "updated": self.progress_updated,
+                "skipped": self.progress_skipped,
+                "failed": self.progress_failed,
+            }
+
+    def _run_sorter_background_job(
+        self,
+        operation: str,
+        params: dict[str, Any],
+        progress_callback: ProgressCallback,
+    ) -> dict[str, Any]:
+        """Start one sorter mode, then follow the real subprocess to terminal state."""
+
+        if operation == "sorter_run":
+            self.start_run(
+                force=bool(params.get("force", False)),
+                dry_run=bool(params.get("dry_run", False)),
+                all_documents=bool(params.get("all_documents", False)),
+                max_documents=int(params.get("max_documents", 0)),
+                backfill_existing_documents=bool(
+                    params.get("backfill_existing_documents", False)
+                ),
+            )
+        elif operation == "sorter_resume":
+            self.resume_run(force=bool(params.get("force", False)))
+        elif operation == "sorter_restart":
+            self.restart_run(
+                force=bool(params.get("force", True)),
+                backfill_existing_documents=params.get("backfill_existing_documents"),
+            )
+        else:  # pragma: no cover - caller allowlist invariant
+            raise ValueError(f"Nicht unterstützte Sorter-Operation: {operation}")
+
+        while True:
+            progress_callback(self._sorter_progress_payload())
+            with self.lock:
+                running = self.running
+            if not running:
+                break
+            time.sleep(1.0)
+        result = self._sorter_result_payload()
+        if result.get("status") == "error":
+            raise RuntimeError("Der Sorter-Lauf ist fehlgeschlagen.")
+        return result
+
+    @staticmethod
+    def _safe_review_scan_result(payload: dict[str, Any]) -> dict[str, Any]:
+        """Persist only review data required to redraw the authenticated page."""
+
+        return {
+            "ok": True,
+            "threshold": payload.get("threshold"),
+            "entities": payload.get("entities") or {},
+            "candidates": payload.get("candidates") or [],
+            "rules": payload.get("rules") or [],
+        }
+
+    @staticmethod
+    def _safe_review_merge_result(payload: dict[str, Any]) -> dict[str, Any]:
+        """Omit document IDs, paths, raw provider errors, and generated AI context."""
+
+        return {
+            key: payload.get(key)
+            for key in (
+                "ok",
+                "dry_run",
+                "message",
+                "affected_count",
+                "updated_count",
+                "deleted_alias",
+                "delete_alias",
+            )
+            if key in payload
+        }
+
+    def _review_scan_runner(
+        self,
+        threshold: float,
+    ) -> Callable[[ProgressCallback], dict[str, Any]]:
+        def runner(progress_callback: ProgressCallback) -> dict[str, Any]:
+            progress_callback(
+                {
+                    "phase": "loading_entities",
+                    "progress_percent": None,
+                    "estimated_seconds_remaining": None,
+                }
+            )
+            result = self.entity_review_payload(threshold=threshold)
+            return self._safe_review_scan_result(result)
+
+        return runner
+
+    def _recovered_review_scan_runner(
+        self,
+        params: dict[str, Any],
+    ) -> Callable[[ProgressCallback], dict[str, Any]]:
+        """Rebuild only the allowlisted read-only scan after a worker restart."""
+
+        threshold = self._safe_float(params.get("threshold"), 0.84)
+        return self._review_scan_runner(threshold)
+
+    def submit_background_job(
+        self,
+        operation: str,
+        payload: dict[str, Any],
+        *,
+        idempotency_key: str | None,
+    ) -> tuple[dict[str, Any], bool]:
+        """Validate one public operation and atomically submit its safe runner."""
+
+        if operation in {"sorter_run", "sorter_resume", "sorter_restart"}:
+            max_documents = int(payload.get("max_documents", 0) or 0)
+            if max_documents < 0 or max_documents > 1_000_000:
+                raise ValueError("max_documents muss zwischen 0 und 1000000 liegen.")
+            params = {
+                "force": bool(payload.get("force", operation == "sorter_restart")),
+                "dry_run": bool(payload.get("dry_run", False)),
+                "all_documents": bool(payload.get("all_documents", False)),
+                "max_documents": max_documents,
+                "backfill_existing_documents": payload.get(
+                    "backfill_existing_documents", False
+                ),
+            }
+            return self.jobs.submit(
+                operation=operation,
+                params=params,
+                resource_key="paperless_write",
+                idempotency_key=idempotency_key,
+                runner=lambda progress: self._run_sorter_background_job(
+                    operation,
+                    params,
+                    progress,
+                ),
+                replace_active_operations=(
+                    {"sorter_run", "sorter_resume"}
+                    if operation == "sorter_restart"
+                    else None
+                ),
+            )
+
+        if operation == "review_scan":
+            threshold = self._safe_float(payload.get("threshold"), 0.84)
+            if threshold < 0.5 or threshold > 1.0:
+                raise ValueError("threshold muss zwischen 0.5 und 1.0 liegen.")
+            return self.jobs.submit(
+                operation=operation,
+                params={"threshold": threshold},
+                resource_key="review_scan",
+                idempotency_key=idempotency_key,
+                runner=self._review_scan_runner(threshold),
+            )
+
+        if operation == "review_merge":
+            entity_type = str(payload.get("entity_type") or "").strip()
+            self._entity_endpoint(entity_type)
+            alias_id = int(payload.get("alias_id"))
+            canonical_id = int(payload.get("canonical_id"))
+            if alias_id <= 0 or canonical_id <= 0 or alias_id == canonical_id:
+                raise ValueError("Alias und Ziel benötigen unterschiedliche positive IDs.")
+            safe_payload = {
+                "entity_type": entity_type,
+                "alias_id": alias_id,
+                "alias_name": str(payload.get("alias_name") or "")[:200],
+                "canonical_id": canonical_id,
+                "canonical_name": str(payload.get("canonical_name") or "")[:200],
+                "context": str(payload.get("context") or "")[:2000],
+                "dry_run": bool(payload.get("dry_run", True)),
+                "delete_alias": bool(payload.get("delete_alias", True)),
+            }
+
+            def merge_runner(progress: ProgressCallback) -> dict[str, Any]:
+                result = self.merge_review_entities(
+                    safe_payload,
+                    progress_callback=progress,
+                )
+                return self._safe_review_merge_result(result)
+
+            # Names/context are intentionally kept only in this in-memory
+            # closure. Interrupted writes are never replayed after restart.
+            persisted_params = {
+                "entity_type": entity_type,
+                "alias_id": alias_id,
+                "canonical_id": canonical_id,
+                "dry_run": safe_payload["dry_run"],
+                "delete_alias": safe_payload["delete_alias"],
+            }
+            return self.jobs.submit(
+                operation=operation,
+                params=persisted_params,
+                resource_key="paperless_write",
+                idempotency_key=idempotency_key,
+                runner=merge_runner,
+            )
+
+        raise ValueError(f"Nicht unterstützte Hintergrundoperation: {operation}")
+
     def status_payload(self) -> dict[str, Any]:
         return {
+            "app_version": APP_VERSION,
+            "app_commit": APP_COMMIT,
             "status": self.last_status,
             "message": self.last_message,
             "running": self.running,
@@ -2197,6 +2754,8 @@ class WorkerManager:
             last_run_at = self.last_finished or self.last_started
             last_run_value = last_run_at.isoformat() if last_run_at else "never"
             details = [
+                f"Version: {APP_VERSION}",
+                f"Image commit: {APP_COMMIT}",
                 f"Config: {config_state}",
                 f"Last run: {last_run_value}",
             ]
@@ -2210,6 +2769,7 @@ class WorkerManager:
                     {"label": "Status", "value": worker_state},
                     {"label": "Running", "value": "yes" if self.running else "no"},
                     {"label": "Failed", "value": str(self.last_failed)},
+                    {"label": "Version", "value": APP_VERSION},
                 ],
                 "details": details,
             }
@@ -2226,6 +2786,9 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
         encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
@@ -2240,6 +2803,11 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
         encoded = text.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        # Config and log downloads may contain private operational data. They
+        # must not become browser or Cloudflare cache entries.
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
         self.wfile.write(encoded)
@@ -2248,19 +2816,34 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", "0") or 0)
         if content_length <= 0:
             return {}
+        if content_length > 1024 * 1024:
+            raise ValueError("JSON-Body darf höchstens 1 MiB groß sein.")
         raw = self.rfile.read(content_length).decode("utf-8")
         if not raw.strip():
             return {}
         payload = json.loads(raw)
         if not isinstance(payload, dict):
-            raise ValueError("JSON-Body muss ein Objekt sein.")
+            raise TypeError("JSON-Body muss ein Objekt sein.")
         return payload
 
     def _is_authorized(self) -> bool:
         if not self.manager.auth_token:
             return True
         header = str(self.headers.get("Authorization") or "").strip()
-        return header == f"Bearer {self.manager.auth_token}"
+        return secrets.compare_digest(header, f"Bearer {self.manager.auth_token}")
+
+    def _admit_job(self, operation: str, payload: dict[str, Any]) -> None:
+        """Return the stable 202 admission contract for one long operation."""
+
+        job, deduplicated = self.manager.submit_background_job(
+            operation,
+            payload,
+            idempotency_key=self.headers.get("Idempotency-Key"),
+        )
+        self._json_response(
+            admission_payload(job, deduplicated=deduplicated),
+            status=HTTPStatus.ACCEPTED,
+        )
 
     def _require_auth(self) -> bool:
         if self._is_authorized():
@@ -2271,9 +2854,10 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
         )
         return False
 
-    def do_GET(self) -> None:  # noqa: N802
+    def do_GET(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        request_id = f"req_{uuid.uuid4().hex}"
         try:
             if path == "/":
                 self._text_response(WORKER_WEB_UI_HTML, content_type="text/html; charset=utf-8")
@@ -2291,6 +2875,16 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/status":
                 self._json_response(self.manager.status_payload())
+                return
+            if path.startswith("/api/jobs/"):
+                job = self.manager.jobs.get(path.removeprefix("/api/jobs/"))
+                if job is None:
+                    self._json_response(
+                        {"ok": False, "message": "Job nicht gefunden.", "request_id": request_id},
+                        status=HTTPStatus.NOT_FOUND,
+                    )
+                    return
+                self._json_response({"ok": True, **job})
                 return
             if path == "/api/logs":
                 self._json_response(
@@ -2320,25 +2914,39 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
                 )
                 return
             if path == "/api/review/entities":
-                query = parse_qs(parsed.query)
-                threshold_raw = (query.get("threshold") or ["0.84"])[0]
-                try:
-                    threshold = float(threshold_raw)
-                except (TypeError, ValueError):
-                    threshold = 0.84
-                self._json_response(self.manager.entity_review_payload(threshold=threshold))
+                self._json_response(
+                    {
+                        "ok": False,
+                        "message": "Live-Review ist asynchron. POST /api/review/entities/jobs verwenden.",
+                        "request_id": request_id,
+                    },
+                    status=HTTPStatus.METHOD_NOT_ALLOWED,
+                )
                 return
             if path == "/api/review/rules":
                 self._json_response(self.manager.entity_review_rules_payload())
                 return
             self._json_response({"ok": False, "message": "Not found"}, status=HTTPStatus.NOT_FOUND)
         except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("GET %s fehlgeschlagen: %s", path, exc)
-            self._json_response({"ok": False, "message": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            LOGGER.error(
+                "worker_http_get_failed path=%s request_id=%s error_type=%s",
+                path,
+                request_id,
+                type(exc).__name__,
+            )
+            self._json_response(
+                {
+                    "ok": False,
+                    "message": "Interner Fehler. Mit request_id in den redigierten Logs nachsehen.",
+                    "request_id": request_id,
+                },
+                status=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
 
-    def do_POST(self) -> None:  # noqa: N802
+    def do_POST(self) -> None:
         parsed = urlparse(self.path)
         path = parsed.path
+        request_id = f"req_{uuid.uuid4().hex}"
         try:
             if not path.startswith("/api/"):
                 self._json_response({"ok": False, "message": "Not found"}, status=HTTPStatus.NOT_FOUND)
@@ -2347,25 +2955,16 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
                 return
             payload = self._read_json_body()
             if path == "/api/run":
-                status_payload = self.manager.start_run(
-                    force=bool(payload.get("force", False)),
-                    dry_run=bool(payload.get("dry_run", False)),
-                    all_documents=bool(payload.get("all_documents", False)),
-                    max_documents=int(payload.get("max_documents", 0) or 0),
-                    backfill_existing_documents=bool(payload.get("backfill_existing_documents", False)),
-                )
-                self._json_response({"ok": True, "message": "Lauf gestartet.", "status": status_payload})
+                self._admit_job("sorter_run", payload)
                 return
             if path == "/api/resume":
-                status_payload = self.manager.resume_run(force=bool(payload.get("force", True)))
-                self._json_response({"ok": True, "message": "Resume ausgelöst.", "status": status_payload})
+                self._admit_job("sorter_resume", payload)
                 return
             if path == "/api/restart":
-                status_payload = self.manager.restart_run(
-                    force=bool(payload.get("force", True)),
-                    backfill_existing_documents=payload.get("backfill_existing_documents"),
-                )
-                self._json_response({"ok": True, "message": "Neustart ausgelöst.", "status": status_payload})
+                self._admit_job("sorter_restart", payload)
+                return
+            if path == "/api/review/entities/jobs":
+                self._admit_job("review_scan", payload)
                 return
             if path == "/api/stop":
                 status_payload = self.manager.request_stop()
@@ -2395,17 +2994,50 @@ class WorkerRequestHandler(BaseHTTPRequestHandler):
                 self._json_response(result)
                 return
             if path == "/api/review/merge":
-                result = self.manager.merge_review_entities(payload)
-                self._json_response(result)
+                self._admit_job("review_merge", payload)
                 return
             self._json_response({"ok": False, "message": "Not found"}, status=HTTPStatus.NOT_FOUND)
-        except ValueError as exc:
-            self._json_response({"ok": False, "message": str(exc)}, status=HTTPStatus.BAD_REQUEST)
+        except (TypeError, ValueError) as exc:
+            self._json_response(
+                {
+                    "ok": False,
+                    "message": redact_worker_text(str(exc))[:500],
+                    "request_id": request_id,
+                },
+                status=HTTPStatus.BAD_REQUEST,
+            )
+        except JobConflictError as exc:
+            existing = exc.existing_job
+            self._json_response(
+                {
+                    "ok": False,
+                    "message": str(exc),
+                    "request_id": request_id,
+                    "active_job": {
+                        "job_id": existing["job_id"],
+                        "request_id": existing["request_id"],
+                        "status_url": f"/api/jobs/{existing['job_id']}",
+                    },
+                },
+                status=HTTPStatus.CONFLICT,
+            )
         except Exception as exc:  # noqa: BLE001
-            LOGGER.exception("POST %s fehlgeschlagen: %s", path, exc)
-            self._json_response({"ok": False, "message": str(exc)}, status=HTTPStatus.INTERNAL_SERVER_ERROR)
+            LOGGER.error(
+                "worker_http_post_failed path=%s request_id=%s error_type=%s",
+                path,
+                request_id,
+                type(exc).__name__,
+            )
+            self._json_response(
+                {
+                    "ok": False,
+                    "message": "Interner Fehler. Mit request_id in den redigierten Logs nachsehen.",
+                    "request_id": request_id,
+                },
+                status=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
 
-    def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+    def log_message(self, format: str, *args: Any) -> None:
         LOGGER.info("worker_http | %s", format % args)
 
 
@@ -2439,8 +3071,14 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
+    log_level_name = str(os.getenv("PAPERLESS_KIPLUS_LOG_LEVEL", "INFO")).strip().upper()
+    log_level = getattr(logging, log_level_name, None)
+    if not isinstance(log_level, int):
+        raise TypeError(
+            "PAPERLESS_KIPLUS_LOG_LEVEL muss DEBUG, INFO, WARNING, ERROR oder CRITICAL sein."
+        )
     logging.basicConfig(
-        level=logging.INFO,
+        level=log_level,
         format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
     )
     manager = WorkerManager(
@@ -2450,7 +3088,9 @@ def main() -> int:
     )
     server = WorkerHttpServer((args.host, int(args.port)), manager)
     LOGGER.info(
-        "Starte Paperless KIplus Worker | host=%s port=%s data_dir=%s",
+        "Starte Paperless KIplus Worker | version=%s image_commit=%s host=%s port=%s data_dir=%s",
+        APP_VERSION,
+        APP_COMMIT,
         args.host,
         args.port,
         manager.paths.data_dir,
@@ -2461,6 +3101,7 @@ def main() -> int:
         LOGGER.info("Worker wird beendet ...")
     finally:
         server.server_close()
+        manager.jobs.close(wait=False)
     return 0
 
 

@@ -25,111 +25,36 @@ Danach:
 - Web UI: `http://<server>:8787/`
 - API-Status: `http://<server>:8787/api/status`
 
-## Schnellstart auf Unraid
+## Produktion auf Unraid
 
-### Einfachster Weg: Direkt im Unraid-Terminal ohne Repo-Checkout
+In der Feberdin-Umgebung wird ausschließlich die GitOps-Quelle
+`docker/docker-compose.unraid-broker.yml` über den Unraid Deployment Broker
+bereitgestellt. Direkte SSH-, Shell-, Docker-CLI- und HTTP-Deployments sind
+nicht Teil dieses Betriebswegs.
 
-Wenn du direkt auf dem Unraid-Server arbeitest, kannst du den Installer jetzt
-ohne lokales Git-Checkout starten. Das Bootstrap-Skript legt zuerst den
-passenden Ordner an, laedt den eigentlichen Installer von GitHub und fuehrt ihn
-anschliessend lokal auf Unraid aus:
+Voraussetzungen:
 
-```bash
-mkdir -p /boot/config/custom/paperless-kiplus && \
-curl -fsSL https://raw.githubusercontent.com/Feberdin/Paperless-KIplus/v1.4.6/docker/bootstrap-unraid-worker.sh \
-  -o /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh && \
-chmod +x /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh && \
-bash /boot/config/custom/paperless-kiplus/bootstrap-unraid-worker.sh \
-  --ref v1.4.6 \
-  --paperless-url http://192.168.178.20:8000 \
-  --paperless-token PAPERLESS_TOKEN \
-  --ai-api-key OPENAI_KEY \
-  --ai-model gpt-4.1-mini
-```
+- Das Repository ist im Broker registriert.
+- Die Stack-Quelle zeigt auf einen vollständigen Commit-SHA.
+- `PAPERLESS_KIPLUS_TOKEN` ist im Broker-Secret-Store vorhanden.
+- Das bestehende Appdata-Verzeichnis `/mnt/user/appdata/paperless-kiplus`
+  bleibt erhalten.
 
-Der Installer landet standardmaessig hier:
+Sicherer Ablauf:
 
-```text
-/boot/config/custom/paperless-kiplus/install-unraid-worker.sh
-```
+1. `stack_source_status`
+2. `stack_validate`
+3. `deploy_plan`
+4. `approval_request`, falls erforderlich
+5. `deploy_apply`
+6. `deployment_status`, `docker_list` und `logs_tail`
 
-### Empfohlener Weg: Remote-Deploy von macOS/Linux nach Unraid
-
-Das robusteste Setup fuer Unraid ist jetzt das neue Remote-Deploy-Skript. Es
-wird auf deinem Mac oder Linux-Rechner gestartet, verbindet sich per SSH mit
-Unraid und fuehrt die eigentliche Installation dort aus:
-
-```bash
-bash docker/deploy-to-unraid.sh \
-  --unraid-host 192.168.178.30 \
-  --paperless-url http://192.168.178.20:8000 \
-  --paperless-token PAPERLESS_TOKEN \
-  --ai-api-key OPENAI_KEY \
-  --ai-model gpt-4.1-mini
-```
-
-Das Remote-Skript:
-
-- verbindet sich per SSH zu Unraid
-- kopiert den Host-Installer auf den Server
-- uebertraegt optional eine lokale `config.yaml`
-- fuehrt die eigentliche Installation direkt auf Unraid aus
-
-### Direkte Ausfuehrung auf dem Unraid-Server
-
-Wenn du bereits eine Shell direkt auf Unraid offen hast, kannst du stattdessen
-das bereits heruntergeladene Host-Skript oder ein Repo-Checkout dort lokal
-ausfuehren:
-
-```bash
-bash /boot/config/custom/paperless-kiplus/install-unraid-worker.sh \
-  --paperless-url http://192.168.178.20:8000 \
-  --paperless-token PAPERLESS_TOKEN \
-  --ai-api-key OPENAI_KEY \
-  --ai-model gpt-4.1-mini
-```
-
-oder:
-
-```bash
-bash /pfad/zum/repo/docker/install-unraid-worker.sh \
-  --paperless-url http://192.168.178.20:8000 \
-  --paperless-token PAPERLESS_TOKEN \
-  --ai-api-key OPENAI_KEY \
-  --ai-model gpt-4.1-mini
-```
-
-Das Host-Skript:
-
-- erkennt Docker Compose
-- legt das Appdata-Verzeichnis an
-- erzeugt oder uebernimmt `config.yaml`
-- sichert bestehende Dateien vor dem Ueberschreiben
-- schreibt einen Compose-Stack fuer GHCR
-- startet oder aktualisiert den Container
-- prueft `/api/status` per Health-Check
-
-Typische Zusatzoptionen:
-
-```bash
---ssh-user root
---ssh-port 22
---keep-remote-files true
---data-dir /mnt/user/appdata/paperless-kiplus-worker
---worker-token MEIN_API_TOKEN
---enable-tax-enrichment true
---tax-ai-api-key dummy
---tax-ai-model qwen2.5:7b
---tax-ai-base-url http://192.168.178.30:11434/v1
-```
-
-### Alternativ: Unraid-Template
-
-1. `docker/unraid-template.xml` als eigenes Template importieren.
-2. Ein persistentes Appdata-Verzeichnis fuer `/data` angeben.
-3. Container starten.
-4. Entweder in der Weboberflaeche die YAML einfuegen oder `config.yaml` unter `/data/config/config.yaml` ablegen.
-5. Anschliessend ueber die Weboberflaeche `Run`, `Resume`, `Restart` oder `Backfill` starten.
+Das Compose referenziert das Secret ausschließlich als
+`secret://PAPERLESS_KIPLUS_TOKEN`; der Broker injiziert es erst beim Apply. Das
+Worker-Image wird lokal aus dem brokergebundenen Git-Checkout gebaut. Der
+Dockerfile pinnt Basisimage und Python-Abhängigkeiten; die Compose-Build-Args
+halten den erfolgreich geprüften App-Commit und die App-Version fest. Damit
+benötigt die Produktion keinen privaten Registry-Pull.
 
 ## Welche Datei ist die produktive Konfiguration?
 
@@ -166,14 +91,16 @@ Wichtig:
 - `GET /api/logs/download` -> kompletter Log als Text
 - `GET /api/config/export` -> aktuelle Worker-Konfiguration als JSON-Payload
 - `GET /api/config/download` -> aktuelle Worker-YAML als Download
-- `GET /api/review/entities` -> Dopplungskandidaten und gespeicherte KI-Regeln
+- `GET /api/jobs/<job_id>` -> persistenter Jobstatus
+- `POST /api/review/entities/jobs` -> asynchroner Dopplungsscan (`202`)
+- `GET /api/review/entities` -> `405`, veralteter blockierender Zugriff
 - `GET /api/review/rules` -> gespeicherte KI-Regeln fuer Entity-Zuordnungen
 - `POST /api/review/rules` -> Alias-/Ziel-Regel oder "kein Duplikat" speichern
-- `POST /api/review/merge` -> Merge planen oder anwenden
+- `POST /api/review/merge` -> Merge asynchron planen oder anwenden (`202`)
 - `POST /api/config/import` -> neue YAML speichern
-- `POST /api/run` -> neuen Lauf starten
-- `POST /api/resume` -> pausierten Lauf fortsetzen
-- `POST /api/restart` -> frischen Neustart machen
+- `POST /api/run` -> neuen Lauf als Job starten (`202`)
+- `POST /api/resume` -> pausierten Lauf als Job fortsetzen (`202`)
+- `POST /api/restart` -> kontrollierten Neustart als Job starten (`202`)
 - `POST /api/stop` -> sicher pausieren
 - `POST /api/stop_now` -> sofort stoppen
 
@@ -186,7 +113,9 @@ Korrespondenten nicht erneut an.
 ## Debugging
 
 ### Container laeuft nicht an
-- `docker logs paperless-kiplus-worker`
+- In Produktion `deployment_status`, `docker_list` und `logs_tail` im Broker
+  prüfen. Lokal darf `docker compose logs paperless-kiplus-worker` verwendet
+  werden.
 - Pruefe, ob `/data/config/config.yaml` gueltiges YAML ist.
 - Pruefe, ob `paperless_url`, `paperless_token`, `ai_api_key` und `ai_model` gesetzt sind.
 - Der produktive Broker-Stack startet den Worker bewusst ohne Root-Rechte als
@@ -203,3 +132,14 @@ Korrespondenten nicht erneut an.
 - Existiert `/data/state/run_state.json`?
 - Wurde der Lauf mit `stop` pausiert oder durch Provider-Wartezeit angehalten?
 - Bei `stop_now` ist Resume nur ab dem letzten gespeicherten Fortschritt moeglich.
+
+### Job bleibt nach einem Worker-Restart stehen
+
+- `GET /api/jobs/<job_id>` mit dem Worker-Token prüfen.
+- Read-only-Scans werden einmal sicher fortgesetzt.
+- Schreibjobs erhalten absichtlich `interrupted`; Paperless-Zustand prüfen und
+  erst danach kontrolliert erneut auslösen.
+- Mit `request_id` in den redigierten Broker-Logs suchen.
+
+Details zu Idempotenz, Parallelität, Aufbewahrung und Rollback stehen unter
+[Cloudflare-sichere Langläufer](./cloudflare-long-running-jobs.md).

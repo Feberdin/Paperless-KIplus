@@ -18,11 +18,13 @@ import sys
 import tempfile
 import textwrap
 import threading
+import time
 import types
 import unittest
-from urllib.request import urlopen
+from contextlib import contextmanager
 from pathlib import Path
-
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = ROOT / "src"
@@ -75,7 +77,7 @@ def _simple_safe_load(text: str):
     return payload
 
 
-def _simple_safe_dump(payload, allow_unicode=True, sort_keys=False):  # noqa: ARG001
+def _simple_safe_dump(payload, allow_unicode=True, sort_keys=False):
     lines = []
     items = payload.items() if isinstance(payload, dict) else []
     if sort_keys:
@@ -158,12 +160,89 @@ def _request_heimdall_payload(manager: WorkerManager) -> dict[str, object]:
             body = response.read().decode("utf-8")
         payload = json.loads(body)
         if not isinstance(payload, dict):
-            raise AssertionError("Heimdall response must be a JSON object.")
+            raise TypeError("Heimdall response must be a JSON object.")
         return payload
     finally:
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+        manager.jobs.close()
+
+
+@contextmanager
+def _running_worker_server(manager: WorkerManager):
+    """Serve one manager on an ephemeral local port and close all resources."""
+
+    server = WorkerHttpServer(("127.0.0.1", 0), manager)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    try:
+        yield f"http://{host}:{port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        manager.jobs.close()
+
+
+def _json_request(
+    base_url: str,
+    path: str,
+    *,
+    method: str = "GET",
+    payload: dict[str, object] | None = None,
+    token: str | None = None,
+    idempotency_key: str | None = None,
+) -> tuple[int, dict[str, object]]:
+    """Call the local test server and return JSON for success and HTTP errors."""
+
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    if idempotency_key:
+        headers["Idempotency-Key"] = idempotency_key
+    body = None
+    if payload is not None:
+        headers["Content-Type"] = "application/json"
+        body = json.dumps(payload).encode("utf-8")
+    request = Request(
+        f"{base_url}{path}",
+        data=body,
+        headers=headers,
+        method=method,
+    )
+    try:
+        with urlopen(request, timeout=5) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        try:
+            return exc.code, json.loads(exc.read().decode("utf-8"))
+        finally:
+            exc.close()
+
+
+def _wait_for_http_job(
+    base_url: str,
+    status_url: str,
+    *,
+    token: str,
+    timeout: float = 8.0,
+) -> dict[str, object]:
+    """Poll one local HTTP job until it reaches a terminal state."""
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        status, job = _json_request(base_url, status_url, token=token)
+        if status == 200 and job.get("status") in {
+            "succeeded",
+            "failed",
+            "interrupted",
+            "cancelled",
+        }:
+            return job
+        time.sleep(0.02)
+    raise AssertionError(f"Job unter {status_url} wurde nicht rechtzeitig terminal.")
 
 
 class ConfigExportTests(unittest.TestCase):
@@ -243,6 +322,8 @@ class WorkerManagerTests(unittest.TestCase):
             status = manager.status_payload()
 
             self.assertTrue(result["config_validation_ok"])
+            self.assertIn("app_version", status)
+            self.assertIn("app_commit", status)
             self.assertEqual(status["config_source"], "unit_test")
             self.assertEqual(status["paperless_base_url"], "https://paperless.example")
             self.assertEqual(status["config_validation_message"], "Konfiguration ist gültig.")
@@ -390,6 +471,272 @@ class WorkerManagerTests(unittest.TestCase):
             self.assertNotIn("log_text", keys)
             self.assertNotIn("stdout_tail", keys)
             self.assertNotIn("stderr_tail", keys)
+
+
+class WorkerBackgroundJobApiTests(unittest.TestCase):
+    """Covers the public HTTP-202 contract and browser recovery hooks."""
+
+    TOKEN = "test-worker-token"
+
+    @staticmethod
+    def _valid_yaml() -> str:
+        return textwrap.dedent(
+            """
+            paperless_url: https://paperless.example
+            paperless_token: local-test-token
+            ai_api_key: local-test-ai-key
+            ai_model: gpt-4.1-mini
+            ai_base_url: https://api.openai.com/v1
+            """
+        ).strip()
+
+    def _manager(self, data_dir: str, *, sleep_seconds: float = 0.05) -> WorkerManager:
+        manager = WorkerManager(
+            data_dir=Path(data_dir),
+            sorter_command=[
+                sys.executable,
+                "-c",
+                f"import time; time.sleep({sleep_seconds}); print('done')",
+            ],
+            auth_token=self.TOKEN,
+        )
+        manager.import_config_yaml(self._valid_yaml(), source="unit_test")
+        return manager
+
+    def test_run_returns_202_and_idempotent_status_resource(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = self._manager(tmp_dir)
+            with _running_worker_server(manager) as base_url:
+                first_status, first = _json_request(
+                    base_url,
+                    "/api/run",
+                    method="POST",
+                    payload={"dry_run": True, "max_documents": 1},
+                    token=self.TOKEN,
+                    idempotency_key="browser-action-1",
+                )
+                second_status, second = _json_request(
+                    base_url,
+                    "/api/run",
+                    method="POST",
+                    payload={"dry_run": True, "max_documents": 1},
+                    token=self.TOKEN,
+                    idempotency_key="browser-action-1",
+                )
+
+                self.assertEqual(first_status, 202)
+                self.assertEqual(second_status, 202)
+                self.assertEqual(first["job_id"], second["job_id"])
+                self.assertTrue(second["deduplicated"])
+                self.assertRegex(str(first["job_id"]), r"^job_[0-9a-f]{32}$")
+                self.assertRegex(str(first["request_id"]), r"^req_[0-9a-f]{32}$")
+                self.assertEqual(first["status_url"], f"/api/jobs/{first['job_id']}")
+
+                terminal = _wait_for_http_job(
+                    base_url,
+                    str(first["status_url"]),
+                    token=self.TOKEN,
+                )
+                self.assertEqual(terminal["status"], "succeeded")
+                self.assertIsNone(terminal["estimated_seconds_remaining"])
+                self.assertNotIn("paperless_token", json.dumps(terminal).lower())
+
+    def test_parallel_write_returns_safe_409_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = self._manager(tmp_dir, sleep_seconds=0.4)
+            with _running_worker_server(manager) as base_url:
+                first_status, first = _json_request(
+                    base_url,
+                    "/api/run",
+                    method="POST",
+                    payload={"dry_run": True},
+                    token=self.TOKEN,
+                    idempotency_key="first-write",
+                )
+                conflict_status, conflict = _json_request(
+                    base_url,
+                    "/api/review/merge",
+                    method="POST",
+                    payload={
+                        "entity_type": "correspondent",
+                        "alias_id": 1,
+                        "canonical_id": 2,
+                        "dry_run": True,
+                    },
+                    token=self.TOKEN,
+                    idempotency_key="second-write",
+                )
+
+                self.assertEqual(first_status, 202)
+                self.assertEqual(conflict_status, 409)
+                self.assertEqual(conflict["active_job"]["job_id"], first["job_id"])
+                self.assertNotIn("params", conflict["active_job"])
+                self.assertNotIn("token", json.dumps(conflict).lower())
+                _wait_for_http_job(base_url, str(first["status_url"]), token=self.TOKEN)
+
+    def test_restart_replaces_active_sorter_without_parallel_processes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = self._manager(tmp_dir, sleep_seconds=0.35)
+            with _running_worker_server(manager) as base_url:
+                _, first = _json_request(
+                    base_url,
+                    "/api/run",
+                    method="POST",
+                    payload={"dry_run": True},
+                    token=self.TOKEN,
+                    idempotency_key="run-before-restart",
+                )
+                deadline = time.monotonic() + 3
+                while not manager.running and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertTrue(manager.running)
+
+                restart_status, restart = _json_request(
+                    base_url,
+                    "/api/restart",
+                    method="POST",
+                    payload={"force": True},
+                    token=self.TOKEN,
+                    idempotency_key="controlled-restart",
+                )
+                cancelled = _wait_for_http_job(
+                    base_url,
+                    str(first["status_url"]),
+                    token=self.TOKEN,
+                )
+                restarted = _wait_for_http_job(
+                    base_url,
+                    str(restart["status_url"]),
+                    token=self.TOKEN,
+                )
+
+                self.assertEqual(restart_status, 202)
+                self.assertEqual(cancelled["status"], "cancelled")
+                self.assertEqual(restarted["status"], "succeeded")
+                self.assertLessEqual(manager.jobs._executor._max_workers, 3)
+
+    def test_read_only_review_scan_is_asynchronous_and_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = self._manager(tmp_dir)
+            manager.entity_review_payload = lambda threshold: {
+                "threshold": threshold,
+                "entities": {"correspondent": [], "document_type": []},
+                "candidates": [],
+                "rules": [],
+                "ai_context": "must-not-be-persisted",
+                "private_path": "/data/config/config.yaml",
+            }
+            with _running_worker_server(manager) as base_url:
+                status, admission = _json_request(
+                    base_url,
+                    "/api/review/entities/jobs",
+                    method="POST",
+                    payload={"threshold": 0.9},
+                    token=self.TOKEN,
+                    idempotency_key="review-scan",
+                )
+                terminal = _wait_for_http_job(
+                    base_url,
+                    str(admission["status_url"]),
+                    token=self.TOKEN,
+                )
+                rendered = json.dumps(terminal)
+
+                self.assertEqual(status, 202)
+                self.assertEqual(terminal["status"], "succeeded")
+                self.assertEqual(terminal["result"]["threshold"], 0.9)
+                self.assertNotIn("must-not-be-persisted", rendered)
+                self.assertNotIn("private_path", rendered)
+
+    def test_job_status_requires_auth_and_legacy_live_get_is_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = self._manager(tmp_dir)
+            manager.entity_review_payload = lambda threshold: {
+                "threshold": threshold,
+                "entities": {},
+                "candidates": [],
+                "rules": [],
+            }
+            with _running_worker_server(manager) as base_url:
+                _, admission = _json_request(
+                    base_url,
+                    "/api/review/entities/jobs",
+                    method="POST",
+                    payload={"threshold": 0.84},
+                    token=self.TOKEN,
+                    idempotency_key="auth-check",
+                )
+                unauthorized_status, _ = _json_request(
+                    base_url,
+                    str(admission["status_url"]),
+                )
+                legacy_status, legacy = _json_request(
+                    base_url,
+                    "/api/review/entities",
+                    token=self.TOKEN,
+                )
+
+                self.assertEqual(unauthorized_status, 401)
+                self.assertEqual(legacy_status, 405)
+                self.assertIn("POST /api/review/entities/jobs", legacy["message"])
+                _wait_for_http_job(
+                    base_url,
+                    str(admission["status_url"]),
+                    token=self.TOKEN,
+                )
+
+    def test_invalid_idempotency_key_returns_bounded_400(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = self._manager(tmp_dir)
+            with _running_worker_server(manager) as base_url:
+                status, payload = _json_request(
+                    base_url,
+                    "/api/run",
+                    method="POST",
+                    payload={},
+                    token=self.TOKEN,
+                    idempotency_key="x" * 201,
+                )
+
+                self.assertEqual(status, 400)
+                self.assertIn("höchstens 200", payload["message"])
+                self.assertRegex(str(payload["request_id"]), r"^req_[0-9a-f]{32}$")
+
+    def test_worker_log_redaction_happens_before_file_and_memory(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            manager = self._manager(tmp_dir)
+            try:
+                manager._append_log_line(
+                    "STDERR",
+                    "Authorization: Bearer top-secret token=other-secret cookie=session-secret",
+                )
+                persisted = manager.paths.log_file.read_text(encoding="utf-8")
+                rendered = "\n".join(manager.log_lines) + manager.last_stderr_tail + persisted
+
+                self.assertNotIn("top-secret", rendered)
+                self.assertNotIn("other-secret", rendered)
+                self.assertNotIn("session-secret", rendered)
+                self.assertGreaterEqual(rendered.count("[REDACTED]"), 3)
+            finally:
+                manager.jobs.close()
+
+    def test_embedded_uis_resume_jobs_with_bounded_backoff(self) -> None:
+        main_ui = worker_api_module.WORKER_WEB_UI_HTML
+        review_ui = worker_api_module.ENTITY_REVIEW_HTML
+
+        self.assertIn("paperless_kiplus_active_jobs", main_ui)
+        self.assertIn("sessionStorage.setItem('paperless_kiplus_worker_token'", main_ui)
+        self.assertIn("localStorage.removeItem('paperless_kiplus_worker_token')", main_ui)
+        self.assertIn("for (const job of storedJobs())", main_ui)
+        self.assertIn("Math.min(10000", main_ui)
+        self.assertIn("transientFailures >= 12", main_ui)
+        self.assertIn("Fortschritt noch nicht bestimmbar", main_ui)
+        self.assertIn("paperless_kiplus_review_jobs", review_ui)
+        self.assertIn("sessionStorage.getItem('paperless_kiplus_worker_token')", review_ui)
+        self.assertIn("storedReviewJobs().at(-1)", review_ui)
+        self.assertIn("Math.min(10000", review_ui)
+        self.assertIn("transientFailures >= 12", review_ui)
+        self.assertIn("'/api/review/entities/jobs'", review_ui)
 
 
 if __name__ == "__main__":

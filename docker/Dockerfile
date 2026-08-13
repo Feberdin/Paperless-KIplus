@@ -16,16 +16,24 @@
 # - Open /api/status and /api/logs on the worker port.
 # - A startup error naming /data means the mounted directory is not writable by the runtime UID/GID.
 
-FROM python:3.12.13-slim-trixie
+# Why the digest is pinned: production may build directly from a broker-bound
+# Git commit. Pinning the multi-architecture base manifest prevents a mutable
+# registry tag from changing the resulting runtime between CI and Unraid.
+FROM python:3.12.13-slim-trixie@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36
 
 ARG APP_UID=10001
 ARG APP_GID=10001
+ARG APP_COMMIT=unknown
+ARG APP_VERSION=dev
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PAPERLESS_KIPLUS_DATA_DIR=/data \
     PAPERLESS_KIPLUS_HOST=0.0.0.0 \
-    PAPERLESS_KIPLUS_PORT=8787
+    PAPERLESS_KIPLUS_PORT=8787 \
+    PAPERLESS_KIPLUS_LOG_LEVEL=INFO \
+    PAPERLESS_KIPLUS_APP_VERSION="${APP_VERSION}" \
+    PAPERLESS_KIPLUS_IMAGE_COMMIT="${APP_COMMIT}"
 
 WORKDIR /app
 

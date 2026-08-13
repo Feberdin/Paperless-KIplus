@@ -1,12 +1,24 @@
+# Purpose: Build and publish reviewed worker images for changed runtime sources.
+# Input/Output: Reads source files and writes immutable multi-architecture images to GHCR.
+# Invariants: Documentation-only and Compose-pin commits do not create a new image digest.
+# Debugging: Inspect the Build and push worker image step plus its published digest.
+
 name: Docker Worker Publish
 
 on:
   workflow_dispatch:
   push:
     branches:
-      - main
+      - "**"
     tags:
       - "v*"
+    paths:
+      - "src/**"
+      - "requirements.txt"
+      - "docker/Dockerfile"
+      - "docker/entrypoint.sh"
+      - "custom_components/paperless_kiplus/manifest.json"
+      - ".github/workflows/docker-worker.yml"
 
 permissions:
   contents: read
@@ -18,6 +30,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Read application version
+        id: app
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION=$(python3 -c 'import json; print(json.load(open("custom_components/paperless_kiplus/manifest.json", encoding="utf-8"))["version"])')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -52,3 +72,6 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_COMMIT=${{ github.sha }}
+            APP_VERSION=${{ steps.app.outputs.version }}
