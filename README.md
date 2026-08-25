@@ -513,7 +513,7 @@ Der Neustart:
 
 Es gibt jetzt eine große Lovelace-YAML-Vorlage unter:
 
-- [dashboards/paperless_kiplus_dashboard.yaml](/Users/joachim.stiegler/Paperless-KIplus/dashboards/paperless_kiplus_dashboard.yaml)
+- [dashboards/paperless_kiplus_dashboard.yaml](dashboards/paperless_kiplus_dashboard.yaml)
 
 Damit bekommst du auf einen Blick:
 
@@ -1110,3 +1110,21 @@ tax_ai_base_url: http://ollama:11434/v1
 
 - Ältere Releases
   - Weitere Tags vorhanden: `v0.1.43` bis `v0.1.2`.
+
+
+## Troubleshooting und Debugging
+
+Bei fehlgeschlagenen Läufen zuerst Paperless-Erreichbarkeit, Konfigurations-
+validierung und die redigierten Home-Assistant- beziehungsweise Worker-Logs
+prüfen. API-Tokens und Dokumentinhalte gehören nicht in Issues oder Screenshots.
+
+## Sicherheit
+
+Paperless- und KI-Tokens nur in Home Assistant oder einer lokalen ignorierten
+Konfiguration speichern. Beispielwerte bleiben Platzhalter. Bei einer
+Offenlegung den betroffenen Wert sofort widerrufen oder rotieren.
+
+## Lizenz
+
+Dieses Repository enthält derzeit keine ausdrückliche Lizenzgewährung. Bis eine
+`LICENSE`-Datei ergänzt ist, bleiben alle Rechte vorbehalten.
