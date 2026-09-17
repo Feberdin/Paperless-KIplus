@@ -327,7 +327,7 @@ class PaperlessRunnerExportLogButton(ButtonEntity):
         return _device_info(self._entry_id)
 
     async def async_press(self) -> None:
-        """Export last run log to /config/www for browser download."""
+        """Export the last log to authenticated Home Assistant media storage."""
 
         await self._runner.async_export_last_log()
 
