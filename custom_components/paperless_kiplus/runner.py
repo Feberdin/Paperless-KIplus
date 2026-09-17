@@ -48,6 +48,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .config_export import build_effective_managed_config_yaml
+from .private_exports import export_destination
 from .const import SIGNAL_STATUS_UPDATED
 
 _LOGGER = logging.getLogger(__name__)
@@ -1000,9 +1001,9 @@ class PaperlessRunner:
         self._notify()
 
     async def async_export_last_log(self) -> str:
-        """Exportiert den letzten kombinierten Log in /config/www für einfachen Download."""
+        """Exportiert den letzten Log in authentifizierten Medienspeicher."""
 
-        export_path = Path("/config/www/paperless_kiplus_last_log.txt")
+        export_path, export_url = export_destination(self.hass, "paperless_kiplus_last_log.txt")
         log_text = self.last_log_combined or "[Kein Log vorhanden]"
 
         await self.hass.async_add_executor_job(
@@ -1013,7 +1014,7 @@ class PaperlessRunner:
         )
 
         self.last_log_export_path = str(export_path)
-        self.last_log_export_url = f"/local/paperless_kiplus_last_log.txt?v={int(datetime.now(UTC).timestamp())}"
+        self.last_log_export_url = f"{export_url}?v={int(datetime.now(UTC).timestamp())}"
         self.last_status = "log_exported"
         self.last_message = f"log exported to {self.last_log_export_url}"
         await self.hass.services.async_call(
@@ -1203,7 +1204,7 @@ class PaperlessRunner:
         """
 
         del remote_upload
-        export_path = Path("/config/www/paperless_kiplus_worker_config.yaml")
+        export_path, export_url = export_destination(self.hass, "paperless_kiplus_worker_config.yaml")
         yaml_text = build_effective_managed_config_yaml(
             self.managed_config_yaml,
             input_cost_per_1k_tokens_eur=self.input_cost_per_1k_tokens_eur,
@@ -1242,7 +1243,7 @@ class PaperlessRunner:
                     "title": "Paperless KIplus Worker-Konfiguration",
                     "message": (
                         "Die effektive Worker-Konfiguration wurde exportiert.\n\n"
-                        "[Exportdatei herunterladen](/local/paperless_kiplus_worker_config.yaml)"
+                        f"[Exportdatei herunterladen]({export_url})"
                     ),
                     "notification_id": "paperless_kiplus_worker_config_export",
                 },

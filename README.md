@@ -490,8 +490,28 @@ Zusätzlich gibt es jetzt klickbare Hilfs-Buttons:
 
 Die Dokument-Buttons erzeugen in Home Assistant eine anklickbare
 Benachrichtigung mit direktem Paperless-Link zum jeweiligen Dokument. Der
-Log-Download-Button exportiert das letzte Protokoll nach `/config/www` und
-zeigt direkt einen anklickbaren Download-Link an.
+Log-Download-Button exportiert das letzte Protokoll in den geschützten
+Home-Assistant-Medienspeicher. Auch Worker-Konfigurationen werden nicht mehr
+unter `/config/www` veröffentlicht. Verwendet wird bevorzugt die Medienquelle
+`private`, ansonsten `local` oder eine andere konfigurierte Medienquelle.
+Die Download-URLs unter `/media/` benötigen Home-Assistant-Authentifizierung;
+ein normaler Browser ohne Authorization-Header kann HTTP 401 anzeigen.
+
+Für ein eigenes geschütztes Verzeichnis kann `configuration.yaml` enthalten:
+
+```yaml
+homeassistant:
+  media_dirs:
+    private: /config/private_media
+```
+
+Das Verzeichnis darf nicht innerhalb von `www` liegen. Bereits früher öffentlich
+exportierte Dateien werden absichtlich nicht automatisch gelöscht. Nach einer
+privaten Sicherung alte `paperless_kiplus_last_log.txt` und
+`paperless_kiplus_worker_config.yaml` aus `www` entfernen. Bei möglicherweise
+offengelegten Zugangsdaten diese separat widerrufen/rotieren.
+
+Regressionstest: `python3 -m unittest discover -s tests -p test_private_exports.py -v`.
 
 #### Frischer Neustart statt Resume
 

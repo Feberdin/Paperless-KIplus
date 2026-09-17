@@ -46,6 +46,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 
 from .config_export import build_effective_managed_config_yaml
 from .const import SIGNAL_STATUS_UPDATED
+from .private_exports import export_destination
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -514,7 +515,7 @@ class RemotePaperlessRunner:
         """Exports the effective config locally and optionally uploads it to the worker."""
 
         yaml_text = await self.hass.async_add_executor_job(self._effective_config_yaml)
-        export_path = Path("/config/www/paperless_kiplus_worker_config.yaml")
+        export_path, export_url = export_destination(self.hass, "paperless_kiplus_worker_config.yaml")
         await self.hass.async_add_executor_job(
             lambda: export_path.parent.mkdir(parents=True, exist_ok=True)
         )
@@ -539,7 +540,7 @@ class RemotePaperlessRunner:
         self.last_status = "config_exported"
         self.last_message = f"Worker-Konfiguration {upload_message}"
         if announce:
-            local_url = "/local/paperless_kiplus_worker_config.yaml"
+            local_url = export_url
             worker_config_url = ""
             if self.remote_worker_url:
                 worker_config_url = self._worker_url("/api/config/download")
@@ -657,10 +658,10 @@ class RemotePaperlessRunner:
         self._notify()
 
     async def async_export_last_log(self) -> str:
-        """Downloads the worker log and re-exports it into HA's `/config/www`."""
+        """Download the worker log into authenticated Home Assistant media."""
 
         log_text = await self._api_text("/api/logs/download")
-        export_path = Path("/config/www/paperless_kiplus_last_log.txt")
+        export_path, export_url = export_destination(self.hass, "paperless_kiplus_last_log.txt")
         await self.hass.async_add_executor_job(
             lambda: export_path.parent.mkdir(parents=True, exist_ok=True)
         )
@@ -669,7 +670,7 @@ class RemotePaperlessRunner:
         )
         self.last_log_combined = log_text
         self.last_log_export_path = str(export_path)
-        self.last_log_export_url = f"/local/paperless_kiplus_last_log.txt?v={int(datetime.now(UTC).timestamp())}"
+        self.last_log_export_url = f"{export_url}?v={int(datetime.now(UTC).timestamp())}"
         self.last_status = "log_exported"
         self.last_message = f"log exported to {self.last_log_export_url}"
         await self.hass.services.async_call(
