@@ -791,7 +791,7 @@ class PendingAiDocument:
 
     document: Dict[str, Any]
     doc_id: Optional[int]
-    doc_key: Optional[str]
+    doc_key: str | None
     title: str
     doc_tags: set[int]
     enrichment_only: bool = False
@@ -1763,8 +1763,7 @@ class AiClassifier:
         self.model = config.ai_model
         self.timeout = config.request_timeout_seconds
         self.base_url = config.ai_base_url
-        self.enable_token_precheck = config.enable_token_precheck
-        self.min_remaining_tokens = config.min_remaining_tokens
+        self._config = config
         self.custom_prompt_instructions = config.custom_prompt_instructions
         self.basis_config = config.basis_config
         self.include_existing_entities_in_prompt = config.include_existing_entities_in_prompt
@@ -1809,7 +1808,7 @@ class AiClassifier:
         Einige Anbieter liefern die Header nicht; dann loggen wir nur einen Hinweis.
         """
 
-        if not self.enable_token_precheck:
+        if not self._config.enable_token_precheck:
             LOGGER.info("Token-Precheck deaktiviert (enable_token_precheck=false).")
             return
 
@@ -1840,12 +1839,12 @@ class AiClassifier:
             LOGGER.info(
                 "Token-Precheck: verbleibende API-Tokens laut Header = %s (Schwellwert=%s)",
                 remaining,
-                self.min_remaining_tokens,
+                self._config.min_remaining_tokens,
             )
-            if remaining < self.min_remaining_tokens:
+            if remaining < self._config.min_remaining_tokens:
                 raise AiClassificationError(
                     "Zu wenig verbleibende API-Tokens vor Start. "
-                    f"Remaining={remaining}, benötigt mindestens={self.min_remaining_tokens}. "
+                    f"Remaining={remaining}, benötigt mindestens={self._config.min_remaining_tokens}. "
                     "Lauf wird abgebrochen."
                 )
         except (requests.RequestException, ValueError) as exc:
@@ -5858,7 +5857,6 @@ def process_documents(
 
         document = pending.document
         doc_id = pending.doc_id
-        doc_key = pending.doc_key
         title = pending.title
         doc_tags = pending.doc_tags
         patch_payload_for_error: Optional[Dict[str, Any]] = None
@@ -6092,8 +6090,8 @@ def process_documents(
                 LOGGER.info("Aktualisiert Dokument %s (%s)", doc_id, title)
                 perf_apply_seconds += max(0.0, time.perf_counter() - apply_started)
 
-            if config.quarantine_failed_documents and doc_key is not None:
-                failed_patch_cache.pop(doc_key, None)
+            if config.quarantine_failed_documents and pending.doc_key is not None:
+                failed_patch_cache.pop(pending.doc_key, None)
             updated += 1
         except AiTemporaryPauseError:
             mark_completed_on_exit = False
@@ -6116,18 +6114,18 @@ def process_documents(
             )
             if (
                 config.enable_tag_bypass_on_tags_500
-                and doc_key is not None
+                and pending.doc_key is not None
                 and tags_only_500
             ):
-                tag_bypass_docs[doc_key] = {
+                tag_bypass_docs[pending.doc_key] = {
                     "document_id": int(doc_id) if doc_id is not None else None,
                     "title": title,
                     "created_at": dt.datetime.now(dt.timezone.utc).isoformat(),
                     "reason": "tags-only PATCH führt zu HTTP 500",
                     "patch_payload": dict(patch_payload_for_error or {}),
                 }
-                failed_docs_until.pop(doc_key, None)
-                failed_patch_cache.pop(doc_key, None)
+                failed_docs_until.pop(pending.doc_key, None)
+                failed_patch_cache.pop(pending.doc_key, None)
                 bypassed += 1
                 updated += 1
                 LOGGER.warning(
@@ -6159,7 +6157,7 @@ def process_documents(
             failed += 1
             if (
                 config.quarantine_failed_documents
-                and doc_key is not None
+                and pending.doc_key is not None
                 and failed_docs_cooldown_seconds > 0
             ):
                 retry_delay_seconds = failed_docs_cooldown_seconds
@@ -6170,7 +6168,7 @@ def process_documents(
                 ):
                     retry_delay_seconds = failed_tags_only_cooldown_seconds
                     if patch_payload_for_error:
-                        failed_patch_cache[doc_key] = dict(patch_payload_for_error)
+                        failed_patch_cache[pending.doc_key] = dict(patch_payload_for_error)
                     LOGGER.warning(
                         "Dokument %s (%s): Tags-only-Fehler erkannt, setze verlängerte Quarantäne auf %s Stunden.",
                         doc_id,
@@ -6179,7 +6177,7 @@ def process_documents(
                     )
 
                 retry_after_ts = dt.datetime.now(dt.timezone.utc).timestamp() + retry_delay_seconds
-                failed_docs_until[doc_key] = retry_after_ts
+                failed_docs_until[pending.doc_key] = retry_after_ts
                 retry_after_text = dt.datetime.fromtimestamp(
                     retry_after_ts, tz=dt.timezone.utc
                 ).isoformat()

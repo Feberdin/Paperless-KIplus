@@ -28,8 +28,8 @@ from .const import (
     CONF_DRY_RUN,
     CONF_MAX_DOCUMENTS,
     CONF_MANAGED_CONFIG_YAML,
-    CONF_INPUT_COST_PER_1K_TOKENS_EUR,
-    CONF_OUTPUT_COST_PER_1K_TOKENS_EUR,
+    CONF_INPUT_COST_PER_1K_EUR,
+    CONF_OUTPUT_COST_PER_1K_EUR,
     CONF_PRECHECK_BLOCKED_FILENAME_PATTERNS,
     CONF_PRECHECK_DUPLICATE_APPLY_METADATA,
     CONF_PRECHECK_DUPLICATE_HASH_GATE,
@@ -59,8 +59,8 @@ from .const import (
     DEFAULT_MANAGED_CONFIG_ENABLED,
     DEFAULT_MANAGED_CONFIG_YAML,
     DEFAULT_METRICS_FILE,
-    DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR,
-    DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR,
+    DEFAULT_INPUT_COST_PER_1K_EUR,
+    DEFAULT_OUTPUT_COST_PER_1K_EUR,
     DEFAULT_PRECHECK_BLOCKED_FILENAME_PATTERNS,
     DEFAULT_PRECHECK_DUPLICATE_APPLY_METADATA,
     DEFAULT_PRECHECK_DUPLICATE_HASH_GATE,
@@ -214,17 +214,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     input_cost_per_1k_tokens_eur = _as_float(
         options.get(
-            CONF_INPUT_COST_PER_1K_TOKENS_EUR,
-            data.get(CONF_INPUT_COST_PER_1K_TOKENS_EUR, DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR),
+            CONF_INPUT_COST_PER_1K_EUR,
+            data.get(CONF_INPUT_COST_PER_1K_EUR, DEFAULT_INPUT_COST_PER_1K_EUR),
         ),
-        DEFAULT_INPUT_COST_PER_1K_TOKENS_EUR,
+        DEFAULT_INPUT_COST_PER_1K_EUR,
     )
     output_cost_per_1k_tokens_eur = _as_float(
         options.get(
-            CONF_OUTPUT_COST_PER_1K_TOKENS_EUR,
-            data.get(CONF_OUTPUT_COST_PER_1K_TOKENS_EUR, DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR),
+            CONF_OUTPUT_COST_PER_1K_EUR,
+            data.get(CONF_OUTPUT_COST_PER_1K_EUR, DEFAULT_OUTPUT_COST_PER_1K_EUR),
         ),
-        DEFAULT_OUTPUT_COST_PER_1K_TOKENS_EUR,
+        DEFAULT_OUTPUT_COST_PER_1K_EUR,
     )
     already_classified_skip = _as_bool(
         options.get(
@@ -389,8 +389,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         "max_documents": max_documents,
         "managed_config_enabled": managed_config_enabled,
         "managed_config_yaml": managed_config_yaml,
-        "input_cost_per_1k_tokens_eur": input_cost_per_1k_tokens_eur,
-        "output_cost_per_1k_tokens_eur": output_cost_per_1k_tokens_eur,
+        CONF_INPUT_COST_PER_1K_EUR: input_cost_per_1k_tokens_eur,
+        CONF_OUTPUT_COST_PER_1K_EUR: output_cost_per_1k_tokens_eur,
         "already_classified_skip": already_classified_skip,
         "already_classified_require_ki_tag": already_classified_require_ki_tag,
         "precheck_min_content_chars": precheck_min_content_chars,
