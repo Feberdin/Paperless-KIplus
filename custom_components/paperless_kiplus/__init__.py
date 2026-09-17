@@ -10,6 +10,7 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
+from .export_http import ExportDownloadView
 
 from .const import (
     CONF_ALREADY_CLASSIFIED_REQUIRE_KI_TAG,
@@ -178,6 +179,7 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     """Set up from YAML (unused, config flow only)."""
 
     hass.data.setdefault(DOMAIN, {})
+    hass.http.register_view(ExportDownloadView(hass))
     return True
 
 
