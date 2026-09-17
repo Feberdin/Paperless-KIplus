@@ -5,9 +5,10 @@
     "@Feberdin"
   ],
   "config_flow": true,
+  "dependencies": ["http"],
   "documentation": "https://github.com/Feberdin/Paperless-KIplus",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/Feberdin/Paperless-KIplus/issues",
   "requirements": [],
-  "version": "1.4.22"
+  "version": "1.4.23"
 }

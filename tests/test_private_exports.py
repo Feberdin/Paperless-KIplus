@@ -58,7 +58,49 @@ class SyntheticRunner(SimpleNamespace):
 
 
 class PrivateExportTests(unittest.IsolatedAsyncioTestCase):
-    async def test_both_log_exporters_use_authenticated_media(self):
+    async def test_download_view_authorizes_admin_and_disables_caching(self):
+        spec = importlib.util.spec_from_file_location("private_exports_test", COMPONENT / "private_exports.py")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        tree = ast.parse((COMPONENT / "export_http.py").read_text())
+        view_class = next(node for node in tree.body if isinstance(node, ast.ClassDef))
+        unauthorized = type("Unauthorized", (Exception,), {})
+        forbidden = type("Forbidden", (Exception,), {})
+        not_found = type("NotFound", (Exception,), {})
+        namespace = {
+            "HomeAssistantView": object,
+            "export_destination": module.export_destination,
+            "web": SimpleNamespace(
+                HTTPUnauthorized=unauthorized, HTTPForbidden=forbidden,
+                HTTPNotFound=not_found,
+                FileResponse=lambda path, headers: SimpleNamespace(path=path, headers=headers),
+            ),
+        }
+        exec(compile(ast.Module(body=[view_class], type_ignores=[]), "export_http.py", "exec"), namespace)
+        with tempfile.TemporaryDirectory() as folder:
+            async def executor(job, *args):
+                return job(*args)
+
+            hass = SimpleNamespace(config=SimpleNamespace(media_dirs={"local": folder}), async_add_executor_job=executor)
+            view = namespace["ExportDownloadView"](hass)
+            self.assertTrue(view.requires_auth)
+            filename = "paperless_kiplus_last_log.txt"
+            for request, exception in (({}, unauthorized), ({"hass_user": SimpleNamespace(is_admin=False)}, forbidden)):
+                with self.assertRaises(exception):
+                    await view.get(request, filename)
+            admin = {"hass_user": SimpleNamespace(is_admin=True)}
+            for name in (filename, "../../secrets.yaml"):
+                with self.assertRaises(not_found):
+                    await view.get(admin, name)
+            path, _ = module.export_destination(hass, filename)
+            path.parent.mkdir()
+            path.write_text("synthetic")
+            response = await view.get(admin, filename)
+            self.assertEqual(response.path, path)
+            self.assertEqual(response.headers["Cache-Control"], "private, no-store")
+            self.assertIn("attachment", response.headers["Content-Disposition"])
+
+    async def test_both_log_exporters_use_authenticated_download_endpoint(self):
         for filename in ("runner.py", "remote_runner.py"):
             with self.subTest(exporter=filename), tempfile.TemporaryDirectory() as folder:
                 async def executor(job):
@@ -76,7 +118,7 @@ class PrivateExportTests(unittest.IsolatedAsyncioTestCase):
                 )
                 url = await load_export_method(filename)(runner)
                 self.assertTrue(
-                    url.startswith("/media/private/"),
+                    url.startswith("/api/paperless_kiplus/exports/"),
                     f"{filename} exposes private logs through {url.split('?')[0]}",
                 )
                 self.assertTrue(Path(runner.last_log_export_path).is_relative_to(Path(folder).resolve()))
@@ -105,7 +147,7 @@ class PrivateExportTests(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue(path.exists(), f"{filename} did not write configuration to protected media")
                 self.assertEqual(path.read_text(), "mode: synthetic\n")
                 message = hass.services.async_call.await_args.args[2]["message"]
-                self.assertIn("/media/private/", message)
+                self.assertIn("/api/paperless_kiplus/exports/", message)
                 self.assertNotIn("/local/", message)
 
     def test_export_destination_rejects_public_or_missing_media_and_path_traversal(self):
@@ -130,7 +172,7 @@ class PrivateExportTests(unittest.IsolatedAsyncioTestCase):
             hass = SimpleNamespace(config=SimpleNamespace(media_dirs={"local": folder}))
             path, url = module.export_destination(hass, "paperless_kiplus_last_log.txt")
             self.assertTrue(path.is_relative_to(Path(folder).resolve()))
-            self.assertEqual(url, "/media/local/paperless_kiplus/paperless_kiplus_last_log.txt")
+            self.assertEqual(url, "/api/paperless_kiplus/exports/paperless_kiplus_last_log.txt")
 
 
 if __name__ == "__main__":

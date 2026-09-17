@@ -1,12 +1,11 @@
 """Resolve exports inside configured, authenticated Home Assistant media storage.
 
 Input: HA media directories and one allowlisted export filename.
-Output: filesystem path and protected media URL; never a public /local URL.
+Output: filesystem path and authenticated API URL; never a public /local URL.
 Debug: check Settings > Media and homeassistant.media_dirs; no secrets are logged.
 """
 
 from pathlib import Path
-from urllib.parse import quote
 
 
 EXPORT_FILENAMES = {
@@ -27,5 +26,7 @@ def export_destination(hass, filename: str) -> tuple[Path, str]:
     if "www" in root.parts:
         raise ValueError("Medienexport verweigert: Das Medienverzeichnis liegt im öffentlichen www-Ordner.")
     destination = root / "paperless_kiplus" / filename
-    url = f"/media/{quote(source, safe='')}/paperless_kiplus/{filename}"
+    if not destination.resolve().is_relative_to(root):
+        raise ValueError("Exportziel verlaesst das konfigurierte private Verzeichnis.")
+    url = f"/api/paperless_kiplus/exports/{filename}"
     return destination, url

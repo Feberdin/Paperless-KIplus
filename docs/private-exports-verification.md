@@ -1,4 +1,18 @@
-# Geschützte Exporte, Version 1.4.22
+# Geschützte Exporte, Version 1.4.23
+
+## Ergänzung: API-Download statt Medienroute
+
+Die Live-Abnahme hat gezeigt, dass Home Assistants Medienroute TXT/YAML nicht
+ausliefert. Daher bleibt der private Speicherort erhalten; Downloads verwenden
+jetzt eine eigene authentifizierte API-Route, begrenzt auf die zwei Exportdateien
+und Administratoren. Antworten sind `private, no-store`, Pfadmanipulation und
+Symlinks außerhalb des Speicherorts werden abgewiesen.
+
+Rot: `python3 -m unittest discover -s tests -p test_private_exports.py -v`
+scheiterte mit fünf Assertions, weil beide Exporter noch nicht unterstützte
+`/media/`-Downloadlinks lieferten. Derselbe Befehl prüft nach dem Fix zusätzlich
+anonyme/nicht administrative Anfragen, fehlende Dateien und Cache-Header.
+Die neue HTTP-Grenze wird ergänzend am installierten System geprüft.
 
 ## Änderung
 

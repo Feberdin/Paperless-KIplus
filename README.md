@@ -494,8 +494,10 @@ Log-Download-Button exportiert das letzte Protokoll in den geschützten
 Home-Assistant-Medienspeicher. Auch Worker-Konfigurationen werden nicht mehr
 unter `/config/www` veröffentlicht. Verwendet wird bevorzugt die Medienquelle
 `private`, ansonsten `local` oder eine andere konfigurierte Medienquelle.
-Die Download-URLs unter `/media/` benötigen Home-Assistant-Authentifizierung;
-ein normaler Browser ohne Authorization-Header kann HTTP 401 anzeigen.
+Die Download-URLs unter `/api/paperless_kiplus/exports/` benötigen einen
+authentifizierten Home-Assistant-Administrator und werden nicht gecacht.
+Ein normaler Browser ohne Authorization-Header kann HTTP 401 anzeigen.
+Die HA-Medienroute ist dafür ungeeignet: Sie unterstützt keine TXT-/YAML-Dateien.
 
 Für ein eigenes geschütztes Verzeichnis kann `configuration.yaml` enthalten:
 
