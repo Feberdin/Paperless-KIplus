@@ -19,7 +19,7 @@
 # Why the digest is pinned: production may build directly from a broker-bound
 # Git commit. Pinning the multi-architecture base manifest prevents a mutable
 # registry tag from changing the resulting runtime between CI and Unraid.
-FROM python:3.12.13-slim-trixie@sha256:229a2c5bfa27522db7815ea81f9bed70af17ccb9de9fc7ad142b1877b5830d36
+FROM python:3.14.6-slim-trixie@sha256:7bec7ddcddeff7975d6ba9b4be7dd6f6b2f55e7491539145e2978f7f97ce9144
 
 ARG APP_UID=10001
 ARG APP_GID=10001
